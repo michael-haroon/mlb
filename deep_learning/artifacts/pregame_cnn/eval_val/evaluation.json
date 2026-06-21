@@ -1,0 +1,1172 @@
+{
+  "seasons": [
+    {
+      "season": 2013,
+      "n_games": 1868,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 1868,
+          "brier_score": 0.2528764764459745,
+          "log_loss": 0.700262570582301,
+          "auc_roc": 0.5508242471668127,
+          "accuracy": 0.5299785867237687,
+          "mean_predicted": 0.5187302366999921,
+          "mean_actual": 0.541220556745182,
+          "ece": 0.07264831471526138,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 43,
+              "mean_predicted": 0.2652771434811659,
+              "mean_actual": 0.3953488372093023,
+              "abs_error": 0.13007169372813643
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 295,
+              "mean_predicted": 0.3564983359837936,
+              "mean_actual": 0.47796610169491527,
+              "abs_error": 0.12146776571112167
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 523,
+              "mean_predicted": 0.4504141278180292,
+              "mean_actual": 0.5411089866156787,
+              "abs_error": 0.09069485879764955
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 527,
+              "mean_predicted": 0.550420944672608,
+              "mean_actual": 0.5426944971537002,
+              "abs_error": 0.007726447518907831
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 326,
+              "mean_predicted": 0.6424995849103284,
+              "mean_actual": 0.5797546012269938,
+              "abs_error": 0.06274498368333459
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 127,
+              "mean_predicted": 0.7462133272426335,
+              "mean_actual": 0.5984251968503937,
+              "abs_error": 0.1477881303922397
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 25,
+              "mean_predicted": 0.8289137244224548,
+              "mean_actual": 0.72,
+              "abs_error": 0.10891372442245484
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 2,
+              "mean_predicted": 0.9144644141197205,
+              "mean_actual": 0.5,
+              "abs_error": 0.41446441411972046
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 1868,
+          "brier_score": 0.25340194866688476,
+          "log_loss": 0.7000406163532956,
+          "auc_roc": 0.4930451309030312,
+          "accuracy": 0.49518201284796576,
+          "mean_predicted": 0.5115570885944928,
+          "mean_actual": 0.4828693790149893,
+          "ece": 0.04408322924018163,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 10,
+              "mean_predicted": 0.38990328311920164,
+              "mean_actual": 0.5,
+              "abs_error": 0.11009671688079836
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 787,
+              "mean_predicted": 0.46851531360322063,
+              "mean_actual": 0.48538754764930114,
+              "abs_error": 0.016872234046080514
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 1000,
+              "mean_predicted": 0.5388349431157112,
+              "mean_actual": 0.48,
+              "abs_error": 0.05883494311571125
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 71,
+              "mean_predicted": 0.6215931512940098,
+              "mean_actual": 0.49295774647887325,
+              "abs_error": 0.12863540481513658
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 1868,
+          "mae": 3.5884552073427645,
+          "rmse": 4.498843676087341,
+          "mean_nll": 2.9221723989242663,
+          "coverage_50": 0.5085653104925053,
+          "coverage_90": 0.9282655246252677,
+          "mean_sigma": 4.678915283537013,
+          "crps": 2.5192024339646135
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 1868,
+          "mae": 3.2508689397926056,
+          "rmse": 4.197263698452167,
+          "mean_nll": 2.8645970980993227,
+          "coverage_50": 0.5497858672376874,
+          "coverage_90": 0.9105995717344754,
+          "mean_sigma": 4.306355048553336,
+          "crps": 2.328903887251978
+        }
+      ]
+    },
+    {
+      "season": 2014,
+      "n_games": 2916,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 2916,
+          "brier_score": 0.2583904860904599,
+          "log_loss": 0.7113860744028058,
+          "auc_roc": 0.5228043484404585,
+          "accuracy": 0.5185185185185185,
+          "mean_predicted": 0.4981136377364274,
+          "mean_actual": 0.5178326474622771,
+          "ece": 0.07282849740037703,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 85,
+              "mean_predicted": 0.27590242746998284,
+              "mean_actual": 0.49411764705882355,
+              "abs_error": 0.21821521958884071
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 496,
+              "mean_predicted": 0.35912824512249036,
+              "mean_actual": 0.4939516129032258,
+              "abs_error": 0.13482336778073545
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 999,
+              "mean_predicted": 0.45299004121227665,
+              "mean_actual": 0.5025025025025025,
+              "abs_error": 0.04951246129022585
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 785,
+              "mean_predicted": 0.544834680997642,
+              "mean_actual": 0.5414012738853503,
+              "abs_error": 0.0034334071122916754
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 392,
+              "mean_predicted": 0.6429117505951804,
+              "mean_actual": 0.5306122448979592,
+              "abs_error": 0.11229950569722114
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 144,
+              "mean_predicted": 0.7347631959451569,
+              "mean_actual": 0.5416666666666666,
+              "abs_error": 0.1930965292784903
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 12,
+              "mean_predicted": 0.8259251664082209,
+              "mean_actual": 0.5833333333333334,
+              "abs_error": 0.24259183307488752
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 3,
+              "mean_predicted": 0.9831225077311198,
+              "mean_actual": 1.0,
+              "abs_error": 0.016877492268880245
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 2916,
+          "brier_score": 0.2528998916080249,
+          "log_loss": 0.6991523220009602,
+          "auc_roc": 0.5104960658310534,
+          "accuracy": 0.507201646090535,
+          "mean_predicted": 0.5186529896938752,
+          "mean_actual": 0.4783950617283951,
+          "ece": 0.0402579279654801,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 19,
+              "mean_predicted": 0.3723140892229582,
+              "mean_actual": 0.3684210526315789,
+              "abs_error": 0.0038930365913792953
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 1045,
+              "mean_predicted": 0.4704788816317417,
+              "mean_actual": 0.46220095693779906,
+              "abs_error": 0.008277924693942618
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 1699,
+              "mean_predicted": 0.5404245553120506,
+              "mean_actual": 0.49028840494408477,
+              "abs_error": 0.050136150367965815
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 150,
+              "mean_predicted": 0.6213638345400493,
+              "mean_actual": 0.48,
+              "abs_error": 0.1413638345400493
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 2,
+              "mean_predicted": 0.7378584742546082,
+              "mean_actual": 0.0,
+              "abs_error": 0.7378584742546082
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 1,
+              "mean_predicted": 0.8061073422431946,
+              "mean_actual": 0.0,
+              "abs_error": 0.8061073422431946
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 2916,
+          "mae": 3.632254948341307,
+          "rmse": 4.560980637719728,
+          "mean_nll": 2.93543356017683,
+          "coverage_50": 0.50480109739369,
+          "coverage_90": 0.936556927297668,
+          "mean_sigma": 4.805242878664668,
+          "crps": 2.5412780881365387
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 2916,
+          "mae": 3.3568165241108265,
+          "rmse": 4.309437146574936,
+          "mean_nll": 2.885012056791032,
+          "coverage_50": 0.5438957475994513,
+          "coverage_90": 0.9094650205761317,
+          "mean_sigma": 4.415176749474718,
+          "crps": 2.4006164381413897
+        }
+      ]
+    },
+    {
+      "season": 2015,
+      "n_games": 2951,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 2951,
+          "brier_score": 0.2704918514573781,
+          "log_loss": 0.7417395689267966,
+          "auc_roc": 0.550079560182089,
+          "accuracy": 0.5350728566587597,
+          "mean_predicted": 0.6629689545933977,
+          "mean_actual": 0.5320230430362589,
+          "ece": 0.14726561432630483,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 19,
+              "mean_predicted": 0.26570658856316615,
+              "mean_actual": 0.5263157894736842,
+              "abs_error": 0.26060920091051804
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 106,
+              "mean_predicted": 0.35937145717863767,
+              "mean_actual": 0.5094339622641509,
+              "abs_error": 0.15006250508551328
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 190,
+              "mean_predicted": 0.45146567852873554,
+              "mean_actual": 0.46842105263157896,
+              "abs_error": 0.016955374102843424
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 330,
+              "mean_predicted": 0.558823798642014,
+              "mean_actual": 0.4696969696969697,
+              "abs_error": 0.08912682894504431
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 1016,
+              "mean_predicted": 0.658323135021634,
+              "mean_actual": 0.5078740157480315,
+              "abs_error": 0.1504491192736025
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 1100,
+              "mean_predicted": 0.7414054398645055,
+              "mean_actual": 0.57,
+              "abs_error": 0.17140543986450552
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 180,
+              "mean_predicted": 0.8296756830480364,
+              "mean_actual": 0.6222222222222222,
+              "abs_error": 0.20745346082581417
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 10,
+              "mean_predicted": 0.93453409075737,
+              "mean_actual": 0.7,
+              "abs_error": 0.23453409075737008
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 2951,
+          "brier_score": 0.2578961125569222,
+          "log_loss": 0.7094345661268819,
+          "auc_roc": 0.5176061773578352,
+          "accuracy": 0.5099966113181972,
+          "mean_predicted": 0.5927481863184405,
+          "mean_actual": 0.5076245340562521,
+          "ece": 0.0851236522621884,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 123,
+              "mean_predicted": 0.47708716285907155,
+              "mean_actual": 0.4715447154471545,
+              "abs_error": 0.005542447411917062
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 1149,
+              "mean_predicted": 0.5691536814882198,
+              "mean_actual": 0.4908616187989556,
+              "abs_error": 0.07829206268926414
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 1669,
+              "mean_predicted": 0.6166246676959272,
+              "mean_actual": 0.5218693828639904,
+              "abs_error": 0.09475528483193674
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 10,
+              "mean_predicted": 0.7414026379585266,
+              "mean_actual": 0.5,
+              "abs_error": 0.24140263795852657
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 2951,
+          "mae": 38.38252647585159,
+          "rmse": 43.05678718171302,
+          "mean_nll": 92302.86022667063,
+          "coverage_50": 0.10064384954252796,
+          "coverage_90": 0.1856997627922738,
+          "mean_sigma": 1.0792624899004726,
+          "crps": 38.100379599238344
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 2951,
+          "mae": 4.00571934137429,
+          "rmse": 5.086782064083456,
+          "mean_nll": 1072.3392650668247,
+          "coverage_50": 0.1145374449339207,
+          "coverage_90": 0.19552694002033208,
+          "mean_sigma": 0.9703227753322716,
+          "crps": 3.7670211924503323
+        }
+      ]
+    },
+    {
+      "season": 2016,
+      "n_games": 2938,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 2938,
+          "brier_score": 0.27765631195373003,
+          "log_loss": 0.7582765909355665,
+          "auc_roc": 0.5344177429250727,
+          "accuracy": 0.5265486725663717,
+          "mean_predicted": 0.6823748493981735,
+          "mean_actual": 0.5238257317903335,
+          "ece": 0.1641171473155142,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 9,
+              "mean_predicted": 0.2705841097566817,
+              "mean_actual": 0.2222222222222222,
+              "abs_error": 0.04836188753445947
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 41,
+              "mean_predicted": 0.36530902763692347,
+              "mean_actual": 0.36585365853658536,
+              "abs_error": 0.0005446308996618909
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 102,
+              "mean_predicted": 0.45924406104228077,
+              "mean_actual": 0.5392156862745098,
+              "abs_error": 0.079971625232229
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 298,
+              "mean_predicted": 0.5610607046408941,
+              "mean_actual": 0.4697986577181208,
+              "abs_error": 0.09126204692277329
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 1094,
+              "mean_predicted": 0.6574236466745136,
+              "mean_actual": 0.5219378427787934,
+              "abs_error": 0.13548580389572018
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 1192,
+              "mean_predicted": 0.7427569692266868,
+              "mean_actual": 0.5343959731543624,
+              "abs_error": 0.2083609960723244
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 195,
+              "mean_predicted": 0.8311336856621963,
+              "mean_actual": 0.5794871794871795,
+              "abs_error": 0.2516465061750167
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 7,
+              "mean_predicted": 0.9580786739076886,
+              "mean_actual": 0.8571428571428571,
+              "abs_error": 0.10093581676483154
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 2938,
+          "brier_score": 0.25547759109962126,
+          "log_loss": 0.7045214936870621,
+          "auc_roc": 0.5136878946331747,
+          "accuracy": 0.5268890401633765,
+          "mean_predicted": 0.6008822770448182,
+          "mean_actual": 0.5248468345813478,
+          "ece": 0.07603544246347035,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 46,
+              "mean_predicted": 0.482338213402292,
+              "mean_actual": 0.43478260869565216,
+              "abs_error": 0.04755560470663983
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 956,
+              "mean_predicted": 0.5676099729712538,
+              "mean_actual": 0.5177824267782427,
+              "abs_error": 0.04982754619301111
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 1927,
+              "mean_predicted": 0.6193532716689731,
+              "mean_actual": 0.5303580695381422,
+              "abs_error": 0.0889952021308309
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 5,
+              "mean_predicted": 0.7307937026023865,
+              "mean_actual": 0.4,
+              "abs_error": 0.3307937026023865
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 4,
+              "mean_predicted": 0.8554287403821945,
+              "mean_actual": 0.75,
+              "abs_error": 0.10542874038219452
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 2938,
+          "mae": 40.66546106391248,
+          "rmse": 44.41705106063057,
+          "mean_nll": 98076.3267950153,
+          "coverage_50": 0.06126616746085772,
+          "coverage_90": 0.11300204220558203,
+          "mean_sigma": 0.7146216169699591,
+          "crps": 40.44534545367184
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 2938,
+          "mae": 4.116821341382668,
+          "rmse": 5.190661407687693,
+          "mean_nll": 1146.695980699067,
+          "coverage_50": 0.07249829816201497,
+          "coverage_90": 0.13682777399591559,
+          "mean_sigma": 0.6222132272749551,
+          "crps": 3.935290967689853
+        }
+      ]
+    },
+    {
+      "season": 2017,
+      "n_games": 3005,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 3005,
+          "brier_score": 0.2802432562663835,
+          "log_loss": 0.7671198777716228,
+          "auc_roc": 0.5403436893134757,
+          "accuracy": 0.5324459234608985,
+          "mean_predicted": 0.6974777527537798,
+          "mean_actual": 0.5337770382695507,
+          "ece": 0.17612495257731486,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.1,
+              "bin_upper": 0.2,
+              "count": 1,
+              "mean_predicted": 0.18775752186775208,
+              "mean_actual": 0.0,
+              "abs_error": 0.18775752186775208
+            },
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 9,
+              "mean_predicted": 0.27119828595055473,
+              "mean_actual": 0.5555555555555556,
+              "abs_error": 0.28435726960500085
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 67,
+              "mean_predicted": 0.35646236876943216,
+              "mean_actual": 0.47761194029850745,
+              "abs_error": 0.1211495715290753
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 103,
+              "mean_predicted": 0.45639630081584154,
+              "mean_actual": 0.5339805825242718,
+              "abs_error": 0.07758428170843029
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 168,
+              "mean_predicted": 0.5605348738886061,
+              "mean_actual": 0.4642857142857143,
+              "abs_error": 0.09624915960289182
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 956,
+              "mean_predicted": 0.6613631240992367,
+              "mean_actual": 0.4989539748953975,
+              "abs_error": 0.1624091492038392
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 1401,
+              "mean_predicted": 0.7460967706919227,
+              "mean_actual": 0.5546038543897216,
+              "abs_error": 0.1914929163022011
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 283,
+              "mean_predicted": 0.8298992362965965,
+              "mean_actual": 0.6042402826855123,
+              "abs_error": 0.22565895361108412
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 17,
+              "mean_predicted": 0.9308377749779645,
+              "mean_actual": 0.5294117647058824,
+              "abs_error": 0.40142601027208213
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 3005,
+          "brier_score": 0.25247620990746633,
+          "log_loss": 0.6986854221459579,
+          "auc_roc": 0.5120685688193364,
+          "accuracy": 0.5277870216306156,
+          "mean_predicted": 0.5755849172291462,
+          "mean_actual": 0.5261231281198003,
+          "ece": 0.049461789109345906,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 85,
+              "mean_predicted": 0.48338252270922943,
+              "mean_actual": 0.47058823529411764,
+              "abs_error": 0.012794287415111794
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 2633,
+              "mean_predicted": 0.5728735775038447,
+              "mean_actual": 0.5244967717432586,
+              "abs_error": 0.04837680576058612
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 261,
+              "mean_predicted": 0.6164036664926229,
+              "mean_actual": 0.5708812260536399,
+              "abs_error": 0.045522440438983014
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 24,
+              "mean_predicted": 0.729046975572904,
+              "mean_actual": 0.4583333333333333,
+              "abs_error": 0.2707136422395707
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 1,
+              "mean_predicted": 0.8895193934440613,
+              "mean_actual": 0.0,
+              "abs_error": 0.8895193934440613
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 1,
+              "mean_predicted": 0.9010285139083862,
+              "mean_actual": 0.0,
+              "abs_error": 0.9010285139083862
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 3005,
+          "mae": 35.7755722283722,
+          "rmse": 39.32022951076239,
+          "mean_nll": 76682.61940497221,
+          "coverage_50": 0.06888519134775374,
+          "coverage_90": 0.12346089850249584,
+          "mean_sigma": 0.7830512805136786,
+          "crps": 35.54282461611415
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 3005,
+          "mae": 4.215704281770697,
+          "rmse": 5.381085472600312,
+          "mean_nll": 1233.0406994192879,
+          "coverage_50": 0.07953410981697172,
+          "coverage_90": 0.14575707154742096,
+          "mean_sigma": 0.6794792937111735,
+          "crps": 4.023953641789653
+        }
+      ]
+    },
+    {
+      "season": 2018,
+      "n_games": 2955,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 2955,
+          "brier_score": 0.2843295679254727,
+          "log_loss": 0.7761688725009945,
+          "auc_roc": 0.5513232427473913,
+          "accuracy": 0.5272419627749577,
+          "mean_predicted": 0.6973681133713214,
+          "mean_actual": 0.5177664974619289,
+          "ece": 0.1879801597389473,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 9,
+              "mean_predicted": 0.27449750569131637,
+              "mean_actual": 0.5555555555555556,
+              "abs_error": 0.2810580498642392
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 59,
+              "mean_predicted": 0.3584783718747608,
+              "mean_actual": 0.5254237288135594,
+              "abs_error": 0.16694535693879858
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 90,
+              "mean_predicted": 0.452033606171608,
+              "mean_actual": 0.32222222222222224,
+              "abs_error": 0.12981138394938574
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 203,
+              "mean_predicted": 0.562148089479343,
+              "mean_actual": 0.45320197044334976,
+              "abs_error": 0.10894611903599327
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 910,
+              "mean_predicted": 0.6592625779764992,
+              "mean_actual": 0.4956043956043956,
+              "abs_error": 0.1636581823721036
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 1367,
+              "mean_predicted": 0.7447766201201371,
+              "mean_actual": 0.542794440380395,
+              "abs_error": 0.20198217973974208
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 298,
+              "mean_predicted": 0.8269131137620682,
+              "mean_actual": 0.5704697986577181,
+              "abs_error": 0.25644331510435014
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 19,
+              "mean_predicted": 0.9391733282490781,
+              "mean_actual": 0.5263157894736842,
+              "abs_error": 0.4128575387753939
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 2955,
+          "brier_score": 0.2565190411176229,
+          "log_loss": 0.70654235250426,
+          "auc_roc": 0.4910263916720956,
+          "accuracy": 0.5055837563451777,
+          "mean_predicted": 0.5781851439306579,
+          "mean_actual": 0.5055837563451777,
+          "ece": 0.07326828832352024,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 56,
+              "mean_predicted": 0.4824045385633196,
+              "mean_actual": 0.5,
+              "abs_error": 0.017595461436680393
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 2529,
+              "mean_predicted": 0.574483652155406,
+              "mean_actual": 0.5061289047054172,
+              "abs_error": 0.06835474744998882
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 355,
+              "mean_predicted": 0.611950319249865,
+              "mean_actual": 0.5014084507042254,
+              "abs_error": 0.11054186854563963
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 12,
+              "mean_predicted": 0.7400705963373184,
+              "mean_actual": 0.5,
+              "abs_error": 0.24007059633731842
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 3,
+              "mean_predicted": 0.8433597882588705,
+              "mean_actual": 0.6666666666666666,
+              "abs_error": 0.17669312159220385
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 2955,
+          "mae": 36.54695012430249,
+          "rmse": 40.01005176705403,
+          "mean_nll": 79353.01572920069,
+          "coverage_50": 0.06091370558375635,
+          "coverage_90": 0.11404399323181048,
+          "mean_sigma": 0.7316428794019718,
+          "crps": 36.32222374824927
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 2955,
+          "mae": 4.20213446794125,
+          "rmse": 5.371718144873915,
+          "mean_nll": 1210.8133100724538,
+          "coverage_50": 0.07174280879864636,
+          "coverage_90": 0.13671742808798645,
+          "mean_sigma": 0.6353026523757506,
+          "crps": 4.007224616085507
+        }
+      ]
+    },
+    {
+      "season": 2019,
+      "n_games": 2061,
+      "binary": [
+        {
+          "target_name": "home_win",
+          "n_samples": 2061,
+          "brier_score": 0.2842389909421973,
+          "log_loss": 0.7747118810063327,
+          "auc_roc": 0.5308369586953979,
+          "accuracy": 0.5162542455118875,
+          "mean_predicted": 0.6876905223427902,
+          "mean_actual": 0.5206210577389617,
+          "ece": 0.18225349281263376,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.2,
+              "bin_upper": 0.30000000000000004,
+              "count": 2,
+              "mean_predicted": 0.29288171231746674,
+              "mean_actual": 1.0,
+              "abs_error": 0.7071182876825333
+            },
+            {
+              "bin_lower": 0.30000000000000004,
+              "bin_upper": 0.4,
+              "count": 47,
+              "mean_predicted": 0.3628528593702519,
+              "mean_actual": 0.46808510638297873,
+              "abs_error": 0.10523224701272682
+            },
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 96,
+              "mean_predicted": 0.45534386578947306,
+              "mean_actual": 0.5520833333333334,
+              "abs_error": 0.09673946754386031
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 169,
+              "mean_predicted": 0.5585968314543278,
+              "mean_actual": 0.4437869822485207,
+              "abs_error": 0.11480984920580711
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 676,
+              "mean_predicted": 0.6621079648563848,
+              "mean_actual": 0.4970414201183432,
+              "abs_error": 0.1650665447380416
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 898,
+              "mean_predicted": 0.7449978366328242,
+              "mean_actual": 0.5478841870824054,
+              "abs_error": 0.19711364955041877
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 163,
+              "mean_predicted": 0.8327334047826521,
+              "mean_actual": 0.5337423312883436,
+              "abs_error": 0.29899107349430853
+            },
+            {
+              "bin_lower": 0.9,
+              "bin_upper": 1.0,
+              "count": 10,
+              "mean_predicted": 0.9245856583118439,
+              "mean_actual": 0.6,
+              "abs_error": 0.32458565831184394
+            }
+          ]
+        },
+        {
+          "target_name": "yrfi",
+          "n_samples": 2061,
+          "brier_score": 0.2517205191248739,
+          "log_loss": 0.6969320250729794,
+          "auc_roc": 0.5033701415014933,
+          "accuracy": 0.5332362930616206,
+          "mean_predicted": 0.5726829996998596,
+          "mean_actual": 0.5327510917030568,
+          "ece": 0.04073710407752658,
+          "calibration_bins": [
+            {
+              "bin_lower": 0.4,
+              "bin_upper": 0.5,
+              "count": 81,
+              "mean_predicted": 0.48358327702239706,
+              "mean_actual": 0.49382716049382713,
+              "abs_error": 0.01024388347143007
+            },
+            {
+              "bin_lower": 0.5,
+              "bin_upper": 0.6000000000000001,
+              "count": 1774,
+              "mean_predicted": 0.5712679960547601,
+              "mean_actual": 0.5400225479143179,
+              "abs_error": 0.031245448140442167
+            },
+            {
+              "bin_lower": 0.6000000000000001,
+              "bin_upper": 0.7000000000000001,
+              "count": 196,
+              "mean_predicted": 0.6134071848830398,
+              "mean_actual": 0.47959183673469385,
+              "abs_error": 0.13381534814834595
+            },
+            {
+              "bin_lower": 0.7000000000000001,
+              "bin_upper": 0.8,
+              "count": 9,
+              "mean_predicted": 0.7335956891377767,
+              "mean_actual": 0.6666666666666666,
+              "abs_error": 0.0669290224711101
+            },
+            {
+              "bin_lower": 0.8,
+              "bin_upper": 0.9,
+              "count": 1,
+              "mean_predicted": 0.8698225021362305,
+              "mean_actual": 0.0,
+              "abs_error": 0.8698225021362305
+            }
+          ]
+        }
+      ],
+      "gaussian": [
+        {
+          "target_name": "total_runs",
+          "n_samples": 2061,
+          "mae": 33.84487423672368,
+          "rmse": 38.29925298263571,
+          "mean_nll": 72324.62314602699,
+          "coverage_50": 0.0732654051431344,
+          "coverage_90": 0.15477923338185348,
+          "mean_sigma": 0.9311910926254555,
+          "crps": 33.55585049047857
+        },
+        {
+          "target_name": "home_run_diff",
+          "n_samples": 2061,
+          "mae": 4.311557721361077,
+          "rmse": 5.5776385291459984,
+          "mean_nll": 1245.10506097467,
+          "coverage_50": 0.09606986899563319,
+          "coverage_90": 0.17855409995147986,
+          "mean_sigma": 0.8150489786508764,
+          "crps": 4.066484683715005
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "binary": {
+      "home_win": {
+        "n_samples": 18694,
+        "mean_brier": 0.2732404532065778,
+        "mean_log_loss": 0.7486165510097469,
+        "mean_auc": 0.5399480702443534,
+        "mean_accuracy": 0.5269070289932599,
+        "mean_ece": 0.14577903392573943
+      },
+      "yrfi": {
+        "n_samples": 18694,
+        "mean_brier": 0.2545178282890651,
+        "mean_log_loss": 0.7025563733962702,
+        "mean_auc": 0.5067658390196416,
+        "mean_accuracy": 0.5154595057237616,
+        "mean_ece": 0.06009581992750413
+      }
+    },
+    "gaussian": {
+      "total_runs": {
+        "n_samples": 18694,
+        "mean_mae": 28.634479937849164,
+        "mean_rmse": 31.806102897431657,
+        "mean_nll": 62829.16915002963,
+        "mean_coverage_50": 0.18385578260404406,
+        "mean_coverage_90": 0.3408580293142185,
+        "mean_crps": 28.1735235476767
+      },
+      "home_run_diff": {
+        "n_samples": 18694,
+        "mean_mae": 3.9450528631876582,
+        "mean_rmse": 5.039433313729226,
+        "mean_nll": 877.1066592880478,
+        "mean_coverage_50": 0.20396918797475125,
+        "mean_coverage_90": 0.34995185621054886,
+        "mean_crps": 3.5489092095992247
+      }
+    }
+  }
+}
