@@ -71,13 +71,6 @@ def main() -> None:
     eda.add_argument("--features-only", action="store_true", help="Skip target column analysis")
     eda.set_defaults(func=_cmd_run_eda)
 
-    raw_eda = sub.add_parser("run-raw-eda", help="Run EDA directly on raw PITCHES table (Workflow 1)")
-    raw_eda.add_argument("--source", required=True, help="S3 or local path to raw data")
-    raw_eda.add_argument("--output", required=True, help="Output directory for EDA artifacts")
-    raw_eda.add_argument("--season-start", type=int, help="First season to ingest")
-    raw_eda.add_argument("--season-end", type=int, help="Last season to ingest")
-    raw_eda.set_defaults(func=_cmd_run_raw_eda)
-
     args = parser.parse_args()
     args.func(args)
 
@@ -100,18 +93,6 @@ def _cmd_run_eda(args) -> None:
         seasons=args.seasons,
         targets_only=args.targets_only,
         features_only=args.features_only,
-    )
-    print(json.dumps(outputs, indent=2))
-
-
-def _cmd_run_raw_eda(args) -> None:
-    from .raw_eda import run_raw_eda
-
-    seasons = season_range(args.season_start, args.season_end)
-    outputs = run_raw_eda(
-        source_uri=args.source,
-        output_dir=args.output,
-        seasons=seasons,
     )
     print(json.dumps(outputs, indent=2))
 
