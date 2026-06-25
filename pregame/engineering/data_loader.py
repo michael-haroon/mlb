@@ -87,7 +87,7 @@ def load_pitches_metadata(
     This avoids loading the full 170-column pitches table when we only need
     game metadata (venue, weather, teams, probable pitchers).
     """
-    from live.mlb_dl.feature_store import PITCH_META_COLUMNS
+    from .constants import PITCH_META_COLUMNS
 
     seasons = season_range(season_start, season_end)
     catalog = ParquetCatalog(source)

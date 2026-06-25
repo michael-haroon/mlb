@@ -13,12 +13,13 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "live"))
-from mlb_dl.feature_store import (
+from mlb_dl.targets import build_game_targets
+
+from .constants import (
     BATTING_SUM_COLUMNS,
     MLB_REGIME_CHANGES,
     PITCHING_SUM_COLUMNS,
 )
-from mlb_dl.targets import build_game_targets
 
 log = logging.getLogger(__name__)
 
