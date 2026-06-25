@@ -118,3 +118,18 @@ PITCHING_SUM_COLUMNS = [
     "game_strikes_looking",
     "game_strikes_swinging",
 ]
+
+# Per-table column allowlists for S3 pushdown in load_all().
+# Only columns actually consumed by the feature engineering pipeline are listed;
+# everything else stays on disk.
+LINESCORE_COLUMNS = ["game_pk", "season", "inning", "home_runs", "away_runs"]
+
+BOXSCORE_BATTING_COLUMNS = ["game_pk", "side"] + BATTING_SUM_COLUMNS
+
+BOXSCORE_PITCHING_COLUMNS = (
+    ["game_pk", "side", "is_starter", "player_id"]
+    + PITCHING_SUM_COLUMNS
+    + ["season_era", "season_whip"]
+)
+
+PLAYERS_COLUMNS = ["player_id", "pitch_hand_code"]

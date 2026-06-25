@@ -14,6 +14,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "live"))
 from mlb_dl.data_sources import ParquetCatalog, season_range
+from .constants import (
+    BOXSCORE_BATTING_COLUMNS,
+    BOXSCORE_PITCHING_COLUMNS,
+    LINESCORE_COLUMNS,
+    PITCH_META_COLUMNS,
+    PLAYERS_COLUMNS,
+)
 
 LOG_DIR = Path("data/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -32,13 +39,13 @@ _sh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s", da
 log.addHandler(_sh)
 
 
-REQUIRED_TABLES = [
-    "boxscore_batting",
-    "boxscore_pitching",
-    "linescore",
-    "pitches",
-    "players",
-]
+_TABLE_CONFIG: dict[str, dict] = {
+    "boxscore_batting": {"columns": BOXSCORE_BATTING_COLUMNS, "season_agnostic": False},
+    "boxscore_pitching": {"columns": BOXSCORE_PITCHING_COLUMNS, "season_agnostic": False},
+    "linescore": {"columns": LINESCORE_COLUMNS, "season_agnostic": False},
+    "pitches": {"columns": PITCH_META_COLUMNS, "season_agnostic": False},
+    "players": {"columns": PLAYERS_COLUMNS, "season_agnostic": True},
+}
 
 
 def load_all(
@@ -66,34 +73,11 @@ def load_all(
     catalog = ParquetCatalog(source)
 
     data: dict[str, pd.DataFrame] = {}
-    for table in REQUIRED_TABLES:
+    for table, cfg in _TABLE_CONFIG.items():
         log.info(f"Loading {table} for seasons {seasons[0]}–{seasons[-1]}...")
-        # Players table is season-agnostic
-        table_seasons = None if table == "players" else seasons
-        df = catalog.read_table(table, seasons=table_seasons)
+        table_seasons = None if cfg["season_agnostic"] else seasons
+        df = catalog.read_table(table, columns=cfg["columns"], seasons=table_seasons)
         log.info(f"  {table}: {len(df):,} rows, {len(df.columns)} columns")
         data[table] = df
 
     return data
-
-
-def load_pitches_metadata(
-    source: str,
-    season_start: int,
-    season_end: Optional[int] = None,
-) -> pd.DataFrame:
-    """Load only game-level metadata columns from the pitches table.
-
-    This avoids loading the full 170-column pitches table when we only need
-    game metadata (venue, weather, teams, probable pitchers).
-    """
-    from .constants import PITCH_META_COLUMNS
-
-    seasons = season_range(season_start, season_end)
-    catalog = ParquetCatalog(source)
-
-    df = catalog.read_table("pitches", columns=PITCH_META_COLUMNS, seasons=seasons)
-    # Deduplicate to one row per game (pitches has one row per pitch)
-    game_meta = df.drop_duplicates("game_pk").reset_index(drop=True)
-    log.info(f"Game metadata: {len(game_meta):,} games")
-    return game_meta
