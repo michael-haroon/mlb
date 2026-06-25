@@ -1,4 +1,4 @@
-In addiciont to 1d CNN, Transformers, and LSTM, let's try the following
+In addition to 1d CNN, Transformers, and LSTM, let's try the following
 
 ---
 
