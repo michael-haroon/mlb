@@ -32,8 +32,10 @@ def main() -> None:
 
     # --- Build Features ---
     build_parser = subparsers.add_parser("build-features", help="Engineer features")
-    build_parser.add_argument("--source", required=True, help="S3 URI or local path to raw data")
-    build_parser.add_argument("--output", required=True, help="Output directory for artifacts")
+    build_parser.add_argument("--source", help="S3 URI or local path to raw data",
+                              default="s3://mlb-265753586044-us-east-1-an/data")
+    build_parser.add_argument("--output", help="Output directory for artifacts",
+                              default="pregame/artificats")
     build_parser.add_argument("--season-start", type=int, default=2015)
     build_parser.add_argument("--season-end", type=int, default=None)
     build_parser.add_argument("--tune-ratings", action="store_true", default=True,
@@ -48,14 +50,14 @@ def main() -> None:
     imp_parser = subparsers.add_parser("run-importance", help="Feature importance analysis")
     imp_parser.add_argument("--features", required=True, help="Path to game_features.parquet")
     imp_parser.add_argument("--output", required=True)
-    imp_parser.add_argument("--target", required=True)
+    imp_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
     imp_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
 
     # --- Train ---
     train_parser = subparsers.add_parser("train", help="LOYO CV training with Optuna")
     train_parser.add_argument("--features", required=True, help="Path to game_features.parquet")
     train_parser.add_argument("--output", required=True)
-    train_parser.add_argument("--target", required=True)
+    train_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
     train_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
     train_parser.add_argument("--families", nargs="*", default=None,
                               help="Model families to train (default: all)")
@@ -66,13 +68,13 @@ def main() -> None:
     eval_parser = subparsers.add_parser("evaluate", help="Evaluation and diagnostics")
     eval_parser.add_argument("--models", required=True, help="Path to models directory")
     eval_parser.add_argument("--output", required=True)
-    eval_parser.add_argument("--target", required=True)
+    eval_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
 
     # --- Predict ---
     pred_parser = subparsers.add_parser("predict", help="Inference on new features")
     pred_parser.add_argument("--ensemble", required=True, help="Path to ensemble .pkl")
     pred_parser.add_argument("--features", required=True, help="Path to features parquet/csv")
-    pred_parser.add_argument("--target", required=True)
+    pred_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
 
     args = parser.parse_args()
 
@@ -124,66 +126,73 @@ def _run_build_features(args):
 
 def _run_importance(args):
     from .analysis.run import run_importance_analysis
+    from .strategy.config import ALL_TARGETS
 
-    result = run_importance_analysis(
-        features_path=Path(args.features),
-        output_dir=Path(args.output),
-        target=args.target,
-        data_mode=args.data_mode,
-    )
-    print(json.dumps(result, indent=2))
+    targets = [args.target] if args.target else ALL_TARGETS
+    results = {}
+    for target in targets:
+        results[target] = run_importance_analysis(
+            features_path=Path(args.features),
+            output_dir=Path(args.output),
+            target=target,
+            data_mode=args.data_mode,
+        )
+    print(json.dumps(results, indent=2))
 
 
 def _run_train(args):
+    from .strategy.config import ALL_TARGETS
     from .strategy.train import train_target
 
-    result = train_target(
-        features_path=Path(args.features),
-        target=args.target,
-        output_dir=Path(args.output),
-        data_mode=args.data_mode,
-        families=args.families,
-        n_trials=args.n_trials,
-        tier=args.tier,
-    )
-    print(json.dumps({k: v.get("status", "unknown") for k, v in result.items()}, indent=2))
+    targets = [args.target] if args.target else ALL_TARGETS
+    all_results = {}
+    for target in targets:
+        result = train_target(
+            features_path=Path(args.features),
+            target=target,
+            output_dir=Path(args.output),
+            data_mode=args.data_mode,
+            families=args.families,
+            n_trials=args.n_trials,
+            tier=args.tier,
+        )
+        all_results[target] = {k: v.get("status", "unknown") for k, v in result.items()}
+    print(json.dumps(all_results, indent=2))
 
 
 def _run_evaluate(args):
+    import numpy as np
+    import pandas as pd
+
+    from .strategy.config import ALL_TARGETS, TARGETS_CLASSIFICATION
     from .strategy.distributions import fit_best_distribution, generate_qq_plots
     from .strategy.evaluate import calibration_curve_data
-
-    import numpy as np
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     models_dir = Path(args.models)
 
-    # Load OOF predictions
-    oof_files = list(models_dir.glob(f"oof_{args.target}_*.npy"))
-    if not oof_files:
-        print(f"No OOF files found for target {args.target} in {models_dir}")
-        sys.exit(1)
-
-    # Load features to get y_true
+    targets = [args.target] if args.target else ALL_TARGETS
     features_path = models_dir.parent / "features" / "game_features.parquet"
-    if features_path.exists():
-        import pandas as pd
-        df = pd.read_parquet(features_path)
-        if args.target in df.columns:
-            y_true = df[args.target].dropna().values
+    df = pd.read_parquet(features_path) if features_path.exists() else None
 
-            # Generate QQ plots for regression targets
-            from ..strategy.config import TARGETS_CLASSIFICATION
-            if args.target not in TARGETS_CLASSIFICATION:
+    for target in targets:
+        oof_files = list(models_dir.glob(f"oof_{target}_*.npy"))
+        if not oof_files:
+            print(f"No OOF files found for target {target} in {models_dir}, skipping")
+            continue
+
+        if df is not None and target in df.columns:
+            y_true = df[target].dropna().values
+            if target not in TARGETS_CLASSIFICATION:
                 for oof_file in oof_files:
                     oof = np.load(oof_file)
                     valid = ~np.isnan(oof) & ~np.isnan(y_true[:len(oof)])
                     if valid.sum() > 30:
                         residuals = y_true[:len(oof)][valid] - oof[valid]
-                        generate_qq_plots(residuals, output_dir, args.target)
+                        generate_qq_plots(residuals, output_dir, target)
                         fit_result = fit_best_distribution(residuals)
-                        print(json.dumps(fit_result, indent=2, default=str))
+                        print(json.dumps({target: fit_result}, indent=2, default=str))
 
     print(f"Evaluation artifacts written to: {output_dir}")
 
@@ -191,11 +200,15 @@ def _run_evaluate(args):
 def _run_predict(args):
     import pandas as pd
 
+    from .strategy.config import ALL_TARGETS
     from .strategy.predict import predict_game
 
     features = pd.read_parquet(args.features)
-    result = predict_game(features, Path(args.ensemble), args.target)
-    print(json.dumps(result, indent=2, default=str))
+    targets = [args.target] if args.target else ALL_TARGETS
+    all_results = {}
+    for target in targets:
+        all_results[target] = predict_game(features, Path(args.ensemble), target)
+    print(json.dumps(all_results, indent=2, default=str))
 
 
 if __name__ == "__main__":
