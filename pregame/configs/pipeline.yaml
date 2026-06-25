@@ -1,0 +1,61 @@
+# MLB Pregame Pipeline Configuration
+# All model hyperparameters are Optuna-tuned; this file contains structural config only.
+
+data:
+  raw_source: "s3://mlb-265753586044-us-east-1-an/data"
+  feature_store_source: "s3://mlb-265753586044-us-east-1-an/ec2/feature_store/deep_learning/artifacts/feature_store"
+  artifacts_dir: "pregame/artifacts"
+
+seasons:
+  all_mode_start: 2008
+  modern_mode_start: 2015
+  current_end: 2026
+
+targets:
+  classification:
+    - home_win
+    - yrfi
+    - first_5_home_win
+    - extra_innings
+  regression:
+    - home_run_diff
+    - total_runs
+    - home_runs
+    - away_runs
+    - first_5_home_run_diff
+    - first_5_total_runs
+
+optuna:
+  n_trials: 100
+  inner_cv_splits: 3
+  sampler: TPESampler
+  pruner: MedianPruner
+  pruner_startup_trials: 10
+  seed: 42
+
+ensemble:
+  max_size: 50
+  max_correlation: 0.95
+  metric_tolerance: 1.20
+
+evaluation:
+  ece_n_bins: 15
+  calibration_curve_bins: 10
+
+# Regime changes (from live/mlb_dl/feature_store.py)
+regime_changes:
+  rule_3batter_minimum: "2020-01-01"
+  rule_universal_dh: "2022-01-01"
+  rule_shift_ban_pitch_clock: "2023-01-01"
+
+# Data availability tiers
+tiers:
+  A:
+    min_season: 2015
+    description: "Full Statcast features"
+  B:
+    min_season: 2008
+    description: "PITCHf/x only, no Statcast"
+  C:
+    min_season: null
+    description: "Game-level aggregates only (stability anchor)"

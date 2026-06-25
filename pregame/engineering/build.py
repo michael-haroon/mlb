@@ -1,0 +1,123 @@
+"""Orchestrator: raw S3/local data → engineered game_features.parquet.
+
+This is the entry point for the feature engineering pipeline. It loads raw
+data, builds the game frame, computes ratings (with Optuna-tuned parameters),
+engineers features, and writes the final artifact.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+
+import pandas as pd
+
+from .data_loader import load_all
+from .feature_engineering import engineer_features
+from .ratings import attach_all_ratings
+from .ratings_tuning import tune_all_ratings
+
+log = logging.getLogger(__name__)
+
+
+def build_features(
+    source: str,
+    output: Path,
+    season_start: int,
+    season_end: int | None = None,
+    tune_ratings: bool = True,
+    n_trials: int = 100,
+    ratings_params: dict | None = None,
+) -> Path:
+    """Build the full feature set from raw data.
+
+    Parameters
+    ----------
+    source : str
+        S3 URI or local path to raw data.
+    output : Path
+        Directory to write game_features.parquet and metadata.
+    season_start : int
+        First season (inclusive).
+    season_end : int, optional
+        Last season (inclusive).
+    tune_ratings : bool
+        If True, run Optuna HPO on rating parameters before computing them.
+    n_trials : int
+        Optuna trials per rating system (ignored if tune_ratings=False).
+    ratings_params : dict, optional
+        Pre-tuned rating parameters. If provided, skips tuning.
+
+    Returns
+    -------
+    Path
+        Path to the written game_features.parquet.
+    """
+    from .game_builder import build_game_frame
+
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+
+    t0 = time.time()
+
+    # --- Step 1: Load raw data ---
+    log.info(f"Loading raw data from {source} (seasons {season_start}–{season_end})...")
+    raw = load_all(source, season_start, season_end)
+
+    # --- Step 2: Build game frame (1 row per game) ---
+    log.info("Building game frame...")
+    games = build_game_frame(raw)
+
+    # --- Step 3: Tune rating parameters (or use provided) ---
+    if ratings_params is not None:
+        params = ratings_params
+        log.info("Using provided rating parameters (skipping Optuna tuning)")
+    elif tune_ratings:
+        log.info(f"Tuning rating system parameters ({n_trials} trials)...")
+        params = tune_all_ratings(games, n_trials=n_trials)
+        # Persist tuned params
+        params_path = output / "ratings_params.json"
+        with open(params_path, "w") as f:
+            json.dump(params, f, indent=2)
+        log.info(f"Saved tuned params to {params_path}")
+    else:
+        from .ratings import DEFAULT_PARAMS
+        params = DEFAULT_PARAMS
+        log.info("Using default (literature) rating parameters (tuning disabled)")
+
+    # --- Step 4: Compute ratings ---
+    log.info("Computing ratings...")
+    games = attach_all_ratings(games, params=params)
+
+    # --- Step 5: Feature engineering ---
+    log.info("Engineering features...")
+    games = engineer_features(games)
+
+    # --- Step 6: Clean up temporary columns ---
+    temp_cols = [c for c in games.columns if c.startswith("_")]
+    if temp_cols:
+        games.drop(columns=temp_cols, inplace=True)
+
+    # --- Step 7: Write artifact ---
+    out_path = output / "game_features.parquet"
+    games.to_parquet(out_path, index=False, engine="pyarrow")
+
+    elapsed = time.time() - t0
+    log.info(f"Written {out_path}: {len(games):,} games × {len(games.columns)} features ({elapsed:.1f}s)")
+
+    # Write manifest
+    manifest = {
+        "source": source,
+        "season_start": season_start,
+        "season_end": season_end,
+        "n_games": len(games),
+        "n_features": len(games.columns),
+        "ratings_tuned": tune_ratings or ratings_params is not None,
+        "elapsed_secs": round(elapsed, 1),
+    }
+    with open(output / "manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    return out_path

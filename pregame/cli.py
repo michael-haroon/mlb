@@ -1,38 +1,201 @@
 #!/usr/bin/env python3
-"""Standalone CLI for raw EDA analysis."""
+"""CLI for the MLB pregame prediction pipeline.
+
+Subcommands:
+  eda             — Run raw EDA on S3/local data
+  build-features  — Engineer features → game_features.parquet
+  run-importance  — Feature importance analysis (De Prado methods)
+  train           — LOYO CV training with Optuna HPO
+  evaluate        — Evaluation metrics, QQ plots, calibration diagnostics
+  predict         — Inference on new game features
+"""
 
 import argparse
 import json
+import sys
 from pathlib import Path
-
-from .raw_eda import run_raw_eda
-
-
-def season_range(start, end):
-    """Return list of seasons from start to end (inclusive)."""
-    if start is None:
-        start = 2015
-    if end is None:
-        end = 2026
-    return list(range(start, end + 1))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MLB raw data EDA (classical ML analysis)")
-    parser.add_argument("--source", required=True, help="S3 or local path to raw data")
-    parser.add_argument("--output", required=True, help="Output directory for EDA artifacts")
-    parser.add_argument("--season-start", type=int, help="First season to ingest (default: 2015)")
-    parser.add_argument("--season-end", type=int, help="Last season to ingest (default: 2026)")
+    parser = argparse.ArgumentParser(
+        description="MLB pregame prediction pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Pipeline stage")
+
+    # --- EDA (existing) ---
+    eda_parser = subparsers.add_parser("eda", help="Raw EDA analysis")
+    eda_parser.add_argument("--source", required=True)
+    eda_parser.add_argument("--output", required=True)
+    eda_parser.add_argument("--season-start", type=int, default=2015)
+    eda_parser.add_argument("--season-end", type=int, default=2026)
+
+    # --- Build Features ---
+    build_parser = subparsers.add_parser("build-features", help="Engineer features")
+    build_parser.add_argument("--source", required=True, help="S3 URI or local path to raw data")
+    build_parser.add_argument("--output", required=True, help="Output directory for artifacts")
+    build_parser.add_argument("--season-start", type=int, default=2015)
+    build_parser.add_argument("--season-end", type=int, default=None)
+    build_parser.add_argument("--tune-ratings", action="store_true", default=True,
+                              help="Run Optuna HPO on rating system parameters")
+    build_parser.add_argument("--no-tune-ratings", action="store_false", dest="tune_ratings")
+    build_parser.add_argument("--n-trials", type=int, default=100,
+                              help="Optuna trials per rating system")
+    build_parser.add_argument("--ratings-params", type=str, default=None,
+                              help="Path to pre-tuned ratings_params.json")
+
+    # --- Feature Importance ---
+    imp_parser = subparsers.add_parser("run-importance", help="Feature importance analysis")
+    imp_parser.add_argument("--features", required=True, help="Path to game_features.parquet")
+    imp_parser.add_argument("--output", required=True)
+    imp_parser.add_argument("--target", required=True)
+    imp_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
+
+    # --- Train ---
+    train_parser = subparsers.add_parser("train", help="LOYO CV training with Optuna")
+    train_parser.add_argument("--features", required=True, help="Path to game_features.parquet")
+    train_parser.add_argument("--output", required=True)
+    train_parser.add_argument("--target", required=True)
+    train_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
+    train_parser.add_argument("--families", nargs="*", default=None,
+                              help="Model families to train (default: all)")
+    train_parser.add_argument("--n-trials", type=int, default=100)
+    train_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
+
+    # --- Evaluate ---
+    eval_parser = subparsers.add_parser("evaluate", help="Evaluation and diagnostics")
+    eval_parser.add_argument("--models", required=True, help="Path to models directory")
+    eval_parser.add_argument("--output", required=True)
+    eval_parser.add_argument("--target", required=True)
+
+    # --- Predict ---
+    pred_parser = subparsers.add_parser("predict", help="Inference on new features")
+    pred_parser.add_argument("--ensemble", required=True, help="Path to ensemble .pkl")
+    pred_parser.add_argument("--features", required=True, help="Path to features parquet/csv")
+    pred_parser.add_argument("--target", required=True)
 
     args = parser.parse_args()
 
-    seasons = season_range(args.season_start, args.season_end)
-    outputs = run_raw_eda(
-        source_uri=args.source,
-        output_dir=args.output,
-        seasons=seasons,
-    )
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.command == "eda":
+        _run_eda(args)
+    elif args.command == "build-features":
+        _run_build_features(args)
+    elif args.command == "run-importance":
+        _run_importance(args)
+    elif args.command == "train":
+        _run_train(args)
+    elif args.command == "evaluate":
+        _run_evaluate(args)
+    elif args.command == "predict":
+        _run_predict(args)
+
+
+def _run_eda(args):
+    from .raw_eda import run_raw_eda
+
+    seasons = list(range(args.season_start, args.season_end + 1))
+    outputs = run_raw_eda(source_uri=args.source, output_dir=args.output, seasons=seasons)
     print(json.dumps(outputs, indent=2))
+
+
+def _run_build_features(args):
+    from .engineering.build import build_features
+
+    ratings_params = None
+    if args.ratings_params:
+        with open(args.ratings_params) as f:
+            ratings_params = json.load(f)
+
+    out_path = build_features(
+        source=args.source,
+        output=Path(args.output),
+        season_start=args.season_start,
+        season_end=args.season_end,
+        tune_ratings=args.tune_ratings,
+        n_trials=args.n_trials,
+        ratings_params=ratings_params,
+    )
+    print(f"Features written to: {out_path}")
+
+
+def _run_importance(args):
+    from .analysis.run import run_importance_analysis
+
+    result = run_importance_analysis(
+        features_path=Path(args.features),
+        output_dir=Path(args.output),
+        target=args.target,
+        data_mode=args.data_mode,
+    )
+    print(json.dumps(result, indent=2))
+
+
+def _run_train(args):
+    from .strategy.train import train_target
+
+    result = train_target(
+        features_path=Path(args.features),
+        target=args.target,
+        output_dir=Path(args.output),
+        data_mode=args.data_mode,
+        families=args.families,
+        n_trials=args.n_trials,
+        tier=args.tier,
+    )
+    print(json.dumps({k: v.get("status", "unknown") for k, v in result.items()}, indent=2))
+
+
+def _run_evaluate(args):
+    from .strategy.distributions import fit_best_distribution, generate_qq_plots
+    from .strategy.evaluate import calibration_curve_data
+
+    import numpy as np
+
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    models_dir = Path(args.models)
+
+    # Load OOF predictions
+    oof_files = list(models_dir.glob(f"oof_{args.target}_*.npy"))
+    if not oof_files:
+        print(f"No OOF files found for target {args.target} in {models_dir}")
+        sys.exit(1)
+
+    # Load features to get y_true
+    features_path = models_dir.parent / "features" / "game_features.parquet"
+    if features_path.exists():
+        import pandas as pd
+        df = pd.read_parquet(features_path)
+        if args.target in df.columns:
+            y_true = df[args.target].dropna().values
+
+            # Generate QQ plots for regression targets
+            from ..strategy.config import TARGETS_CLASSIFICATION
+            if args.target not in TARGETS_CLASSIFICATION:
+                for oof_file in oof_files:
+                    oof = np.load(oof_file)
+                    valid = ~np.isnan(oof) & ~np.isnan(y_true[:len(oof)])
+                    if valid.sum() > 30:
+                        residuals = y_true[:len(oof)][valid] - oof[valid]
+                        generate_qq_plots(residuals, output_dir, args.target)
+                        fit_result = fit_best_distribution(residuals)
+                        print(json.dumps(fit_result, indent=2, default=str))
+
+    print(f"Evaluation artifacts written to: {output_dir}")
+
+
+def _run_predict(args):
+    import pandas as pd
+
+    from .strategy.predict import predict_game
+
+    features = pd.read_parquet(args.features)
+    result = predict_game(features, Path(args.ensemble), args.target)
+    print(json.dumps(result, indent=2, default=str))
 
 
 if __name__ == "__main__":
