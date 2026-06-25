@@ -187,17 +187,31 @@ def _read_single_parquet_to_arrow(
 
 def _glob_uri(pattern: str, is_s3: bool) -> list[str]:
     if is_s3:
-        try:
-            import fsspec
-        except ImportError as exc:
-            raise RuntimeError(
-                "Reading s3:// feature data requires fsspec/s3fs. "
-                "Install deep_learning/requirements-deep-learning.txt."
-            ) from exc
+        # Use a fresh boto3 client each call rather than the fsspec module-level
+        # cached instance, which enters a bad state after the pyarrow
+        # ThreadPoolExecutor runs hundreds of parallel reads via its own S3
+        # client.  boto3.client() is cheap and this path is called O(tables)
+        # times per run, not O(files).
+        import boto3
+        import fnmatch
 
-        fs = fsspec.filesystem("s3")
         stripped = pattern.removeprefix("s3://")
-        return [f"s3://{path}" for path in fs.glob(stripped)]
+        bucket, _, key_pattern = stripped.partition("/")
+        # All patterns end with "*.parquet"; derive the longest literal prefix
+        # to minimise the paginator scan.
+        prefix = key_pattern.split("*")[0]
+
+        s3 = boto3.client("s3")
+        paginator = s3.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+
+        results = []
+        for page in pages:
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if fnmatch.fnmatch(key, key_pattern):
+                    results.append(f"s3://{bucket}/{key}")
+        return results
 
     return [str(Path(path)) for path in glob.glob(pattern) if Path(path).is_file()]
 
