@@ -64,7 +64,8 @@ def build_game_frame(raw: dict[str, pd.DataFrame]) -> pd.DataFrame:
     sp_away = _extract_starting_pitchers(pitching, "away", players)
 
     # --- Assemble game frame ---
-    games = targets[["game_pk", "season", "game_date"]].copy()
+    # game_date lives in game_meta (from pitches), not in targets (from linescore)
+    games = targets[["game_pk", "season"]].copy()
 
     # Merge all components
     for df in [game_meta, home_bat, away_bat, home_pit, away_pit, sp_home, sp_away]:
@@ -78,9 +79,11 @@ def build_game_frame(raw: dict[str, pd.DataFrame]) -> pd.DataFrame:
     # --- Regime change flags ---
     if "game_date" in games.columns:
         gd = pd.to_datetime(games["game_date"], errors="coerce")
-        for flag_name, cutoff_str in MLB_REGIME_CHANGES.items():
-            cutoff = pd.Timestamp(cutoff_str)
-            games[flag_name] = (gd >= cutoff).astype("float32")
+        flag_cols = {
+            flag_name: (gd >= pd.Timestamp(cutoff_str)).astype("float32")
+            for flag_name, cutoff_str in MLB_REGIME_CHANGES.items()
+        }
+        games = pd.concat([games, pd.DataFrame(flag_cols, index=games.index)], axis=1)
 
     # --- Derived batting stats for BaseRuns inputs ---
     games = _compute_derived_batting(games)
@@ -93,7 +96,7 @@ def build_game_frame(raw: dict[str, pd.DataFrame]) -> pd.DataFrame:
 def _extract_game_metadata(pitches: pd.DataFrame) -> pd.DataFrame:
     """Extract one-row-per-game metadata from pitches table."""
     meta_cols = [
-        "game_pk", "venue_id", "venue_name", "venue_latitude", "venue_longitude",
+        "game_pk", "game_date", "venue_id", "venue_name", "venue_latitude", "venue_longitude",
         "venue_capacity", "venue_roof_type", "weather_condition", "weather_temp",
         "weather_wind", "day_night", "attendance", "home_team_id", "home_team_name",
         "home_team_abbr", "away_team_id", "away_team_name", "away_team_abbr",
@@ -185,35 +188,33 @@ def _compute_derived_batting(games: pd.DataFrame) -> pd.DataFrame:
     Derives: PA, TB, H (hits), BB, HBP, HR, IBB, SB, CS, GDP, SH, SF
     for both home and away sides from the raw box score aggregates.
     """
+    new_cols: dict[str, pd.Series] = {}
     for side in ("home", "away"):
         p = f"{side}_bat_"
 
-        # Plate appearances estimate: AB + BB + HBP + SAC + SF
         ab = games.get(f"{p}game_ab", 0)
         bb = games.get(f"{p}game_bb", 0)
         hbp = games.get(f"{p}game_hbp", 0)
         sac = games.get(f"{p}game_sac", 0)
         sf = games.get(f"{p}game_sf", 0)
-        games[f"{side}_PA"] = ab + bb + hbp + sac + sf
+        new_cols[f"{side}_PA"] = ab + bb + hbp + sac + sf
 
-        # Total bases: singles + 2*doubles + 3*triples + 4*HR
         h = games.get(f"{p}game_hits", 0)
         d = games.get(f"{p}game_doubles", 0)
         t = games.get(f"{p}game_triples", 0)
         hr = games.get(f"{p}game_hr", 0)
         singles = h - d - t - hr
-        games[f"{side}_TB"] = singles + 2 * d + 3 * t + 4 * hr
+        new_cols[f"{side}_TB"] = singles + 2 * d + 3 * t + 4 * hr
 
-        # Alias the core stats with cleaner names for ratings.py
-        games[f"{side}_H"] = h
-        games[f"{side}_BB"] = bb
-        games[f"{side}_HBP"] = hbp
-        games[f"{side}_HR"] = hr
-        games[f"{side}_IBB"] = games.get(f"{p}game_ibb", 0)
-        games[f"{side}_SB"] = games.get(f"{p}game_sb", 0)
-        games[f"{side}_CS"] = games.get(f"{p}game_cs", 0)
-        games[f"{side}_GDP"] = games.get(f"{p}game_gidp", 0)
-        games[f"{side}_SH"] = sac
-        games[f"{side}_SF"] = sf
+        new_cols[f"{side}_H"] = h
+        new_cols[f"{side}_BB"] = bb
+        new_cols[f"{side}_HBP"] = hbp
+        new_cols[f"{side}_HR"] = hr
+        new_cols[f"{side}_IBB"] = games.get(f"{p}game_ibb", 0)
+        new_cols[f"{side}_SB"] = games.get(f"{p}game_sb", 0)
+        new_cols[f"{side}_CS"] = games.get(f"{p}game_cs", 0)
+        new_cols[f"{side}_GDP"] = games.get(f"{p}game_gidp", 0)
+        new_cols[f"{side}_SH"] = sac
+        new_cols[f"{side}_SF"] = sf
 
-    return games
+    return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)

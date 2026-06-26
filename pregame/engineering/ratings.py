@@ -24,8 +24,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from scipy.linalg import solve
-from scipy.optimize import minimize
 
 log = logging.getLogger(__name__)
 
@@ -252,6 +250,13 @@ def compute_srs(
 
     For temporal safety, each game's SRS features use only results from
     prior games within the same season.
+
+    Incremental sliding-window: instead of re-building the schedule matrix
+    from scratch for each game (O(n²) per trial), we maintain running
+    margin_sum/games_per_team/schedule_matrix arrays and add the entering
+    game + subtract the exiting game as the window advances.  This reduces
+    the per-game cost from O(window) to O(1), making the total season cost
+    O(n) matrix additions rather than O(n·window).
     """
     if "season" not in games.columns:
         return games
@@ -272,26 +277,65 @@ def compute_srs(
         team_to_idx = {t: i for i, t in enumerate(sorted(teams))}
         n_teams = len(teams)
 
-        # Compute SRS iteratively for each game (expanding window)
-        ratings_cache = {}
+        # Pre-extract columns as numpy arrays to avoid per-row pandas overhead
+        h_teams = season_games["home_team_id"].values
+        a_teams = season_games["away_team_id"].values
+        if "home_run_diff" in season_games.columns:
+            margins_raw = season_games["home_run_diff"].values
+        elif "home_runs" in season_games.columns and "away_runs" in season_games.columns:
+            margins_raw = (season_games["home_runs"].values
+                           - season_games["away_runs"].values)
+        else:
+            continue
+
+        # Convert teams to integer indices (-1 = unknown)
+        h_idx_arr = np.array([team_to_idx.get(t, -1) for t in h_teams])
+        a_idx_arr = np.array([team_to_idx.get(t, -1) for t in a_teams])
+        margins_arr = np.where(
+            pd.isna(margins_raw), np.nan, margins_raw.astype(float)
+        )
+
+        # Sliding-window state (starts empty, adding one game at a time)
+        games_per_team = np.zeros(n_teams)
+        margin_sum = np.zeros(n_teams)
+        schedule_matrix = np.zeros((n_teams, n_teams))
+
+        def _add_game(pos, sign=1.0):
+            h, a, m = h_idx_arr[pos], a_idx_arr[pos], margins_arr[pos]
+            if h == -1 or a == -1 or np.isnan(m):
+                return
+            games_per_team[h] += sign
+            games_per_team[a] += sign
+            margin_sum[h] += sign * m
+            margin_sum[a] -= sign * m
+            schedule_matrix[h, a] += sign
+            schedule_matrix[a, h] += sign
+
         for pos in range(n_games):
             game_idx = idx[pos]
-            # Use games 0..pos-1 (prior games only)
-            prior = season_games.iloc[max(0, pos - window):pos]
 
-            if len(prior) < 5:
+            # Add game entering the window tail (game at pos-1 just became prior)
+            if pos > 0:
+                _add_game(pos - 1)
+            # Evict game that fell outside the window
+            if pos > window:
+                _add_game(pos - window - 1, sign=-1.0)
+
+            if games_per_team.sum() < 5 or (games_per_team > 0).sum() < 3:
                 continue
 
-            ratings = _solve_srs(prior, team_to_idx, n_teams, tol, max_iter)
-            if ratings is not None:
-                ratings_cache[game_idx] = ratings
-                h_team = season_games.at[game_idx, "home_team_id"]
-                a_team = season_games.at[game_idx, "away_team_id"]
+            ratings = _solve_srs_from_state(
+                games_per_team, margin_sum, schedule_matrix, n_teams, tol, max_iter
+            )
+            if ratings is None:
+                continue
 
-                if h_team in team_to_idx:
-                    srs_home.at[game_idx] = ratings[team_to_idx[h_team]]
-                if a_team in team_to_idx:
-                    srs_away.at[game_idx] = ratings[team_to_idx[a_team]]
+            h_team = h_teams[pos]
+            a_team = a_teams[pos]
+            if h_team in team_to_idx:
+                srs_home.at[game_idx] = ratings[team_to_idx[h_team]]
+            if a_team in team_to_idx:
+                srs_away.at[game_idx] = ratings[team_to_idx[a_team]]
 
     games["home_srs"] = srs_home
     games["away_srs"] = srs_away
@@ -299,48 +343,15 @@ def compute_srs(
     return games
 
 
-def _solve_srs(
-    prior_games: pd.DataFrame,
-    team_to_idx: dict,
+def _solve_srs_from_state(
+    games_per_team: np.ndarray,
+    margin_sum: np.ndarray,
+    schedule_matrix: np.ndarray,
     n_teams: int,
     tol: float,
     max_iter: int,
 ) -> Optional[np.ndarray]:
-    """Solve SRS via iterative method: r = y + S*r, mean-centered."""
-    n = len(prior_games)
-    if n < 5:
-        return None
-
-    # Build schedule matrix and margin vector
-    games_per_team = np.zeros(n_teams)
-    margin_sum = np.zeros(n_teams)
-    schedule_matrix = np.zeros((n_teams, n_teams))
-
-    for _, row in prior_games.iterrows():
-        h = row.get("home_team_id")
-        a = row.get("away_team_id")
-        if h not in team_to_idx or a not in team_to_idx:
-            continue
-
-        h_idx = team_to_idx[h]
-        a_idx = team_to_idx[a]
-
-        # Use run differential from targets or raw runs
-        if "home_run_diff" in row.index and pd.notna(row["home_run_diff"]):
-            margin = float(row["home_run_diff"])
-        elif "home_runs" in row.index and "away_runs" in row.index:
-            margin = float(row.get("home_runs", 0)) - float(row.get("away_runs", 0))
-        else:
-            continue
-
-        games_per_team[h_idx] += 1
-        games_per_team[a_idx] += 1
-        margin_sum[h_idx] += margin
-        margin_sum[a_idx] -= margin
-        schedule_matrix[h_idx, a_idx] += 1
-        schedule_matrix[a_idx, h_idx] += 1
-
-    # Average margin per game
+    """Solve SRS given pre-accumulated state arrays (no iterrows rebuild)."""
     valid = games_per_team > 0
     if valid.sum() < 3:
         return None
@@ -348,13 +359,12 @@ def _solve_srs(
     avg_margin = np.zeros(n_teams)
     avg_margin[valid] = margin_sum[valid] / games_per_team[valid]
 
-    # Normalize schedule matrix to proportions
+    # Normalised schedule proportions — vectorised row division
     S = np.zeros((n_teams, n_teams))
-    for i in range(n_teams):
-        if games_per_team[i] > 0:
-            S[i] = schedule_matrix[i] / games_per_team[i]
+    row_counts = games_per_team[:, None]
+    nonzero = games_per_team > 0
+    S[nonzero] = schedule_matrix[nonzero] / row_counts[nonzero]
 
-    # Iterative solution: r_{k+1} = avg_margin + S @ r_k, then center
     r = avg_margin.copy()
     for _ in range(max_iter):
         r_new = avg_margin + S @ r
@@ -549,7 +559,7 @@ def compute_wolfe(
                 wolfe_home.at[game_idx] = h_r
                 wolfe_away.at[game_idx] = a_r
                 # BT probability
-                prob = 1.0 / (1.0 + np.exp(-(h_r - a_r)))
+                prob = 1.0 / (1.0 + np.exp(-np.clip(h_r - a_r, -500, 500)))
                 wolfe_prob.at[game_idx] = prob
 
     games["home_wolfe"] = wolfe_home
@@ -566,78 +576,100 @@ def _fit_bradley_terry(
     decay_lambda: float,
     halving_threshold: float,
 ) -> Optional[np.ndarray]:
-    """Fit Bradley-Terry model via MLE with recency weighting."""
+    """Fit Bradley-Terry model via MM algorithm with recency weighting.
+
+    The Minorization-Maximization (Hunter 2004) update is:
+        p_i^{(t+1)} = W_i / Σ_j (W_ij + W_ji) / (p_i^(t) + p_j^(t))
+    where p_i are strength parameters (not log-strengths) and W_ij is the
+    weighted win count of i over j.  Each iteration is a single vectorised
+    division — no scipy optimizer, no finite-difference gradient evaluation.
+    Convergence: typically 30-80 iterations vs L-BFGS-B's 200 function evals
+    each of which previously ran an O(n_teams²) Python double-loop.
+
+    Reference: Hunter (2004), "MM algorithms for generalized Bradley-Terry
+    models", Annals of Statistics 32(1), pp. 384-406.
+    """
     if len(prior_games) < 10:
         return None
 
-    # Build weighted wins matrix
-    W = np.zeros((n_teams, n_teams))
-    max_idx = len(prior_games) - 1
+    # Build weighted wins matrix using vectorised numpy operations
+    h_ids = prior_games["home_team_id"].values
+    a_ids = prior_games["away_team_id"].values
+    rds = prior_games["home_run_diff"].values if "home_run_diff" in prior_games.columns else None
 
-    for pos, (_, row) in enumerate(prior_games.iterrows()):
-        h = row.get("home_team_id")
-        a = row.get("away_team_id")
-        rd = row.get("home_run_diff")
+    if rds is None:
+        return None
+
+    n = len(prior_games)
+    max_idx = n - 1
+
+    # Recency weights: exp(-λ * games_ago), computed once as a vector
+    games_ago = np.arange(n - 1, -1, -1, dtype=float)  # [n-1, n-2, ..., 0]
+    decay_weights = np.exp(-decay_lambda * games_ago)
+
+    W = np.zeros((n_teams, n_teams))
+
+    for pos in range(n):
+        h = h_ids[pos]
+        a = a_ids[pos]
+        rd = rds[pos]
 
         if pd.isna(h) or pd.isna(a) or pd.isna(rd):
             continue
-
-        h = int(h)
-        a = int(a)
+        h, a = int(h), int(a)
         if h not in team_to_idx or a not in team_to_idx:
             continue
 
         h_idx = team_to_idx[h]
         a_idx = team_to_idx[a]
+        rd_f = float(rd)
 
-        # Recency weight: exponential decay by games elapsed
-        games_ago = max_idx - pos
-        weight = np.exp(-decay_lambda * games_ago)
-
-        # Score-based weight with halving function for blowouts
-        abs_diff = abs(float(rd))
+        abs_diff = abs(rd_f)
         if abs_diff > halving_threshold:
             score_weight = halving_threshold + (abs_diff - halving_threshold) * 0.5
         else:
             score_weight = abs_diff
-        # Normalize score weight to [0.5, 2.0] range
         score_mult = 0.5 + min(score_weight / halving_threshold, 1.5)
 
-        combined_weight = weight * score_mult
+        w = decay_weights[pos] * score_mult
 
-        if rd > 0:
-            W[h_idx, a_idx] += combined_weight
-        elif rd < 0:
-            W[a_idx, h_idx] += combined_weight
+        if rd_f > 0:
+            W[h_idx, a_idx] += w
+        elif rd_f < 0:
+            W[a_idx, h_idx] += w
         else:
-            W[h_idx, a_idx] += combined_weight * 0.5
-            W[a_idx, h_idx] += combined_weight * 0.5
+            W[h_idx, a_idx] += w * 0.5
+            W[a_idx, h_idx] += w * 0.5
 
-    # MLE: minimize negative log-likelihood
-    def neg_ll(theta):
-        full_theta = np.zeros(n_teams)
-        full_theta[1:] = theta
-        nll = 0.0
-        for i in range(n_teams):
-            for j in range(n_teams):
-                if W[i, j] > 0:
-                    diff = full_theta[i] - full_theta[j]
-                    # Numerically stable log-sigmoid
-                    if diff > 0:
-                        nll -= W[i, j] * (diff - np.log(1 + np.exp(diff)))
-                    else:
-                        nll -= W[i, j] * (-np.log(1 + np.exp(-diff)))
-        return nll
+    # MM iterations — each step is fully vectorised
+    # p_i^{new} = W_i / sum_j (W_ij+W_ji)/(p_i+p_j)
+    # Work in strength space (p > 0), convert to log-ratings at the end.
+    p = np.ones(n_teams)
+    W_total = W + W.T  # symmetric total-games matrix
 
-    try:
-        result = minimize(neg_ll, np.zeros(n_teams - 1), method="L-BFGS-B",
-                          options={"maxiter": 200, "ftol": 1e-8})
-        ratings = np.zeros(n_teams)
-        ratings[1:] = result.x
-        ratings -= ratings.mean()
-        return ratings.astype("float32")
-    except Exception:
-        return None
+    wins = W.sum(axis=1)  # W_i = total weighted wins for team i (constant across iters)
+    for _ in range(100):
+        # Denominator: sum_j W_total[i,j] / (p[i] + p[j])  for each i.
+        # Guard against 0/0 on diagonal entries where W_total[i,i]=0 but
+        # p[i]+p[i] could be 0 for a winless team; add eps to avoid the warning.
+        pair_sum = p[:, None] + p[None, :] + 1e-300
+        denom = (W_total / pair_sum).sum(axis=1)
+
+        new_p = p.copy()
+        mask = denom > 0
+        new_p[mask] = wins[mask] / denom[mask]
+        # Normalise so mean(p) = 1 (equivalent to mean-centring log-p)
+        new_p /= new_p.mean()
+
+        if np.max(np.abs(new_p - p)) < 1e-8:
+            p = new_p
+            break
+        p = new_p
+
+    # Convert to log-ratings (mean-centred) for consistency with Elo/SRS scale
+    ratings = np.log(np.clip(p, 1e-10, None))
+    ratings -= ratings.mean()
+    return ratings.astype("float32")
 
 
 # ---------------------------------------------------------------------------

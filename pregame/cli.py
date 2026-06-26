@@ -35,7 +35,7 @@ def main() -> None:
     build_parser.add_argument("--source", help="S3 URI or local path to raw data",
                               default="s3://mlb-265753586044-us-east-1-an/data")
     build_parser.add_argument("--output", help="Output directory for artifacts",
-                              default="pregame/artificats")
+                              default="pregame/artifacts")
     build_parser.add_argument("--season-start", type=int, default=2015)
     build_parser.add_argument("--season-end", type=int, default=None)
     build_parser.add_argument("--tune-ratings", action="store_true", default=True,

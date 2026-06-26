@@ -62,23 +62,37 @@ def build_features(
 
     t0 = time.time()
 
-    # --- Step 1: Load raw data ---
-    log.info(f"Loading raw data from {source} (seasons {season_start}–{season_end})...")
-    raw = load_all(source, season_start, season_end)
+    # Checkpoint paths — each step writes its result so a re-run resumes from
+    # the last completed step rather than starting over.
+    ckpt_games_raw   = output / "_ckpt_games_raw.parquet"
+    ckpt_games_rated = output / "_ckpt_games_rated.parquet"
+    params_path      = output / "ratings_params.json"
 
-    # --- Step 2: Build game frame (1 row per game) ---
-    log.info("Building game frame...")
-    games = build_game_frame(raw)
+    # --- Step 1: Load raw data ---
+    if ckpt_games_raw.exists():
+        log.info(f"Resuming: loading game frame from checkpoint {ckpt_games_raw}")
+        games = pd.read_parquet(ckpt_games_raw)
+    else:
+        log.info(f"Loading raw data from {source} (seasons {season_start}–{season_end})...")
+        raw = load_all(source, season_start, season_end)
+
+        # --- Step 2: Build game frame (1 row per game) ---
+        log.info("Building game frame...")
+        games = build_game_frame(raw)
+        games.to_parquet(ckpt_games_raw, index=False, engine="pyarrow")
+        log.info(f"Checkpoint written: {ckpt_games_raw} ({len(games):,} rows)")
 
     # --- Step 3: Tune rating parameters (or use provided) ---
     if ratings_params is not None:
         params = ratings_params
         log.info("Using provided rating parameters (skipping Optuna tuning)")
+    elif params_path.exists():
+        with open(params_path) as f:
+            params = json.load(f)
+        log.info(f"Resuming: loaded tuned params from {params_path}")
     elif tune_ratings:
         log.info(f"Tuning rating system parameters ({n_trials} trials)...")
         params = tune_all_ratings(games, n_trials=n_trials)
-        # Persist tuned params
-        params_path = output / "ratings_params.json"
         with open(params_path, "w") as f:
             json.dump(params, f, indent=2)
         log.info(f"Saved tuned params to {params_path}")
@@ -88,8 +102,14 @@ def build_features(
         log.info("Using default (literature) rating parameters (tuning disabled)")
 
     # --- Step 4: Compute ratings ---
-    log.info("Computing ratings...")
-    games = attach_all_ratings(games, params=params)
+    if ckpt_games_rated.exists():
+        log.info(f"Resuming: loading rated game frame from checkpoint {ckpt_games_rated}")
+        games = pd.read_parquet(ckpt_games_rated)
+    else:
+        log.info("Computing ratings...")
+        games = attach_all_ratings(games, params=params)
+        games.to_parquet(ckpt_games_rated, index=False, engine="pyarrow")
+        log.info(f"Checkpoint written: {ckpt_games_rated}")
 
     # --- Step 5: Feature engineering ---
     log.info("Engineering features...")
@@ -103,6 +123,12 @@ def build_features(
     # --- Step 7: Write artifact ---
     out_path = output / "game_features.parquet"
     games.to_parquet(out_path, index=False, engine="pyarrow")
+
+    # Clean up checkpoints on success — they're large and no longer needed
+    for ckpt in (ckpt_games_raw, ckpt_games_rated):
+        if ckpt.exists():
+            ckpt.unlink()
+            log.debug(f"Removed checkpoint {ckpt}")
 
     elapsed = time.time() - t0
     log.info(f"Written {out_path}: {len(games):,} games × {len(games.columns)} features ({elapsed:.1f}s)")
