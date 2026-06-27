@@ -289,11 +289,21 @@ def _rest_and_schedule(games: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _park_factors(games: pd.DataFrame) -> pd.DataFrame:
-    """Compute rolling park factor from prior season data at each venue."""
+    """Compute rolling park factor from prior games only.
+
+    Both numerator and denominator use expanding means with shift(1).
+    The previous groupby("season").transform("mean") for league_avg leaked
+    the full season's run scoring into every row, proven via S3: game 1 of
+    2023 had league_avg = 9.55 (full-season mean) on the day it was played.
+    """
     if "venue_id" not in games.columns or "total_runs" not in games.columns:
         return games
 
-    league_avg = games.groupby("season")["total_runs"].transform("mean")
+    # Season-to-date league average excluding the current game.
+    league_avg = (
+        games.groupby("season")["total_runs"]
+        .transform(lambda s: s.expanding(min_periods=5).mean().shift(1))
+    )
     venue_avg = (
         games.groupby("venue_id")["total_runs"]
         .transform(lambda s: s.expanding(min_periods=10).mean().shift(1))
