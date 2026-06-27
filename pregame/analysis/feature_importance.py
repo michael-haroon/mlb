@@ -48,6 +48,37 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  NaN handling — per-fold median fill to prevent temporal leakage
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fill_nan_per_fold(X_vals: np.ndarray, train_idx: np.ndarray,
+                       test_idx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Fill NaN using ONLY the training fold's median (no test data leakage).
+
+    Returns (X_train_filled, X_test_filled) as numpy arrays.
+    """
+    X_tr = X_vals[train_idx].copy()
+    X_te = X_vals[test_idx].copy()
+
+    # nanmedian per column, computed on train only
+    with np.errstate(all="ignore"):
+        medians = np.nanmedian(X_tr, axis=0)
+    # If a column is entirely NaN in train, fill with 0
+    medians = np.where(np.isnan(medians), 0.0, medians)
+
+    # Fill train and test with train-derived medians
+    for col_i in range(X_tr.shape[1]):
+        nan_mask_tr = np.isnan(X_tr[:, col_i])
+        nan_mask_te = np.isnan(X_te[:, col_i])
+        if nan_mask_tr.any():
+            X_tr[nan_mask_tr, col_i] = medians[col_i]
+        if nan_mask_te.any():
+            X_te[nan_mask_te, col_i] = medians[col_i]
+
+    return X_tr, X_te
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Marcenko-Pastur denoising + detoning  (de Prado AFML Ch.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -231,11 +262,27 @@ def _mda_one_fold(clf_params, X_tr_vals, X_te_vals, y_tr_vals, y_te_vals,
                   col_names, w_tr_vals, scoring, seed, all_labels=None):
     """Run one MDA fold: fit model, score base + all permutations.
 
+    X_tr_vals and X_te_vals may contain NaN — filled here using train median.
     scoring: 'log_loss' or 'roc_auc' for classifiers; 'r2' for regressors.
     """
     from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
     from sklearn.ensemble import BaggingClassifier, BaggingRegressor
     from sklearn.metrics import r2_score
+
+    # Per-fold NaN fill: median from train only
+    if np.isnan(X_tr_vals).any() or np.isnan(X_te_vals).any():
+        with np.errstate(all="ignore"):
+            medians = np.nanmedian(X_tr_vals, axis=0)
+        medians = np.where(np.isnan(medians), 0.0, medians)
+        for ci in range(X_tr_vals.shape[1]):
+            tr_nan = np.isnan(X_tr_vals[:, ci])
+            te_nan = np.isnan(X_te_vals[:, ci])
+            if tr_nan.any():
+                X_tr_vals = X_tr_vals.copy() if not X_tr_vals.flags.writeable else X_tr_vals
+                X_tr_vals[tr_nan, ci] = medians[ci]
+            if te_nan.any():
+                X_te_vals = X_te_vals.copy() if not X_te_vals.flags.writeable else X_te_vals
+                X_te_vals[te_nan, ci] = medians[ci]
 
     rng = np.random.default_rng(seed)
     is_regression = (scoring == "r2")
@@ -372,11 +419,24 @@ def _desub_mda_one_task(feat_idx, other_idxs, X_vals, X_tr_idx, X_te_idx,
     rng = np.random.default_rng(seed)
     col_idxs = [feat_idx] + other_idxs
 
-    X_tr = X_vals[np.ix_(X_tr_idx, col_idxs)]
-    X_te = X_vals[np.ix_(X_te_idx, col_idxs)]
+    X_tr = X_vals[np.ix_(X_tr_idx, col_idxs)].copy()
+    X_te = X_vals[np.ix_(X_te_idx, col_idxs)].copy()
     y_tr = y_vals[X_tr_idx]
     y_te = y_vals[X_te_idx]
     w_tr = w_vals[X_tr_idx] if w_vals is not None else None
+
+    # Per-fold NaN fill using train median only
+    if np.isnan(X_tr).any() or np.isnan(X_te).any():
+        with np.errstate(all="ignore"):
+            medians = np.nanmedian(X_tr, axis=0)
+        medians = np.where(np.isnan(medians), 0.0, medians)
+        for ci in range(X_tr.shape[1]):
+            tr_nan = np.isnan(X_tr[:, ci])
+            te_nan = np.isnan(X_te[:, ci])
+            if tr_nan.any():
+                X_tr[tr_nan, ci] = medians[ci]
+            if te_nan.any():
+                X_te[te_nan, ci] = medians[ci]
 
     if regression:
         base = DecisionTreeRegressor(max_features=1, min_weight_fraction_leaf=0.02)
@@ -682,11 +742,19 @@ def _sfi_one_task(col_idx, X_col_vals, X_tr_idx, X_te_idx,
             n_jobs=1, random_state=42,
         )
 
-    X_tr = X_col_vals[X_tr_idx]
-    X_te = X_col_vals[X_te_idx]
+    X_tr = X_col_vals[X_tr_idx].copy()
+    X_te = X_col_vals[X_te_idx].copy()
     y_tr = y_vals[X_tr_idx]
     y_te = y_vals[X_te_idx]
     w_tr = w_vals[X_tr_idx] if w_vals is not None else None
+
+    # Per-fold NaN fill using train median only (single column)
+    if np.isnan(X_tr).any() or np.isnan(X_te).any():
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(X_tr)
+        med = 0.0 if np.isnan(med) else med
+        X_tr = np.where(np.isnan(X_tr), med, X_tr)
+        X_te = np.where(np.isnan(X_te), med, X_te)
 
     try:
         if regression:
@@ -965,11 +1033,17 @@ def feat_imp_cfi_mda(clf,
 
     for train_idx, test_idx in tqdm(list(cv.split(X, y, groups=years.values)),
                                     desc="CFI-MDA folds", unit="fold", leave=False):
-        X_tr = X.iloc[train_idx]
-        X_te = X.iloc[test_idx]
+        X_tr = X.iloc[train_idx].copy()
+        X_te = X.iloc[test_idx].copy()
         y_tr = y.iloc[train_idx]
         y_te = y.iloc[test_idx]
         w_tr = sample_weight.iloc[train_idx] if sample_weight is not None else None
+
+        # Per-fold NaN fill using train median
+        if X_tr.isna().any().any():
+            fold_medians = X_tr.median()
+            X_tr = X_tr.fillna(fold_medians)
+            X_te = X_te.fillna(fold_medians)
 
         if not is_regression and y_tr.nunique() < 2:
             continue
@@ -1201,12 +1275,19 @@ def filter_features(mdi_raw: pd.DataFrame,
                     desub_mda_raw: pd.DataFrame = None,
                     pca_mda_raw: pd.DataFrame = None,
                     resid_mda_raw: pd.DataFrame = None,
-                    p_threshold: float = 0.10) -> pd.DataFrame:
-    """Three-tier feature classification:
+                    p_threshold: float = 0.10,
+                    recency_n_folds: int = 3) -> pd.DataFrame:
+    """Three-tier feature classification with recency rescue.
 
       ACCEPTED          — passes ALL available tests. Proven signal.
       NEEDS SPECIFICATION — passes SOME tests. Signal exists but partial/conditional.
       REJECTED          — fails ALL tests. No signal detected.
+
+    Recency rescue: A feature that would be REJECTED but shows positive
+    importance in the most recent `recency_n_folds` folds (mean > 0 for
+    any OOS method) is promoted to NEEDS SPECIFICATION. This prevents
+    newly-important features (e.g., from rule changes) from being discarded
+    because older folds dilute their signal.
 
     Tests:
       MDI pass:      mean > 1/F AND (bootstrap CI lower > 1/F OR Wilcoxon p < threshold)
@@ -1374,6 +1455,32 @@ def filter_features(mdi_raw: pd.DataFrame,
         return "NEEDS SPECIFICATION"
 
     report["tier"] = report.apply(assign_tier, axis=1)
+
+    # ── Recency rescue: promote REJECTED → NEEDS SPECIFICATION if the feature
+    # shows positive importance in the most recent folds. This prevents newly-
+    # important features (rule changes, regime shifts) from being discarded
+    # because older seasons dilute their full-sample signal.
+    oos_raws = [(sfi_raw, sfi_null or 0.0), (desub_mda_raw, 0.0),
+                (pca_mda_raw, 0.0), (resid_mda_raw, 0.0)]
+    rescued = set()
+    for raw_df, null_val in oos_raws:
+        if raw_df is None or raw_df.empty:
+            continue
+        # Last N rows = most recent folds (folds are chronologically ordered)
+        recent = raw_df.tail(recency_n_folds)
+        for feat in report.index[report["tier"] == "REJECTED"]:
+            if feat in rescued:
+                continue
+            if feat not in recent.columns:
+                continue
+            recent_vals = recent[feat].dropna().values
+            if len(recent_vals) >= 2 and recent_vals.mean() > null_val:
+                rescued.add(feat)
+
+    if rescued:
+        report.loc[list(rescued), "tier"] = "NEEDS SPECIFICATION"
+        log.info(f"    Recency rescue: {len(rescued)} features promoted from "
+                 f"REJECTED → NEEDS SPECIFICATION (positive in last {recency_n_folds} folds)")
 
     # Composite rank (lower = better)
     for method, col in [("mdi", "mdi_mean"), ("sfi", "sfi_mean"), ("desub_mda", "desub_mda_mean"),
@@ -1594,11 +1701,15 @@ def run_all_importance(X: pd.DataFrame,
             log.info(f"    Cluster {cid} ({len(members)} features): {members[:5]}")
 
     # ── Step 3: CFI — fit full RF, then MDI + CFI-MDA on clusters ────────
+    # MDI and CFI are in-sample methods (no train/test split) so global median
+    # fill is correct — there is no "future fold" to leak from.
     log.info("3/10  CFI-MDI + CFI-MDA (simultaneous cluster permutation)...")
     n_jobs_full = get_n_jobs()
     mda_scoring = "r2" if regression else "log_loss"
+    X_filled = X.fillna(X.median())
+
     clf = build_rf(n_estimators=1000, n_jobs=n_jobs_full, regression=regression)
-    clf.fit(X, y, sample_weight=sample_weight)
+    clf.fit(X_filled, y, sample_weight=sample_weight)
 
     cfi_mdi = feat_imp_cfi_mdi(clf, list(X.columns), clusters)
     cfi_mda, cfi_mda_raw = feat_imp_cfi_mda(

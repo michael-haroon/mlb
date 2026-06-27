@@ -93,9 +93,9 @@ def run_importance_analysis(
     log.info(f"Features: {X.shape[1]} columns, {len(X):,} samples "
              f"(dropped {dropped} cols with >95% NaN)")
 
-    # Fill NaN with median for importance analysis
-    # (de Prado's RF uses sklearn BaggingClassifier which cannot handle NaN)
-    X_filled = X.fillna(X.median())
+    # X retains NaN — each importance method fills per-fold using train median
+    # to prevent temporal leakage. Only correlation-based steps (ONC clustering)
+    # and in-sample MDI fill globally (no train/test split to leak across).
 
     # ── Step 2: Synthetic validation ─────────────────────────────────────
     log.info("Running synthetic validation...")
@@ -107,8 +107,12 @@ def run_importance_analysis(
         log.info("Synthetic validation passed: MDI correctly ranks informative > noise")
 
     # ── Step 3: Target-independent clustering ────────────────────────────
+    # ONC uses X.corr() which handles NaN via pairwise-complete observations.
+    # The median fill inside compute_shared_clustering is for the distance
+    # matrix (silhouette computation) which requires complete data.
     log.info("Computing target-independent ONC clustering...")
-    clustering = compute_shared_clustering(X_filled)
+    X_for_clustering = X.fillna(X.median())
+    clustering = compute_shared_clustering(X_for_clustering)
     clusters = clustering["clusters"]
     denoising_info = clustering["denoising_info"]
 
@@ -120,8 +124,10 @@ def run_importance_analysis(
         json.dump(denoising_info, f, indent=2)
 
     # ── Step 4-10: Run all importance methods ────────────────────────────
+    # X with NaN passed directly — OOS methods fill per-fold using train
+    # median; in-sample methods (MDI) fill globally inside run_all_importance.
     results = run_all_importance(
-        X=X_filled,
+        X=X,
         y=y,
         years=seasons,
         sample_weight=sample_weight,
