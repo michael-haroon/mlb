@@ -262,6 +262,9 @@ def _rest_and_schedule(games: pd.DataFrame) -> pd.DataFrame:
 
         # Games in last 7 days: rolling("7D") requires a DatetimeIndex, so we
         # temporarily set the index, apply the window, then reset.
+        # fillna(0) because an empty 7-day lookback window means zero games
+        # played — not unknown data. Occurs on long homestands, All-Star break,
+        # or when a team hasn't appeared on a given side for >7 days.
         def _games_last_7d(s: pd.Series) -> pd.Series:
             s_dt = s.copy()
             s_dt.index = s_dt.values  # DatetimeIndex = the dates themselves
@@ -270,7 +273,7 @@ def _rest_and_schedule(games: pd.DataFrame) -> pd.DataFrame:
             return counts
 
         new_cols[f"{side}_games_last_7d"] = (
-            gd.groupby(games[team_col]).transform(_games_last_7d)
+            gd.groupby(games[team_col]).transform(_games_last_7d).fillna(0)
         )
 
     if "double_header" in games.columns:
@@ -322,23 +325,62 @@ def _weather_features(games: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _starting_pitcher_features(games: pd.DataFrame) -> pd.DataFrame:
-    """Compute starting pitcher quality features relative to team baseline."""
+    """Compute starting pitcher quality features from prior starts only.
+
+    ERA and WHIP are derived from each pitcher's cumulative game-level stats
+    (sp_*_game_earned_runs, sp_*_game_innings_pitched, sp_*_game_hits,
+    sp_*_game_bb) using expanding sums with shift(1), so the current outing
+    never contributes to the feature value.
+
+    The raw season_era / season_whip columns from the MLB boxscore API are
+    intentionally not used: that API returns post-game season stats, so they
+    always include the current start (proven leakage — see proof_leakage.py).
+    """
     new_cols: dict[str, pd.Series] = {}
-    # Coerce in-place is fine here (same column, same dtype intent)
+
     for side in ("home", "away"):
-        for stat in ("season_era", "season_whip"):
-            col = f"sp_{side}_{stat}"
-            if col in games.columns:
-                games[col] = pd.to_numeric(games[col], errors="coerce")
+        pid_col = f"sp_{side}_id"
+        er_col  = f"sp_{side}_game_earned_runs"
+        ip_col  = f"sp_{side}_game_innings_pitched"
+        h_col   = f"sp_{side}_game_hits"
+        bb_col  = f"sp_{side}_game_bb"
+
+        if pid_col not in games.columns:
+            continue
+
+        pid = games[pid_col]
+        er  = pd.to_numeric(games.get(er_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+        ip  = pd.to_numeric(games.get(ip_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+        h   = pd.to_numeric(games.get(h_col,   pd.Series(np.nan, index=games.index)), errors="coerce")
+        bb  = pd.to_numeric(games.get(bb_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+
+        # Expanding cumulative totals per pitcher, shifted so current game is excluded.
+        cum_er = er.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+        cum_ip = ip.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+        cum_h  = h.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+        cum_bb = bb.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+
+        safe_ip = cum_ip.replace(0, np.nan)
+
+        era  = (cum_er / safe_ip * 9.0).astype("float32")
+        whip = ((cum_h + cum_bb) / safe_ip).astype("float32")
+
+        new_cols[f"sp_{side}_season_era"]  = era
+        new_cols[f"sp_{side}_season_whip"] = whip
 
         hand_col = f"sp_{side}_hand"
         if hand_col in games.columns:
             new_cols[f"sp_{side}_is_lefty"] = (games[hand_col] == "L").astype("float32")
 
-    if "sp_home_season_era" in games.columns and "sp_away_season_era" in games.columns:
-        new_cols["sp_era_diff"] = games["sp_away_season_era"] - games["sp_home_season_era"]
-    if "sp_home_season_whip" in games.columns and "sp_away_season_whip" in games.columns:
-        new_cols["sp_whip_diff"] = games["sp_away_season_whip"] - games["sp_home_season_whip"]
+    h_era  = new_cols.get("sp_home_season_era")
+    a_era  = new_cols.get("sp_away_season_era")
+    h_whip = new_cols.get("sp_home_season_whip")
+    a_whip = new_cols.get("sp_away_season_whip")
+
+    if h_era is not None and a_era is not None:
+        new_cols["sp_era_diff"]  = (a_era  - h_era).astype("float32")
+    if h_whip is not None and a_whip is not None:
+        new_cols["sp_whip_diff"] = (a_whip - h_whip).astype("float32")
 
     if not new_cols:
         return games

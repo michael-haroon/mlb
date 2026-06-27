@@ -100,8 +100,10 @@ def _extract_game_metadata(pitches: pd.DataFrame) -> pd.DataFrame:
         "venue_capacity", "venue_roof_type", "weather_condition", "weather_temp",
         "weather_wind", "day_night", "attendance", "home_team_id", "home_team_name",
         "home_team_abbr", "away_team_id", "away_team_name", "away_team_abbr",
-        "home_wins", "home_losses", "home_win_pct", "away_wins", "away_losses",
-        "away_win_pct", "probable_pitcher_home_id", "probable_pitcher_away_id",
+        # home_wins/win_pct are intentionally excluded: the MLB boxscore API
+        # returns the post-game standing. Pre-game win% is computed in
+        # feature_engineering.py via rolling win% with shift(1).
+        "probable_pitcher_home_id", "probable_pitcher_away_id",
         "umpire_hp", "game_type_code", "double_header", "game_number",
     ]
     available = [c for c in meta_cols if c in pitches.columns]
@@ -154,10 +156,14 @@ def _extract_starting_pitchers(
     if starters.empty:
         return pd.DataFrame(columns=["game_pk"])
 
+    # season_era and season_whip are intentionally excluded: the MLB boxscore API
+    # returns seasonStats as of game completion, so these values always include
+    # the current outing. Pre-game ERA/WHIP is computed in feature_engineering.py
+    # via expanding cumulative sums with shift(1) over prior starts.
     stat_cols = [
         "game_innings_pitched", "game_hits", "game_runs", "game_earned_runs",
         "game_bb", "game_so", "game_hr", "game_pitches_thrown",
-        "game_strikes_thrown", "season_era", "season_whip",
+        "game_strikes_thrown",
     ]
     available_stats = [c for c in stat_cols if c in starters.columns]
     keep = ["game_pk", "player_id"] + available_stats
