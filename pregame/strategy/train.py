@@ -29,7 +29,6 @@ def _json_default(obj):
     return str(obj)
 
 from .config import (
-    APPLY_IMPORTANCE_FILTER,
     OPTUNA_N_TRIALS,
     OPTUNA_PRUNER_STARTUP_TRIALS,
     OPTUNA_SEED,
@@ -94,16 +93,15 @@ def train_target(
     X, y, seasons = load_features(features_path, target, data_mode)
     splits = generate_loyo_splits(seasons)
 
-    # Load importance filter_report if enabled
+    # Auto-detect importance filter: use it if feature_report.csv exists
     filter_report = None
-    if APPLY_IMPORTANCE_FILTER:
-        from .config import IMPORTANCE_DIR
-        report_path = IMPORTANCE_DIR / target / "filtered" / "feature_report.csv"
-        if report_path.exists():
-            filter_report = pd.read_csv(report_path, index_col="feature")
-            log.info(f"  Importance filter loaded: {len(filter_report)} features classified")
-        else:
-            log.warning(f"  APPLY_IMPORTANCE_FILTER=True but {report_path} not found. Using all features.")
+    from .config import IMPORTANCE_DIR
+    report_path = IMPORTANCE_DIR / target / "filtered" / "feature_report.csv"
+    if report_path.exists():
+        filter_report = pd.read_csv(report_path, index_col="feature")
+        log.info(f"  Importance filter loaded: {len(filter_report)} features classified")
+    else:
+        log.info(f"  No importance filter found at {report_path} — using all features.")
 
     if families is None:
         families = list_families()
