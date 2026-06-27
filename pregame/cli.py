@@ -74,6 +74,14 @@ def main() -> None:
     imp_parser.add_argument("--output", default="pregame/artifacts/importance")
     imp_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
     imp_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
+    imp_parser.add_argument("--run-sfi", action="store_true", default=True)
+    imp_parser.add_argument("--no-sfi", action="store_false", dest="run_sfi")
+    imp_parser.add_argument("--run-desub-mda", action="store_true", default=True)
+    imp_parser.add_argument("--no-desub-mda", action="store_false", dest="run_desub_mda")
+    imp_parser.add_argument("--run-pca-mda", action="store_true", default=True)
+    imp_parser.add_argument("--no-pca-mda", action="store_false", dest="run_pca_mda")
+    imp_parser.add_argument("--run-residual-mda", action="store_true", default=True)
+    imp_parser.add_argument("--no-residual-mda", action="store_false", dest="run_residual_mda")
 
     # --- Train ---
     train_parser = subparsers.add_parser("train", help="LOYO CV training with Optuna")
@@ -160,6 +168,10 @@ def _run_importance(args):
             output_dir=Path(args.output),
             target=target,
             data_mode=args.data_mode,
+            run_sfi=args.run_sfi,
+            run_desub_mda=args.run_desub_mda,
+            run_pca_mda=args.run_pca_mda,
+            run_residual_mda=args.run_residual_mda,
         )
     print(json.dumps(results, indent=2))
 

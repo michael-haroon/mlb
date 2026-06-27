@@ -49,15 +49,16 @@ ECE_N_BINS = 15
 # ---------------------------------------------------------------------------
 TREE_MODELS = {
     "lightgbm", "xgboost", "catboost", "random_forest",
-    "extra_trees", "hist_gradient_boosting", "adaboost",
+    "extra_trees", "hist_gradient_boosting",
 }
 LINEAR_MODELS = {
     "logistic_regression", "ridge", "lasso", "elasticnet",
     "sgd", "knn", "lda", "qda", "gaussian_nb", "mlp", "bagging_logreg",
 }
-
-# Tree models accept NaN natively; linear models need imputation + scaling
-NEEDS_IMPUTATION = LINEAR_MODELS
+# AdaBoost uses DecisionTree base estimators but sklearn's implementation
+# does NOT handle NaN natively (unlike HistGradientBoosting/XGBoost/LightGBM).
+# It must receive imputed data.
+NEEDS_IMPUTATION = LINEAR_MODELS | {"adaboost"}
 NEEDS_SCALING = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd", "knn", "mlp", "bagging_logreg"}
 
 # ---------------------------------------------------------------------------
@@ -85,3 +86,13 @@ FEATURE_SUBSETS = {
     "short_window": None,
     "long_window": None,
 }
+
+# ---------------------------------------------------------------------------
+# Feature importance routing
+# ---------------------------------------------------------------------------
+from pathlib import Path
+
+# Enable after running the importance pipeline (run-importance CLI command).
+# When True, train.py loads filter_report.csv and applies per-family routing.
+APPLY_IMPORTANCE_FILTER = False
+IMPORTANCE_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "importance"

@@ -257,6 +257,7 @@ def prepare_fold(
     split: LOYOSplit,
     model_family: str,
     tier: str = "A",
+    importance_features: list[str] | None = None,
 ) -> PreparedData:
     """Prepare data for one LOYO fold with model-appropriate NaN handling.
 
@@ -290,6 +291,10 @@ def prepare_fold(
         # Drop features that require post-2015 Statcast data
         feature_cols = [c for c in feature_cols if c not in STATCAST_ONLY_FEATURES
                         or "_pitchfx_" in c or "_velocity_" in c]
+
+    # --- Importance-based feature filtering (per-family routing) ---
+    if importance_features is not None:
+        feature_cols = [c for c in feature_cols if c in importance_features]
 
     X_train = X_train[feature_cols]
     X_val = X_val[feature_cols]

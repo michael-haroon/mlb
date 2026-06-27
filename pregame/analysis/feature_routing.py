@@ -1,115 +1,201 @@
-"""Route features to model families based on importance analysis results.
+"""Evidence-based feature routing to model families.
 
-Features are classified into groups based on which importance methods they
-pass, then routed to appropriate model families.
+Routes features based on which de Prado importance tests they pass,
+not a naive top-pct threshold. Each model family gets the features
+whose evidence profile matches its assumptions:
+
+  GBDT (lgbm/xgb/catboost) — handles interactions, redundancy is free
+  RF_ET (random_forest/extra_trees) — same as GBDT
+  WEAK_TREE (adaboost/hist_gb/bagging_logreg) — fragile to noise/redundancy
+  LINEAR (logreg/ridge/lasso/elasticnet/sgd) — needs orthogonal signal
+  FRAGILE (knn/lda/qda/gaussian_nb) — curse of dimensionality
+  NEURAL (mlp) — moderate robustness, needs some signal evidence
 """
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import pandas as pd
 
 log = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Model family groupings
+# ─────────────────────────────────────────────────────────────────────────────
 
-def route_features(
-    mdi: pd.DataFrame,
-    mda: pd.DataFrame,
-    sfi: pd.DataFrame,
-    top_pct: float = 0.5,
-) -> dict[str, list[str]]:
-    """Classify features and route to model families.
+GBDT = {"lightgbm", "xgboost", "catboost"}
+RF_ET = {"random_forest", "extra_trees"}
+WEAK_TREE = {"adaboost", "hist_gradient_boosting", "bagging_logreg"}
+LINEAR = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd"}
+FRAGILE = {"knn", "lda", "qda", "gaussian_nb"}
+NEURAL = {"mlp"}
 
-    Categories:
-    - accepted: passes MDI + MDA + SFI (all methods agree)
-    - complementary: MDI + MDA pass, SFI fails (interaction features)
-    - linear_only: SFI passes, MDI/MDA fail (global linear signal)
-    - absorbed: MDI passes only (redundant with accepted features)
-    - rejected: fails all methods
 
-    Routing:
-    - trees: accepted + complementary
-    - linear: accepted + linear_only
-    - diversity: accepted + absorbed (for ensemble diversity)
-    - full: all non-rejected
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-feature classification based on pass/fail patterns
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _classify_feature(row: pd.Series) -> str:
+    """Classify a single feature into an evidence group.
+
+    Uses the pass/fail pattern across all importance methods to determine
+    what kind of signal the feature carries:
+
+      accepted     — all methods agree: proven predictive signal
+      complementary — MDI+desub/CFI pass, SFI fails: interaction signal
+      standalone   — SFI passes: standalone predictive power
+      linear_only  — PCA+RESID pass, MDI+SFI fail: linear-space signal only
+      absorbed     — MDI passes alone: redundant with better features
+      redundant    — only cluster-level CFI-MDA passes
+      noise        — no method passes
+      rejected     — explicitly flagged REJECTED by filter
     """
-    # Determine thresholds based on top_pct
-    n_features = len(mdi)
-    top_n = max(int(n_features * top_pct), 10)
+    if row.get("tier") == "REJECTED":
+        return "rejected"
+    if row.get("tier") == "ACCEPTED":
+        return "accepted"
 
-    mdi_pass = set(mdi.head(top_n)["feature"].tolist())
-    mda_pass = set(mda.head(top_n)["feature"].tolist())
-    sfi_pass = set(sfi.head(top_n)["feature"].tolist())
+    # Extract pass/fail signals (coerce NaN → False for missing methods)
+    mdi = bool(row.get("mdi_passes") is True)
+    sfi = bool(row.get("sfi_passes") is True)
+    pca = bool(row.get("pca_mda_passes") is True)
+    resid = bool(row.get("resid_mda_passes") is True)
+    desub = bool(row.get("desub_mda_passes") is True)
+    cfi = bool(row.get("cfi_mda_cluster_passes") is True)
 
-    all_features = set(mdi["feature"].tolist())
+    # Interaction signal: feature works in combination (desub or CFI pass)
+    # but fails standalone (SFI fails)
+    if (desub or cfi) and not sfi:
+        return "complementary"
 
-    # Classification
-    accepted = mdi_pass & mda_pass & sfi_pass
-    complementary = (mdi_pass & mda_pass) - sfi_pass
-    linear_only = sfi_pass - mdi_pass - mda_pass
-    absorbed = mdi_pass - mda_pass - sfi_pass
-    rejected = all_features - mdi_pass - mda_pass - sfi_pass
+    # Standalone signal: SFI passes (feature has predictive power alone)
+    if sfi:
+        if pca and resid:
+            return "accepted"  # promote: standalone + orthogonal = strong
+        return "standalone"
 
-    log.info(f"Feature routing: accepted={len(accepted)}, complementary={len(complementary)}, "
-             f"linear_only={len(linear_only)}, absorbed={len(absorbed)}, rejected={len(rejected)}")
+    # Linear-only signal: PCA+RESID pass but tree methods fail
+    if pca and resid and not mdi:
+        return "linear_only"
 
-    # Build feature subsets for routing
-    routing = {
-        "trees": sorted(accepted | complementary),
-        "linear": sorted(accepted | linear_only),
-        "diversity": sorted(accepted | absorbed),
-        "full": sorted(all_features - rejected),
-        "accepted": sorted(accepted),
-        "complementary": sorted(complementary),
-        "linear_only": sorted(linear_only),
-        "absorbed": sorted(absorbed),
-        "rejected": sorted(rejected),
+    # MDI-only: tree sees it but no OOS confirmation
+    if mdi and not sfi and not desub and not pca:
+        return "absorbed"
+
+    # Cluster-level only
+    if cfi and not mdi and not sfi:
+        return "redundant"
+
+    # PCA passes alone (partial linear signal)
+    if pca and not resid:
+        return "absorbed"
+
+    # Nothing passes
+    return "noise"
+
+
+def classify_all_features(filter_report: pd.DataFrame) -> pd.Series:
+    """Classify all features in a filter_report into evidence groups.
+
+    Returns Series(index=feature, values=group_name).
+    """
+    return filter_report.apply(_classify_feature, axis=1).rename("evidence_group")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-family feature set routing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
+    """Return the feature list appropriate for this model family.
+
+    Uses the granular pass/fail patterns from filter_report to determine
+    which features each model can responsibly consume.
+
+    Routing logic:
+      GBDT/RF_ET:   accepted + complementary + standalone
+                    (handles interactions, redundancy is cheap)
+      WEAK_TREE:    accepted + standalone
+                    (sensitive to noise, needs clean signal)
+      NEURAL:       accepted + standalone
+                    (moderate robustness, benefits from more features)
+      LINEAR:       accepted + standalone + linear_only
+                    (needs orthogonal features, PCA-MDA identifies these)
+      FRAGILE:      accepted only
+                    (curse of dimensionality, only proven features)
+    """
+    groups = classify_all_features(filter_report)
+
+    accepted = filter_report.index[groups == "accepted"].tolist()
+    complementary = filter_report.index[groups == "complementary"].tolist()
+    standalone = filter_report.index[groups == "standalone"].tolist()
+    linear_only = filter_report.index[groups == "linear_only"].tolist()
+
+    if family in GBDT | RF_ET:
+        return sorted(accepted + complementary + standalone)
+    elif family in WEAK_TREE | NEURAL:
+        return sorted(accepted + standalone)
+    elif family in LINEAR:
+        return sorted(accepted + standalone + linear_only)
+    elif family in FRAGILE:
+        return sorted(accepted)
+    # Unknown family → conservative (accepted only)
+    log.warning(f"Unknown family {family!r} — using accepted features only")
+    return sorted(accepted)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Full routing orchestration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def route_features(filter_report: pd.DataFrame) -> dict:
+    """Classify all features and return grouped feature lists.
+
+    Returns dict with:
+      'groups': {group_name: [feature_names]}
+      'per_family': {family_name: [feature_names]}
+      'summary': {group_name: count}
+    """
+    groups = classify_all_features(filter_report)
+    group_dict = {}
+    for group_name in groups.unique():
+        group_dict[group_name] = sorted(
+            filter_report.index[groups == group_name].tolist()
+        )
+
+    all_families = GBDT | RF_ET | WEAK_TREE | LINEAR | FRAGILE | NEURAL
+    per_family = {
+        family: get_feature_set(family, filter_report)
+        for family in sorted(all_families)
     }
 
-    return routing
+    summary = {group: len(members) for group, members in group_dict.items()}
+    log.info(f"Feature routing summary: {summary}")
+    for family, feats in sorted(per_family.items(), key=lambda x: -len(x[1])):
+        log.info(f"  {family}: {len(feats)} features")
+
+    return {
+        "groups": group_dict,
+        "per_family": per_family,
+        "summary": summary,
+    }
 
 
-def build_feature_subsets(
-    feature_columns: list[str],
-    routing: dict[str, list[str]],
-) -> dict[str, list[str]]:
-    """Build named feature subsets for the model candidate pool.
+def write_routing_report(output_dir: Path, filter_report: pd.DataFrame) -> Path:
+    """Run routing and write routing_report.json to output_dir.
 
-    Uses column name patterns to identify feature groups, then intersects
-    with the importance-based routing.
+    Returns path to the written file.
     """
-    subsets = {}
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pattern-based groups
-    subsets["ratings_only"] = [c for c in feature_columns
-                               if any(x in c for x in ("srs", "elo", "wolfe", "log5", "pythag", "bsr"))]
-    subsets["rolling_short"] = [c for c in feature_columns if "roll5_" in c]
-    subsets["rolling_medium"] = [c for c in feature_columns if "roll10_" in c]
-    subsets["rolling_long"] = [c for c in feature_columns if "roll20_" in c]
-    subsets["pitching"] = [c for c in feature_columns
-                           if any(x in c for x in ("sp_", "era", "whip", "fip", "k9", "bb9"))]
-    subsets["context"] = [c for c in feature_columns
-                          if any(x in c for x in ("temp", "dome", "night", "rest", "games_last",
-                                                   "park_factor", "doubleheader"))]
-    subsets["momentum"] = [c for c in feature_columns
-                           if any(x in c for x in ("streak", "winpct", "rd_mean", "rd_std"))]
-    subsets["efficiency"] = [c for c in feature_columns
-                             if any(x in c for x in ("ops", "fip", "whip", "iso", "babip"))]
-    subsets["matchup"] = [c for c in feature_columns if "h2h" in c]
+    routing = route_features(filter_report)
 
-    # Composite groups
-    subsets["ratings_plus_momentum"] = subsets["ratings_only"] + subsets["momentum"]
-    subsets["short_window"] = subsets["rolling_short"] + subsets["momentum"]
-    subsets["long_window"] = subsets["rolling_long"] + subsets["ratings_only"]
+    report_path = output_dir / "routing_report.json"
+    with open(report_path, "w") as f:
+        json.dump(routing, f, indent=2)
 
-    # Importance-based
-    if routing:
-        subsets["all_survivors"] = routing.get("full", feature_columns)
-        subsets["trees_routed"] = routing.get("trees", feature_columns)
-        subsets["linear_routed"] = routing.get("linear", feature_columns)
-
-    # Filter empty subsets
-    subsets = {k: v for k, v in subsets.items() if v}
-
-    log.info(f"Built {len(subsets)} feature subsets: {[(k, len(v)) for k, v in subsets.items()]}")
-    return subsets
+    log.info(f"Routing report written to {report_path}")
+    return report_path

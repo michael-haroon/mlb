@@ -29,6 +29,7 @@ def _json_default(obj):
     return str(obj)
 
 from .config import (
+    APPLY_IMPORTANCE_FILTER,
     OPTUNA_N_TRIALS,
     OPTUNA_PRUNER_STARTUP_TRIALS,
     OPTUNA_SEED,
@@ -93,6 +94,17 @@ def train_target(
     X, y, seasons = load_features(features_path, target, data_mode)
     splits = generate_loyo_splits(seasons)
 
+    # Load importance filter_report if enabled
+    filter_report = None
+    if APPLY_IMPORTANCE_FILTER:
+        from .config import IMPORTANCE_DIR
+        report_path = IMPORTANCE_DIR / target / "filtered" / "feature_report.csv"
+        if report_path.exists():
+            filter_report = pd.read_csv(report_path, index_col="feature")
+            log.info(f"  Importance filter loaded: {len(filter_report)} features classified")
+        else:
+            log.warning(f"  APPLY_IMPORTANCE_FILTER=True but {report_path} not found. Using all features.")
+
     if families is None:
         families = list_families()
 
@@ -115,9 +127,17 @@ def train_target(
         oof_predictions = np.full(len(y), np.nan)
         fold_metrics = []
 
+        # Resolve per-family feature set from importance analysis
+        importance_features = None
+        if filter_report is not None:
+            from ..analysis.feature_routing import get_feature_set
+            importance_features = get_feature_set(family, filter_report)
+            log.info(f"  [{family}] importance filter: {len(importance_features)} features")
+
         for split in splits:
             try:
-                prepared = prepare_fold(X, y, seasons, split, family, tier=tier)
+                prepared = prepare_fold(X, y, seasons, split, family, tier=tier,
+                                        importance_features=importance_features)
                 model = build_model(family, task, best_params)
 
                 # Fit with sample weights
