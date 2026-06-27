@@ -19,6 +19,45 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 
+def _compute_pregame_pitcher_era(games: pd.DataFrame) -> pd.DataFrame:
+    """Compute sp_*_season_era / season_whip from prior starts before ratings run.
+
+    build.py calls this between game frame construction and attach_all_ratings
+    so that compute_elo's pitcher adjustment has valid pre-game ERA/WHIP.
+    _starting_pitcher_features (called later in engineer_features) skips
+    recomputing if these columns already exist.
+    """
+    new_cols: dict[str, pd.Series] = {}
+    for side in ("home", "away"):
+        pid_col = f"sp_{side}_id"
+        er_col  = f"sp_{side}_game_earned_runs"
+        ip_col  = f"sp_{side}_game_innings_pitched"
+        h_col   = f"sp_{side}_game_hits"
+        bb_col  = f"sp_{side}_game_bb"
+
+        if pid_col not in games.columns:
+            continue
+
+        pid = games[pid_col]
+        er  = pd.to_numeric(games.get(er_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+        ip  = pd.to_numeric(games.get(ip_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+        h   = pd.to_numeric(games.get(h_col,   pd.Series(np.nan, index=games.index)), errors="coerce")
+        bb  = pd.to_numeric(games.get(bb_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+
+        cum_er = er.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+        cum_ip = ip.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+        cum_h  =  h.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+        cum_bb = bb.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
+
+        safe_ip = cum_ip.replace(0, np.nan)
+        new_cols[f"sp_{side}_season_era"]  = (cum_er / safe_ip * 9.0).astype("float32")
+        new_cols[f"sp_{side}_season_whip"] = ((cum_h + cum_bb) / safe_ip).astype("float32")
+
+    if not new_cols:
+        return games
+    return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
+
+
 def engineer_features(games: pd.DataFrame) -> pd.DataFrame:
     """Apply all feature engineering steps to the game frame.
 
@@ -337,55 +376,32 @@ def _weather_features(games: pd.DataFrame) -> pd.DataFrame:
 def _starting_pitcher_features(games: pd.DataFrame) -> pd.DataFrame:
     """Compute starting pitcher quality features from prior starts only.
 
-    ERA and WHIP are derived from each pitcher's cumulative game-level stats
-    (sp_*_game_earned_runs, sp_*_game_innings_pitched, sp_*_game_hits,
-    sp_*_game_bb) using expanding sums with shift(1), so the current outing
-    never contributes to the feature value.
-
-    The raw season_era / season_whip columns from the MLB boxscore API are
-    intentionally not used: that API returns post-game season stats, so they
-    always include the current start (proven leakage — see proof_leakage.py).
+    ERA and WHIP use expanding cumulative game logs with shift(1). If
+    _compute_pregame_pitcher_era already ran (called by build.py before
+    attach_all_ratings so Elo has valid pitcher adjustments), the ERA/WHIP
+    columns already exist and are not recomputed — only diffs and handedness
+    are added.
     """
     new_cols: dict[str, pd.Series] = {}
 
+    era_already_computed = (
+        "sp_home_season_era" in games.columns and
+        "sp_away_season_era" in games.columns
+    )
+
+    if not era_already_computed:
+        # Fallback: compute here if build.py pre-compute step was skipped
+        games = _compute_pregame_pitcher_era(games)
+
     for side in ("home", "away"):
-        pid_col = f"sp_{side}_id"
-        er_col  = f"sp_{side}_game_earned_runs"
-        ip_col  = f"sp_{side}_game_innings_pitched"
-        h_col   = f"sp_{side}_game_hits"
-        bb_col  = f"sp_{side}_game_bb"
-
-        if pid_col not in games.columns:
-            continue
-
-        pid = games[pid_col]
-        er  = pd.to_numeric(games.get(er_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
-        ip  = pd.to_numeric(games.get(ip_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
-        h   = pd.to_numeric(games.get(h_col,   pd.Series(np.nan, index=games.index)), errors="coerce")
-        bb  = pd.to_numeric(games.get(bb_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
-
-        # Expanding cumulative totals per pitcher, shifted so current game is excluded.
-        cum_er = er.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-        cum_ip = ip.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-        cum_h  = h.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-        cum_bb = bb.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-
-        safe_ip = cum_ip.replace(0, np.nan)
-
-        era  = (cum_er / safe_ip * 9.0).astype("float32")
-        whip = ((cum_h + cum_bb) / safe_ip).astype("float32")
-
-        new_cols[f"sp_{side}_season_era"]  = era
-        new_cols[f"sp_{side}_season_whip"] = whip
-
         hand_col = f"sp_{side}_hand"
         if hand_col in games.columns:
             new_cols[f"sp_{side}_is_lefty"] = (games[hand_col] == "L").astype("float32")
 
-    h_era  = new_cols.get("sp_home_season_era")
-    a_era  = new_cols.get("sp_away_season_era")
-    h_whip = new_cols.get("sp_home_season_whip")
-    a_whip = new_cols.get("sp_away_season_whip")
+    h_era  = games.get("sp_home_season_era")
+    a_era  = games.get("sp_away_season_era")
+    h_whip = games.get("sp_home_season_whip")
+    a_whip = games.get("sp_away_season_whip")
 
     if h_era is not None and a_era is not None:
         new_cols["sp_era_diff"]  = (a_era  - h_era).astype("float32")

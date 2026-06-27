@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .constants import MLB_FRANCHISE_IDS, VALID_GAME_TYPE_CODES
 from .data_loader import load_all
 from .feature_engineering import engineer_features
 from .ratings import attach_all_ratings
@@ -79,6 +80,14 @@ def build_features(
         # --- Step 2: Build game frame (1 row per game) ---
         log.info("Building game frame...")
         games = build_game_frame(raw)
+
+        # --- Step 2b: Filter to competitive MLB games ---
+        n_before = len(games)
+        games = _filter_to_mlb(games)
+        n_dropped = n_before - len(games)
+        if n_dropped > 0:
+            log.info(f"Dropped {n_dropped} non-MLB rows (exhibitions, all-star, non-franchise teams)")
+
         games.to_parquet(ckpt_games_raw, index=False, engine="pyarrow")
         log.info(f"Checkpoint written: {ckpt_games_raw} ({len(games):,} rows)")
 
@@ -100,6 +109,15 @@ def build_features(
         from .ratings import DEFAULT_PARAMS
         params = DEFAULT_PARAMS
         log.info("Using default (literature) rating parameters (tuning disabled)")
+
+    # --- Step 3b: Pre-compute pitcher ERA/WHIP from prior starts ---
+    # attach_all_ratings runs before engineer_features, but compute_elo's
+    # pitcher adjustment reads sp_*_season_era from each row. Those columns
+    # are computed in engineer_features._starting_pitcher_features (too late).
+    # We pre-compute them here — same expanding-sum-shift(1) logic — so Elo
+    # has valid pre-game ERA/WHIP when it iterates the game frame.
+    from .feature_engineering import _compute_pregame_pitcher_era
+    games = _compute_pregame_pitcher_era(games)
 
     # --- Step 4: Compute ratings ---
     if ckpt_games_rated.exists():
@@ -147,3 +165,24 @@ def build_features(
         json.dump(manifest, f, indent=2)
 
     return out_path
+
+
+def _filter_to_mlb(games: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows that aren't competitive MLB games between two franchises.
+
+    Removes exhibitions (vs. college/minor-league/foreign teams) and
+    All-Star games (pseudo-team IDs). Keeps: Regular Season, Spring Training
+    (MLB vs MLB), Division Series, League Championship, World Series, Wild Card.
+    """
+    mask = pd.Series(True, index=games.index)
+
+    if "game_type_code" in games.columns:
+        mask &= games["game_type_code"].isin(VALID_GAME_TYPE_CODES)
+
+    if "home_team_id" in games.columns:
+        mask &= games["home_team_id"].isin(MLB_FRANCHISE_IDS)
+
+    if "away_team_id" in games.columns:
+        mask &= games["away_team_id"].isin(MLB_FRANCHISE_IDS)
+
+    return games[mask].reset_index(drop=True)

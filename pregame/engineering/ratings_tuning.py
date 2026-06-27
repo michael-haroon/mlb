@@ -52,6 +52,19 @@ def tune_all_ratings(
     -------
     dict
         Optimized parameter dictionary, compatible with ratings.attach_all_ratings().
+
+    Known limitation (TODO: validate impact before fixing):
+        Each objective calls compute_*(games_copy, params) on the FULL game frame,
+        then evaluates Brier score only on val_seasons. The rating values for
+        val_seasons are therefore computed from chronologically prior games
+        (correct), but the PARAMETERS are chosen to minimise error specifically
+        on those val seasons. When those same val seasons later appear as LOYO
+        val folds in train.py, the feature values (Elo, SRS, etc.) were generated
+        with params tuned on them — a mild form of target leakage in parameter
+        space. Estimated effect: ~1-3% optimistic Brier on those folds.
+        Proper fix: tune only on seasons strictly before val_seasons (e.g., tune
+        on all_seasons[:-3], evaluate on all_seasons[-3:]). Requires re-running
+        Optuna (~800s) so deferred until next full pipeline rebuild.
     """
     if val_seasons is None:
         all_seasons = sorted(games["season"].dropna().unique())
