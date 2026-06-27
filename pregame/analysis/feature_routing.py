@@ -2,14 +2,16 @@
 
 Routes features based on which de Prado importance tests they pass,
 not a naive top-pct threshold. Each model family gets the features
-whose evidence profile matches its assumptions:
+whose evidence profile matches its capacity to exploit them:
 
-  GBDT (lgbm/xgb/catboost) — handles interactions, redundancy is free
-  RF_ET (random_forest/extra_trees) — same as GBDT
-  WEAK_TREE (adaboost/hist_gb/bagging_logreg) — fragile to noise/redundancy
-  LINEAR (logreg/ridge/lasso/elasticnet/sgd) — needs orthogonal signal
-  FRAGILE (knn/lda/qda/gaussian_nb) — curse of dimensionality
-  NEURAL (mlp) — moderate robustness, needs some signal evidence
+  TREE_BOOSTED (lgbm/xgb/catboost/adaboost/hist_gb) — exploits interactions,
+      sequential feature selection via boosting, redundancy is cheap
+  TREE_BAGGED (random_forest/extra_trees) — same capacity as boosted trees
+  NEURAL (mlp) — learns interactions via hidden layers, needs raw inputs
+  LINEAR (logreg/ridge/lasso/elasticnet/sgd/bagging_logreg) — cannot learn
+      interactions, only features with standalone signal are useful
+  FRAGILE (knn/lda/qda/gaussian_nb) — curse of dimensionality or
+      distributional assumptions; only proven-individual features
 """
 from __future__ import annotations
 
@@ -22,15 +24,24 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Model family groupings
+#  Model family groupings — based on capacity to exploit feature types
 # ─────────────────────────────────────────────────────────────────────────────
 
-GBDT = {"lightgbm", "xgboost", "catboost"}
-RF_ET = {"random_forest", "extra_trees"}
-WEAK_TREE = {"adaboost", "hist_gradient_boosting", "bagging_logreg"}
-LINEAR = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd"}
-FRAGILE = {"knn", "lda", "qda", "gaussian_nb"}
+# Can learn nonlinear interactions, tolerant of redundancy
+TREE_BOOSTED = {"lightgbm", "xgboost", "catboost", "adaboost", "hist_gradient_boosting"}
+TREE_BAGGED = {"random_forest", "extra_trees"}
+
+# Learns interactions via hidden layers
 NEURAL = {"mlp"}
+
+# Linear decision boundary — cannot exploit interaction-only features.
+# bagging_logreg base estimator is LogisticRegression(C=0.1) — still linear.
+LINEAR = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd", "bagging_logreg"}
+
+# Distance-based or generative models — curse of dimensionality.
+# QDA estimates p*(p+1)/2 covariance params per class; GaussianNB assumes
+# feature independence; KNN distance degrades with irrelevant dimensions.
+FRAGILE = {"knn", "lda", "qda", "gaussian_nb"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,20 +122,36 @@ def classify_all_features(filter_report: pd.DataFrame) -> pd.Series:
 def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
     """Return the feature list appropriate for this model family.
 
-    Uses the granular pass/fail patterns from filter_report to determine
-    which features each model can responsibly consume.
+    Routing matches evidence profile to model capacity:
 
-    Routing logic:
-      GBDT/RF_ET:   accepted + complementary + standalone
-                    (handles interactions, redundancy is cheap)
-      WEAK_TREE:    accepted + standalone
-                    (sensitive to noise, needs clean signal)
-      NEURAL:       accepted + standalone
-                    (moderate robustness, benefits from more features)
-      LINEAR:       accepted + standalone + linear_only
-                    (needs orthogonal features, PCA-MDA identifies these)
-      FRAGILE:      accepted only
-                    (curse of dimensionality, only proven features)
+      TREE_BOOSTED/TREE_BAGGED: accepted + complementary + standalone
+          Boosting self-selects features via sequential residual fitting;
+          bagged trees use random subsets per tree. Both exploit interactions
+          natively. Complementary features passed tree-based tests (MDI/desub/
+          CFI) confirming tree-exploitable signal. AdaBoost depth-3 trees use
+          ~3-7 features per weak learner — redundancy is pruned implicitly.
+
+      NEURAL (mlp): accepted + complementary + standalone
+          Hidden layers learn feature interactions internally. The complementary
+          features (interaction-only signal) become useful once combined through
+          nonlinear activations. 128+64 hidden units need sufficient input
+          dimensionality to learn meaningful representations.
+
+      LINEAR: accepted + standalone + linear_only
+          Cannot model interactions (y = Xw + b). Complementary features that
+          only work in combination add noise to a linear decision boundary.
+          Lasso/elasticnet handle redundancy among the features that DO have
+          standalone signal. PCA-MDA-identified features (linear_only) are
+          appropriate because PCA operates in the same linear subspace.
+
+      FRAGILE: accepted + standalone
+          KNN: distance degrades with irrelevant/redundant dimensions.
+          QDA: p*(p+1)/2 covariance params per class — singular with p>>n.
+          GaussianNB: independence assumption violated by correlated features.
+          LDA: Fisher discriminant is linear — same logic as LINEAR, but no
+              regularization to handle redundancy from linear_only features.
+          Standalone features (SFI-confirmed) have proven individual power
+          and approximate independence, making them safe for these methods.
     """
     groups = classify_all_features(filter_report)
 
@@ -133,17 +160,18 @@ def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
     standalone = filter_report.index[groups == "standalone"].tolist()
     linear_only = filter_report.index[groups == "linear_only"].tolist()
 
-    if family in GBDT | RF_ET:
+    if family in TREE_BOOSTED | TREE_BAGGED:
         return sorted(accepted + complementary + standalone)
-    elif family in WEAK_TREE | NEURAL:
-        return sorted(accepted + standalone)
+    elif family in NEURAL:
+        return sorted(accepted + complementary + standalone)
     elif family in LINEAR:
         return sorted(accepted + standalone + linear_only)
     elif family in FRAGILE:
-        return sorted(accepted)
-    # Unknown family → conservative (accepted only)
-    log.warning(f"Unknown family {family!r} — using accepted features only")
-    return sorted(accepted)
+        return sorted(accepted + standalone)
+    # Unknown family → all survivors (complementary features have at least
+    # one positive importance test, so excluding them is the aggressive choice)
+    log.warning(f"Unknown family {family!r} — using all surviving features")
+    return sorted(accepted + complementary + standalone + linear_only)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -165,7 +193,7 @@ def route_features(filter_report: pd.DataFrame) -> dict:
             filter_report.index[groups == group_name].tolist()
         )
 
-    all_families = GBDT | RF_ET | WEAK_TREE | LINEAR | FRAGILE | NEURAL
+    all_families = TREE_BOOSTED | TREE_BAGGED | LINEAR | FRAGILE | NEURAL
     per_family = {
         family: get_feature_set(family, filter_report)
         for family in sorted(all_families)

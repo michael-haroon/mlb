@@ -182,7 +182,7 @@ def run_importance_analysis(
     write_routing_report(filtered_dir, filter_report)
 
     elapsed = time.time() - t0
-    tier_counts = filter_report["tier"].value_counts().to_dict()
+    tier_counts = {k: int(v) for k, v in filter_report["tier"].value_counts().to_dict().items()}
 
     summary = {
         "target": target,
@@ -193,7 +193,7 @@ def run_importance_analysis(
         "n_clusters": len(clusters),
         "tier_counts": tier_counts,
         "n_survivors": len(results["survivors"]),
-        "synthetic_validation_pass": synth["mdi_pass"],
+        "synthetic_validation_pass": bool(synth["mdi_pass"]),
         "elapsed_secs": round(elapsed, 1),
     }
 
