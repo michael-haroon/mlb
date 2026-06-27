@@ -247,7 +247,9 @@ def _build_sgd(task: str, params: dict):
             loss=params.get("loss", "log_loss"),
             alpha=params.get("alpha", 1e-4),
             max_iter=2000,
-            early_stopping=True,
+            # early_stopping disabled: sklearn uses a random internal holdout which
+            # violates temporal ordering — future rows leak into early-stop decisions.
+            early_stopping=False,
             random_state=42,
         )
     else:
@@ -255,7 +257,7 @@ def _build_sgd(task: str, params: dict):
             loss=params.get("loss", "huber"),
             alpha=params.get("alpha", 1e-4),
             max_iter=2000,
-            early_stopping=True,
+            early_stopping=False,
             random_state=42,
         )
 
@@ -314,8 +316,9 @@ def _build_mlp(task: str, params: dict):
         "alpha": params.get("alpha", 1e-4),
         "batch_size": params.get("batch_size", 256),
         "max_iter": 500,
-        "early_stopping": True,
-        "validation_fraction": 0.15,
+        # early_stopping disabled: sklearn's internal validation split is random,
+        # not temporally ordered — future rows would leak into early-stop decisions.
+        "early_stopping": False,
         "random_state": 42,
     }
 

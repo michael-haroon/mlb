@@ -205,21 +205,20 @@ def _run_optuna_hpo(
     train_seasons = seasons.iloc[latest_split.train_idx]
     sample_weights = compute_temporal_weights(train_seasons)
 
-    # Handle NaN for models that cannot accept missing values
+    # Handle NaN imputation for models that cannot accept missing values.
+    # Scaling is intentionally NOT done here — it is applied per inner fold
+    # inside create_objective so each fold's scaler is fit only on that fold's
+    # training rows. A single scaler fit here would use statistics from rows
+    # that are temporally ahead of earlier inner-fold validation rows.
     from .config import NEEDS_IMPUTATION, NEEDS_SCALING
     from .data import _semantic_impute
     if family in NEEDS_IMPUTATION:
         X_train = _semantic_impute(X_train)
-    if family in NEEDS_SCALING:
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        X_train = pd.DataFrame(
-            scaler.fit_transform(X_train),
-            columns=X_train.columns,
-            index=X_train.index,
-        )
 
-    objective = create_objective(family, task, X_train, y_train, sample_weights)
+    objective = create_objective(
+        family, task, X_train, y_train, sample_weights,
+        needs_scaling=(family in NEEDS_SCALING),
+    )
 
     study = optuna.create_study(
         direction="minimize",

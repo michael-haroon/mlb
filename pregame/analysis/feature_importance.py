@@ -6,6 +6,7 @@ All importance methods use LOYO CV for temporal safety.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 import numpy as np
@@ -46,14 +47,21 @@ def compute_mdi(
         model = BaggingRegressor(estimator=base, n_estimators=n_estimators,
                                  max_features=1.0, random_state=42, n_jobs=-1)
 
-    # Fill NaN for tree training (trees handle NaN but sklearn Bagging doesn't propagate)
+    # Fill NaN for tree training (trees handle NaN but sklearn Bagging doesn't propagate).
+    # X.median() is computed on the same data the model trains on, so this is
+    # self-consistent. MDI is a diagnostic tool (not a training step), so the
+    # mild future-season contamination in the median is acceptable — it does not
+    # affect the LOYO training or prediction pipeline.
     X_filled = X.fillna(X.median())
 
     fit_kwargs = {}
     if sample_weight is not None:
         fit_kwargs["sample_weight"] = sample_weight.values
 
+    log.info(f"MDI: fitting {n_estimators} trees on {X.shape[0]:,} samples × {X.shape[1]} features")
+    t0 = time.time()
     model.fit(X_filled, y, **fit_kwargs)
+    log.info(f"MDI: fit complete in {time.time()-t0:.1f}s")
 
     # Extract feature importances from all trees
     importances = np.zeros((n_estimators, X.shape[1]))
@@ -92,7 +100,11 @@ def compute_mda(
     feature_names = X.columns.tolist()
     mda_scores = np.zeros((len(splits), len(feature_names)))
 
+    n_splits = len(splits)
+    log.info(f"MDA: {n_splits} LOYO folds × {len(feature_names)} features × {n_estimators} trees each")
     for fold_idx, (train_idx, val_idx) in enumerate(splits):
+        t_fold = time.time()
+        log.info(f"MDA: fold {fold_idx+1}/{n_splits} — train={len(train_idx):,} val={len(val_idx):,}")
         X_train = X.iloc[train_idx].fillna(X.iloc[train_idx].median())
         X_val = X.iloc[val_idx].fillna(X.iloc[train_idx].median())
         y_train = y.iloc[train_idx]
@@ -108,12 +120,15 @@ def compute_mda(
                                      random_state=42, n_jobs=-1)
 
         model.fit(X_train, y_train)
+        log.info(f"MDA: fold {fold_idx+1}/{n_splits} fit done in {time.time()-t_fold:.1f}s — permuting {len(feature_names)} features")
 
         # Baseline score
         baseline = _score(model, X_val, y_val, task)
 
         # Permute each feature and measure degradation
         for j, feat in enumerate(feature_names):
+            if j % 50 == 0:
+                log.info(f"MDA: fold {fold_idx+1}/{n_splits} — permuting feature {j+1}/{len(feature_names)}")
             X_perm = X_val.copy()
             X_perm[feat] = np.random.permutation(X_perm[feat].values)
             permuted_score = _score(model, X_perm, y_val, task)
@@ -146,7 +161,10 @@ def compute_sfi(
     feature_names = X.columns.tolist()
     sfi_scores = np.zeros(len(feature_names))
 
+    log.info(f"SFI: {len(feature_names)} features × {len(splits)} LOYO folds")
     for j, feat in enumerate(feature_names):
+        if j % 20 == 0:
+            log.info(f"SFI: feature {j+1}/{len(feature_names)}")
         fold_scores = []
         for train_idx, val_idx in splits:
             X_train_j = X.iloc[train_idx][[feat]].fillna(X.iloc[train_idx][feat].median())

@@ -30,6 +30,7 @@ def create_objective(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     sample_weights: pd.Series | None = None,
+    needs_scaling: bool = False,
 ) -> Callable[[optuna.Trial], float]:
     """Create an Optuna objective function for a specific model family.
 
@@ -40,11 +41,15 @@ def create_objective(
     task : str
         "classification" or "regression".
     X_train : pd.DataFrame
-        Training features (from LOYO training portion).
+        Training features (from LOYO training portion, already imputed if needed).
     y_train : pd.Series
         Training targets.
     sample_weights : pd.Series, optional
         Temporal sample weights.
+    needs_scaling : bool
+        If True, fit a StandardScaler on each inner fold's training rows and
+        apply it to that fold's validation rows. Scaling must happen per fold
+        to avoid fitting on rows that are temporally ahead of the val rows.
 
     Returns
     -------
@@ -68,6 +73,20 @@ def create_objective(
             X_va = X_train.iloc[va_idx]
             y_tr = y_train.iloc[tr_idx]
             y_va = y_train.iloc[va_idx]
+
+            # Per-fold scaling: fit only on this fold's training rows so val
+            # rows are never used to compute scale statistics.
+            if needs_scaling:
+                from sklearn.preprocessing import StandardScaler
+                fold_scaler = StandardScaler()
+                X_tr = pd.DataFrame(
+                    fold_scaler.fit_transform(X_tr),
+                    columns=X_tr.columns, index=X_tr.index,
+                )
+                X_va = pd.DataFrame(
+                    fold_scaler.transform(X_va),
+                    columns=X_va.columns, index=X_va.index,
+                )
 
             # Recompute weights for this inner fold
             if sample_weights is not None:
