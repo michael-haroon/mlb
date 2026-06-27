@@ -6,6 +6,7 @@ space for its model family and evaluates via inner temporal CV.
 """
 from __future__ import annotations
 
+import gc
 import logging
 from typing import Callable
 
@@ -102,6 +103,8 @@ def create_objective(
             except Exception as e:
                 log.debug(f"Trial {trial.number} fold {fold_idx} failed: {e}")
                 return float("inf")
+            finally:
+                del model
 
             # Pruning: report intermediate value
             trial.report(np.mean(scores), fold_idx)

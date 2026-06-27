@@ -12,8 +12,29 @@ Subcommands:
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
+
+LOG_DIR = Path("data/logs")
+
+
+def _configure_logging() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    if not root.handlers:
+        fh = logging.FileHandler(LOG_DIR / "pregame_cli.log")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s %(message)s"))
+        root.addHandler(fh)
+
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+        root.addHandler(sh)
 
 
 def main() -> None:
@@ -35,7 +56,7 @@ def main() -> None:
     build_parser.add_argument("--source", help="S3 URI or local path to raw data",
                               default="s3://mlb-265753586044-us-east-1-an/data")
     build_parser.add_argument("--output", help="Output directory for artifacts",
-                              default="pregame/artifacts")
+                              default="pregame/artifacts/features")
     build_parser.add_argument("--season-start", type=int, default=2015)
     build_parser.add_argument("--season-end", type=int, default=None)
     build_parser.add_argument("--tune-ratings", action="store_true", default=True,
@@ -48,15 +69,17 @@ def main() -> None:
 
     # --- Feature Importance ---
     imp_parser = subparsers.add_parser("run-importance", help="Feature importance analysis")
-    imp_parser.add_argument("--features", required=True, help="Path to game_features.parquet")
-    imp_parser.add_argument("--output", required=True)
+    imp_parser.add_argument("--features", default="pregame/artifacts/features/game_features.parquet",
+                             help="Path to game_features.parquet")
+    imp_parser.add_argument("--output", default="pregame/artifacts/importance")
     imp_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
     imp_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
 
     # --- Train ---
     train_parser = subparsers.add_parser("train", help="LOYO CV training with Optuna")
-    train_parser.add_argument("--features", required=True, help="Path to game_features.parquet")
-    train_parser.add_argument("--output", required=True)
+    train_parser.add_argument("--features", default="pregame/artifacts/features/game_features.parquet",
+                               help="Path to game_features.parquet")
+    train_parser.add_argument("--output", default="pregame/artifacts/models")
     train_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
     train_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
     train_parser.add_argument("--families", nargs="*", default=None,
@@ -77,6 +100,7 @@ def main() -> None:
     pred_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
 
     args = parser.parse_args()
+    _configure_logging()
 
     if args.command is None:
         parser.print_help()
@@ -141,6 +165,8 @@ def _run_importance(args):
 
 
 def _run_train(args):
+    import gc
+
     from .strategy.config import ALL_TARGETS
     from .strategy.train import train_target
 
@@ -157,6 +183,10 @@ def _run_train(args):
             tier=args.tier,
         )
         all_results[target] = {k: v.get("status", "unknown") for k, v in result.items()}
+        # Release per-target result dict (fold metrics, OOF arrays, etc.) before
+        # loading the next target's feature matrix
+        del result
+        gc.collect()
     print(json.dumps(all_results, indent=2))
 
 

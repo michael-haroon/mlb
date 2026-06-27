@@ -182,13 +182,18 @@ def _build_logistic_regression(task: str, params: dict):
     from sklearn.linear_model import LogisticRegression, Ridge
 
     if task == "classification":
-        return LogisticRegression(
-            C=params.get("C", 0.1),
-            penalty=params.get("penalty", "l2"),
-            solver=params.get("solver", "lbfgs"),
-            max_iter=2000,
-            random_state=42,
-        )
+        penalty = params.get("penalty", "l2")
+        # Derive solver from penalty — study.best_params only contains trial.suggest_* keys,
+        # so any solver set conditionally in the Optuna objective is dropped. Rederive here.
+        if penalty in ("l1", "elasticnet"):
+            solver = "saga"
+        else:
+            solver = params.get("solver", "lbfgs")
+        kwargs = dict(C=params.get("C", 0.1), penalty=penalty, solver=solver,
+                      max_iter=2000, random_state=42)
+        if penalty == "elasticnet":
+            kwargs["l1_ratio"] = params.get("l1_ratio", 0.5)
+        return LogisticRegression(**kwargs)
     else:
         return Ridge(alpha=params.get("alpha", 1.0), random_state=42)
 

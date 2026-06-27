@@ -6,6 +6,7 @@ Two-phase per model family:
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import pickle
@@ -15,6 +16,17 @@ from pathlib import Path
 import numpy as np
 import optuna
 import pandas as pd
+
+
+def _json_default(obj):
+    """JSON serializer for numpy types that json.dump can't handle."""
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return str(obj)
 
 from .config import (
     OPTUNA_N_TRIALS,
@@ -132,12 +144,15 @@ def train_target(
 
                 # Fold metrics
                 metrics = compute_metrics(prepared.y_val.values, preds, task)
-                metrics["val_season"] = split.val_season
+                metrics["val_season"] = int(split.val_season)
                 fold_metrics.append(metrics)
 
             except Exception as e:
                 log.warning(f"  [{family}] Fold {split.val_season} failed: {e}")
-                continue
+            finally:
+                # Release fitted model and fold data; prepared holds train+val matrices
+                del model, prepared
+                gc.collect()
 
         # Aggregate metrics
         if fold_metrics:
@@ -168,7 +183,7 @@ def train_target(
     # Save summary
     summary_path = output_dir / f"training_summary_{target}_{tier}.json"
     with open(summary_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+        json.dump(results, f, indent=2, default=_json_default)
 
     return results
 
@@ -190,17 +205,11 @@ def _run_optuna_hpo(
     train_seasons = seasons.iloc[latest_split.train_idx]
     sample_weights = compute_temporal_weights(train_seasons)
 
-    # Handle NaN for linear models in HPO
+    # Handle NaN for models that cannot accept missing values
     from .config import NEEDS_IMPUTATION, NEEDS_SCALING
+    from .data import _semantic_impute
     if family in NEEDS_IMPUTATION:
-        from sklearn.experimental import enable_iterative_imputer  # noqa: F401
-        from sklearn.impute import IterativeImputer
-        imputer = IterativeImputer(max_iter=10, random_state=42)
-        X_train = pd.DataFrame(
-            imputer.fit_transform(X_train),
-            columns=X_train.columns,
-            index=X_train.index,
-        )
+        X_train = _semantic_impute(X_train)
     if family in NEEDS_SCALING:
         from sklearn.preprocessing import StandardScaler
         scaler = StandardScaler()
@@ -219,7 +228,11 @@ def _run_optuna_hpo(
     )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
-    return study.best_params
+    best_params = study.best_params
+    # Drop study before returning — it holds all 100 trial objects in memory
+    del study
+    gc.collect()
+    return best_params
 
 
 def _aggregate_fold_metrics(fold_metrics: list[dict]) -> dict:
@@ -243,6 +256,6 @@ def _aggregate_fold_metrics(fold_metrics: list[dict]) -> dict:
     for key in numeric_keys:
         values = [m.get(key, 0) for m in fold_metrics]
         agg[key] = sum(v * w for v, w in zip(values, weights)) / total_w
-        agg[f"{key}_per_season"] = {m["val_season"]: m.get(key) for m in fold_metrics}
+        agg[f"{key}_per_season"] = {int(m["val_season"]): m.get(key) for m in fold_metrics}
 
     return agg
