@@ -95,11 +95,22 @@ def main() -> None:
     train_parser.add_argument("--n-trials", type=int, default=100)
     train_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
 
+    # --- Ensemble ---
+    ens_parser = subparsers.add_parser("ensemble", help="Build ensemble from trained OOF predictions")
+    ens_parser.add_argument("--models", required=True, help="Path to models directory (contains OOF .npy and params .json)")
+    ens_parser.add_argument("--features", default="pregame/artifacts/features/game_features.parquet",
+                             help="Path to game_features.parquet")
+    ens_parser.add_argument("--output", default=None, help="Output directory for ensemble .pkl (default: same as --models)")
+    ens_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
+    ens_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
+    ens_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
+
     # --- Evaluate ---
     eval_parser = subparsers.add_parser("evaluate", help="Evaluation and diagnostics")
     eval_parser.add_argument("--models", required=True, help="Path to models directory")
-    eval_parser.add_argument("--output", required=True)
+    eval_parser.add_argument("--output", default="pregame/artifacts/evaluation")
     eval_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
+    eval_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
 
     # --- Predict ---
     pred_parser = subparsers.add_parser("predict", help="Inference on new features")
@@ -122,6 +133,8 @@ def main() -> None:
         _run_importance(args)
     elif args.command == "train":
         _run_train(args)
+    elif args.command == "ensemble":
+        _run_ensemble(args)
     elif args.command == "evaluate":
         _run_evaluate(args)
     elif args.command == "predict":
@@ -202,41 +215,220 @@ def _run_train(args):
     print(json.dumps(all_results, indent=2))
 
 
+def _run_ensemble(args):
+    import gc
+
+    import numpy as np
+    import pandas as pd
+
+    from .strategy.calibration import calibrate_classification, calibrate_regression
+    from .strategy.config import ALL_TARGETS, TARGETS_CLASSIFICATION
+    from .strategy.ensemble import (
+        build_ensemble,
+        fit_and_save_ensemble,
+        load_ensemble_oof,
+        predict_ensemble,
+    )
+    from .strategy.evaluate import compute_metrics
+
+    models_dir = Path(args.models)
+    output_dir = Path(args.output) if args.output else models_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    features_path = Path(args.features)
+
+    targets = [args.target] if args.target else ALL_TARGETS
+    df = pd.read_parquet(features_path)
+
+    results = {}
+    for target in targets:
+        task = "classification" if target in TARGETS_CLASSIFICATION else "regression"
+
+        if target not in df.columns:
+            print(f"[{target}] Not found in features, skipping")
+            continue
+
+        oof_matrix = load_ensemble_oof(models_dir, target, args.tier)
+        if not oof_matrix:
+            print(f"[{target}] No OOF files found, skipping")
+            continue
+
+        y_series = df[target].dropna()
+        y_true = y_series.values
+
+        # Build per-family aggregate metrics from training_summary for quality filtering
+        summary_path = models_dir / f"training_summary_{target}_{args.tier}.json"
+        family_metrics = {}
+        if summary_path.exists():
+            with open(summary_path) as f:
+                summary = json.load(f)
+            primary = "log_loss" if task == "classification" else "mae"
+            for fam, v in summary.items():
+                if v.get("status") == "success":
+                    agg = v.get("aggregate_metrics", {})
+                    val = agg.get(primary)
+                    if val is not None:
+                        family_metrics[fam] = {primary: val}
+
+        # Align OOF arrays to y_true length (OOF may be shorter if early seasons skipped)
+        n = len(y_true)
+        aligned_oof = {}
+        for fam, arr in oof_matrix.items():
+            aligned_oof[fam] = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
+
+        ens_result = build_ensemble(
+            oof_matrix=aligned_oof,
+            y_true=y_true,
+            metrics=family_metrics,
+            task=task,
+        )
+
+        members = ens_result.get("members", [])
+        weights = ens_result.get("weights", [])
+
+        if not members:
+            print(f"[{target}] No ensemble members selected: {ens_result.get('error')}")
+            results[target] = ens_result
+            continue
+
+        nonzero_members = [(m, w) for m, w in zip(members, weights) if w >= 0.01]
+        print(f"[{target}] Selected {len(members)} members, {len(nonzero_members)} with non-zero weight: {[m for m,_ in nonzero_members]}")
+        print(f"[{target}] Weights: {[round(w, 3) for _, w in nonzero_members]}")
+        print(f"[{target}] Ensemble metrics: {ens_result.get('ensemble_metrics')}")
+
+        # Refit on full data and save pickle
+        pkl_path = fit_and_save_ensemble(
+            features_path=features_path,
+            models_dir=models_dir,
+            target=target,
+            tier=args.tier,
+            members=members,
+            weights=weights,
+            data_mode=args.data_mode,
+            output_path=output_dir / f"ensemble_{target}_{args.tier}.pkl",
+        )
+
+        # Calibrate using ensemble OOF blend
+        valid_mask = ~np.isnan(y_true)
+        for fam in members:
+            valid_mask &= ~np.isnan(aligned_oof[fam])
+
+        selected_preds = np.column_stack([aligned_oof[m][valid_mask] for m in members])
+        oof_blend = selected_preds @ np.array(weights)
+        oof_std = selected_preds.std(axis=1)
+        yt = y_true[valid_mask]
+
+        if task == "classification":
+            cal_bundle = calibrate_classification(yt, oof_blend, oof_std)
+        else:
+            cal_bundle = calibrate_regression(yt, oof_blend, oof_std)
+
+        # Attach calibration to pickle
+        import pickle
+        with open(pkl_path, "rb") as f:
+            bundle = pickle.load(f)
+        bundle["calibration"] = cal_bundle
+        with open(pkl_path, "wb") as f:
+            pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        results[target] = {
+            "status": "success",
+            "pkl": str(pkl_path),
+            "members": members,
+            "weights": weights,
+            "ensemble_metrics": ens_result.get("ensemble_metrics"),
+        }
+        gc.collect()
+
+    print(json.dumps(results, indent=2, default=str))
+
+
 def _run_evaluate(args):
     import numpy as np
     import pandas as pd
 
     from .strategy.config import ALL_TARGETS, TARGETS_CLASSIFICATION
     from .strategy.distributions import fit_best_distribution, generate_qq_plots
-    from .strategy.evaluate import calibration_curve_data
+    from .strategy.evaluate import (
+        calibration_curve_data,
+        ensemble_diagnostics,
+        print_model_comparison,
+    )
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     models_dir = Path(args.models)
+    tier = getattr(args, "tier", "A")
 
     targets = [args.target] if args.target else ALL_TARGETS
     features_path = models_dir.parent / "features" / "game_features.parquet"
     df = pd.read_parquet(features_path) if features_path.exists() else None
 
     for target in targets:
-        oof_files = list(models_dir.glob(f"oof_{target}_*.npy"))
-        if not oof_files:
-            print(f"No OOF files found for target {target} in {models_dir}, skipping")
+        task = "classification" if target in TARGETS_CLASSIFICATION else "regression"
+
+        # --- 1. Per-family ranking table ---
+        summary_path = models_dir / f"training_summary_{target}_{tier}.json"
+        if summary_path.exists():
+            with open(summary_path) as f:
+                summary = json.load(f)
+            print(f"\n=== {target} ({task}) — model comparison ===")
+            print_model_comparison(summary, task)
+        else:
+            print(f"[{target}] No training summary found at {summary_path}")
+
+        if df is None or target not in df.columns:
             continue
 
-        if df is not None and target in df.columns:
-            y_true = df[target].dropna().values
-            if target not in TARGETS_CLASSIFICATION:
-                for oof_file in oof_files:
-                    oof = np.load(oof_file)
-                    valid = ~np.isnan(oof) & ~np.isnan(y_true[:len(oof)])
-                    if valid.sum() > 30:
-                        residuals = y_true[:len(oof)][valid] - oof[valid]
-                        generate_qq_plots(residuals, output_dir, target)
-                        fit_result = fit_best_distribution(residuals)
-                        print(json.dumps({target: fit_result}, indent=2, default=str))
+        y_true = df[target].dropna().values
 
-    print(f"Evaluation artifacts written to: {output_dir}")
+        # --- 2. QQ plots and residual distributions for regression ---
+        if target not in TARGETS_CLASSIFICATION:
+            oof_files = list(models_dir.glob(f"oof_{target}_*_{tier}.npy"))
+            for oof_file in oof_files:
+                oof = np.load(oof_file)
+                valid = ~np.isnan(oof) & ~np.isnan(y_true[:len(oof)])
+                if valid.sum() > 30:
+                    residuals = y_true[:len(oof)][valid] - oof[valid]
+                    generate_qq_plots(residuals, output_dir, target)
+                    fit_result = fit_best_distribution(residuals)
+                    print(json.dumps({target: fit_result}, indent=2, default=str))
+
+        # --- 3. Ensemble-level diagnostics if pickle exists ---
+        import pickle
+        pkl_path = models_dir / f"ensemble_{target}_{tier}.pkl"
+        if pkl_path.exists():
+            with open(pkl_path, "rb") as f:
+                bundle = pickle.load(f)
+            members = bundle.get("members", [])
+            weights = np.array(bundle.get("weights", []))
+
+            # Reconstruct ensemble OOF blend for diagnostics
+            n = len(y_true)
+            member_oofs = []
+            for m in members:
+                arr = np.load(models_dir / f"oof_{target}_{m}_{tier}.npy")
+                member_oofs.append(arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan))
+
+            if member_oofs:
+                valid_mask = ~np.isnan(y_true)
+                for arr in member_oofs:
+                    valid_mask &= ~np.isnan(arr)
+
+                preds = np.column_stack([a[valid_mask] for a in member_oofs])
+                oof_blend = preds @ weights
+                oof_std = preds.std(axis=1)
+                yt = y_true[valid_mask]
+
+                diag = ensemble_diagnostics(bundle, yt, oof_blend, oof_std)
+                print(f"\n=== {target} — ensemble diagnostics ===")
+                print(json.dumps(diag, indent=2, default=str))
+
+                # Save diagnostics JSON
+                diag_path = output_dir / f"diagnostics_{target}_{tier}.json"
+                with open(diag_path, "w") as f:
+                    json.dump(diag, f, indent=2, default=str)
+
+    print(f"\nEvaluation artifacts written to: {output_dir}")
 
 
 def _run_predict(args):

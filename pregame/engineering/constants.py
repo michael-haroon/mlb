@@ -4,6 +4,48 @@ These are independent copies of MLB schema definitions, decoupled from
 the live module to ensure pregame can evolve without cross-dependencies.
 """
 
+# The 30 active MLB franchise IDs as assigned by statsapi.mlb.com.
+# Used as a hard gate to exclude exhibition opponents (college teams,
+# minor-league affiliates, foreign national teams, futures squads).
+MLB_FRANCHISE_IDS = frozenset({
+    108,  # Los Angeles Angels
+    109,  # Arizona Diamondbacks
+    110,  # Baltimore Orioles
+    111,  # Boston Red Sox
+    112,  # Chicago Cubs
+    113,  # Cincinnati Reds
+    114,  # Cleveland Guardians
+    115,  # Colorado Rockies
+    116,  # Detroit Tigers
+    117,  # Houston Astros
+    118,  # Kansas City Royals
+    119,  # Los Angeles Dodgers
+    120,  # Washington Nationals
+    121,  # New York Mets
+    133,  # Oakland Athletics
+    134,  # Pittsburgh Pirates
+    135,  # San Diego Padres
+    136,  # Seattle Mariners
+    137,  # San Francisco Giants
+    138,  # St. Louis Cardinals
+    139,  # Tampa Bay Rays
+    140,  # Texas Rangers
+    141,  # Toronto Blue Jays
+    142,  # Minnesota Twins
+    143,  # Philadelphia Phillies
+    144,  # Atlanta Braves
+    145,  # Chicago White Sox
+    146,  # Miami Marlins
+    147,  # New York Yankees
+    158,  # Milwaukee Brewers
+})
+
+# game_type_code values that represent competitive MLB play.
+# R=Regular Season, S=Spring Training, D=Division Series,
+# L=League Championship, F=World Series, W=Wild Card.
+# Excluded: E=Exhibition (vs. college/minor-league), A=All-Star (pseudo-teams).
+VALID_GAME_TYPE_CODES = frozenset({"R", "S", "D", "L", "F", "W"})
+
 # MLB regime-change dates used to build structural-break binary features.
 # These mark rule changes that create measurable distributional shifts in the
 # historical data. Each flag is set to 1.0 for all games on/after the cutoff.

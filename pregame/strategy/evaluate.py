@@ -126,6 +126,105 @@ def compute_overfit_gap(train_metrics: dict, val_metrics: dict, task: str) -> fl
     return val_val - train_val
 
 
+def print_model_comparison(
+    summary: dict,
+    task: str,
+) -> str:
+    """Print ranked table of model families from a training_summary JSON dict.
+
+    Returns the name of the best-performing family.
+    """
+    primary = "log_loss" if task == "classification" else "mae"
+    rows = []
+    for family, v in summary.items():
+        if v.get("status") != "success":
+            continue
+        agg = v.get("aggregate_metrics", {})
+        val = agg.get(primary)
+        if val is None:
+            # Fall back to mean over fold_metrics
+            folds = v.get("fold_metrics", [])
+            vals = [f[primary] for f in folds if primary in f]
+            val = sum(vals) / len(vals) if vals else None
+        if val is not None:
+            rows.append((val, family, agg))
+
+    if not rows:
+        print("No successful results found.")
+        return ""
+
+    rows.sort()
+    best_family = rows[0][1]
+
+    header = f"{'Family':<30}  {primary.upper():<10}"
+    if task == "classification":
+        header += f"  {'AUC':<8}  {'ECE':<8}  {'BRIER':<8}"
+    else:
+        header += f"  {'RMSE':<8}  {'R2':<8}"
+    print(header)
+    print("-" * len(header))
+
+    for val, family, agg in rows:
+        line = f"{family:<30}  {val:<10.4f}"
+        if task == "classification":
+            line += f"  {agg.get('auc_roc', float('nan')):<8.4f}"
+            line += f"  {agg.get('ece', float('nan')):<8.4f}"
+            line += f"  {agg.get('brier_score', float('nan')):<8.4f}"
+        else:
+            line += f"  {agg.get('rmse', float('nan')):<8.4f}"
+            line += f"  {agg.get('r2', float('nan')):<8.4f}"
+        print(line)
+
+    return best_family
+
+
+def ensemble_diagnostics(
+    bundle: dict,
+    y_true: np.ndarray,
+    y_oof: np.ndarray,
+    ensemble_std: np.ndarray | None = None,
+) -> dict:
+    """Compute ensemble-level evaluation metrics and calibration diagnostics.
+
+    Parameters
+    ----------
+    bundle : dict
+        Loaded ensemble pickle (must contain 'task').
+    y_true : np.ndarray
+        Ground truth labels aligned with y_oof.
+    y_oof : np.ndarray
+        Ensemble OOF predictions (blended, before calibration).
+    ensemble_std : np.ndarray, optional
+        Per-sample std across ensemble members.
+
+    Returns
+    -------
+    dict of diagnostic metrics.
+    """
+    task = bundle.get("task", "regression")
+    metrics = compute_metrics(y_true, y_oof, task)
+
+    result = {"ensemble_metrics": metrics}
+
+    if task == "classification":
+        cal_curve = calibration_curve_data(y_true, np.clip(y_oof, 0.01, 0.99))
+        result["calibration_curve"] = cal_curve
+
+        # Reliability: expected vs observed probability by bin
+        expected = cal_curve["bin_midpoints"]
+        observed = cal_curve["fraction_positives"]
+        if expected:
+            max_deviation = max(abs(e - o) for e, o in zip(expected, observed))
+            result["max_calibration_deviation"] = max_deviation
+
+    if ensemble_std is not None:
+        result["mean_ensemble_std"] = float(np.nanmean(ensemble_std))
+        result["std_p25"] = float(np.nanpercentile(ensemble_std, 25))
+        result["std_p75"] = float(np.nanpercentile(ensemble_std, 75))
+
+    return result
+
+
 def calibration_curve_data(
     y_true: np.ndarray,
     y_prob: np.ndarray,

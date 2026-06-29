@@ -182,18 +182,17 @@ def _build_logistic_regression(task: str, params: dict):
     from sklearn.linear_model import LogisticRegression, Ridge
 
     if task == "classification":
-        penalty = params.get("penalty", "l2")
-        # Derive solver from penalty — study.best_params only contains trial.suggest_* keys,
-        # so any solver set conditionally in the Optuna objective is dropped. Rederive here.
-        if penalty in ("l1", "elasticnet"):
-            solver = "saga"
-        else:
-            solver = params.get("solver", "lbfgs")
-        kwargs = dict(C=params.get("C", 0.1), penalty=penalty, solver=solver,
-                      max_iter=2000, random_state=42)
-        if penalty == "elasticnet":
-            kwargs["l1_ratio"] = params.get("l1_ratio", 0.5)
-        return LogisticRegression(**kwargs)
+        l1_ratio = params.get("l1_ratio", 0.0)
+        # sklearn 1.8+: penalty= is deprecated. l1_ratio alone controls regularization type:
+        # 0.0 → pure L2 (lbfgs), 1.0 → pure L1 (saga), (0,1) → ElasticNet (saga).
+        solver = "saga" if l1_ratio > 0 else "lbfgs"
+        return LogisticRegression(
+            C=params.get("C", 0.1),
+            l1_ratio=l1_ratio,
+            solver=solver,
+            max_iter=2000,
+            random_state=42,
+        )
     else:
         return Ridge(alpha=params.get("alpha", 1.0), random_state=42)
 
@@ -212,8 +211,9 @@ def _build_lasso(task: str, params: dict):
     from sklearn.linear_model import Lasso, LogisticRegression
 
     if task == "classification":
+        # l1_ratio=1.0 → pure L1; penalty= removed (deprecated in sklearn 1.8)
         return LogisticRegression(C=1.0 / max(params.get("alpha", 1.0), 1e-6),
-                                  penalty="l1", solver="saga", max_iter=2000, random_state=42)
+                                  l1_ratio=1.0, solver="saga", max_iter=2000, random_state=42)
     else:
         return Lasso(alpha=params.get("alpha", 1.0), max_iter=5000, random_state=42)
 
@@ -222,9 +222,9 @@ def _build_elasticnet(task: str, params: dict):
     from sklearn.linear_model import ElasticNet, LogisticRegression
 
     if task == "classification":
+        # penalty= removed (deprecated sklearn 1.8); l1_ratio in (0,1) → ElasticNet via saga
         return LogisticRegression(
             C=params.get("C", 0.1),
-            penalty="elasticnet",
             l1_ratio=params.get("l1_ratio", 0.5),
             solver="saga",
             max_iter=2000,
@@ -246,7 +246,7 @@ def _build_sgd(task: str, params: dict):
         return SGDClassifier(
             loss=params.get("loss", "log_loss"),
             alpha=params.get("alpha", 1e-4),
-            max_iter=2000,
+            max_iter=5000,
             # early_stopping disabled: sklearn uses a random internal holdout which
             # violates temporal ordering — future rows leak into early-stop decisions.
             early_stopping=False,
@@ -256,7 +256,7 @@ def _build_sgd(task: str, params: dict):
         return SGDRegressor(
             loss=params.get("loss", "huber"),
             alpha=params.get("alpha", 1e-4),
-            max_iter=2000,
+            max_iter=5000,
             early_stopping=False,
             random_state=42,
         )
@@ -315,7 +315,7 @@ def _build_mlp(task: str, params: dict):
         "learning_rate_init": params.get("learning_rate_init", 0.001),
         "alpha": params.get("alpha", 1e-4),
         "batch_size": params.get("batch_size", 256),
-        "max_iter": 500,
+        "max_iter": 1000,
         # early_stopping disabled: sklearn's internal validation split is random,
         # not temporally ordered — future rows would leak into early-stop decisions.
         "early_stopping": False,

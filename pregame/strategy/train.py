@@ -109,11 +109,26 @@ def train_target(
     results = {}
 
     for family in families:
+        # Resolve per-family feature set BEFORE HPO so we skip early and HPO
+        # runs on the same filtered feature matrix that LOYO evaluation will use.
+        importance_features = None
+        if filter_report is not None:
+            from ..analysis.feature_routing import get_feature_set
+            importance_features = get_feature_set(family, filter_report)
+            log.info(f"  [{family}] importance filter: {len(importance_features)} features")
+
+        if importance_features is not None and len(importance_features) == 0:
+            log.warning(f"  [{family}] Skipping: importance filter returned 0 features for this target")
+            results[family] = {"status": "no_features"}
+            continue
+
+        X_hpo = X[importance_features] if importance_features is not None else X
+
         log.info(f"  [{family}] Starting Optuna HPO ({n_trials} trials)...")
         t0 = time.time()
 
         try:
-            best_params = _run_optuna_hpo(family, task, X, y, seasons, splits, n_trials)
+            best_params = _run_optuna_hpo(family, task, X_hpo, y, seasons, splits, n_trials)
         except Exception as e:
             log.warning(f"  [{family}] Optuna HPO failed: {e}")
             results[family] = {"status": "hpo_failed", "error": str(e)}
@@ -125,14 +140,9 @@ def train_target(
         oof_predictions = np.full(len(y), np.nan)
         fold_metrics = []
 
-        # Resolve per-family feature set from importance analysis
-        importance_features = None
-        if filter_report is not None:
-            from ..analysis.feature_routing import get_feature_set
-            importance_features = get_feature_set(family, filter_report)
-            log.info(f"  [{family}] importance filter: {len(importance_features)} features")
-
         for split in splits:
+            model = None
+            prepared = None
             try:
                 prepared = prepare_fold(X, y, seasons, split, family, tier=tier,
                                         importance_features=importance_features)
@@ -168,8 +178,13 @@ def train_target(
             except Exception as e:
                 log.warning(f"  [{family}] Fold {split.val_season} failed: {e}")
             finally:
-                # Release fitted model and fold data; prepared holds train+val matrices
-                del model, prepared
+                # Guard against UnboundLocalError when prepare_fold/build_model throws
+                # before either variable is assigned — del on unbound local propagates
+                # out of finally and kills the entire training run.
+                if model is not None:
+                    del model
+                if prepared is not None:
+                    del prepared
                 gc.collect()
 
         # Aggregate metrics

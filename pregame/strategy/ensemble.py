@@ -4,16 +4,22 @@
 2. Compute pairwise correlation of OOF predictions
 3. Greedy forward selection maximizing diversity
 4. SLSQP weight optimization
+5. Refit selected members on full training data and persist to pickle
 """
 from __future__ import annotations
 
+import gc
+import inspect
+import json
 import logging
+import pickle
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize
 
-from .config import MAX_CORRELATION, MAX_ENSEMBLE_SIZE, METRIC_TOLERANCE
+from .config import MAX_CORRELATION, MAX_ENSEMBLE_SIZE, METRIC_TOLERANCE, NEEDS_IMPUTATION, NEEDS_SCALING, TARGETS_CLASSIFICATION
 
 log = logging.getLogger(__name__)
 
@@ -201,3 +207,170 @@ def predict_ensemble(
     ensemble_std = pred_matrix.std(axis=1)
 
     return blended, ensemble_std
+
+
+def load_ensemble_oof(
+    models_dir: Path,
+    target: str,
+    tier: str,
+) -> dict[str, np.ndarray]:
+    """Load all saved OOF arrays for a target into a name → array dict.
+
+    Returns a dict keyed by family name (e.g. "lightgbm") mapping to the
+    OOF prediction array saved by train_target().
+    """
+    models_dir = Path(models_dir)
+    oof_files = sorted(models_dir.glob(f"oof_{target}_*_{tier}.npy"))
+
+    result = {}
+    for f in oof_files:
+        # Filename pattern: oof_{target}_{family}_{tier}.npy
+        # Strip leading oof_{target}_ and trailing _{tier}.npy
+        stem = f.stem  # e.g. oof_home_win_lightgbm_A
+        prefix = f"oof_{target}_"
+        suffix = f"_{tier}"
+        family = stem[len(prefix):]
+        if family.endswith(suffix):
+            family = family[: -len(suffix)]
+        result[family] = np.load(f)
+        log.debug(f"Loaded OOF for {family}: shape={result[family].shape}")
+
+    log.info(f"Loaded {len(result)} OOF arrays for target={target} tier={tier}")
+    return result
+
+
+def fit_and_save_ensemble(
+    features_path: Path,
+    models_dir: Path,
+    target: str,
+    tier: str,
+    members: list[str],
+    weights: list[float],
+    data_mode: str = "2015+",
+    output_path: Path | None = None,
+) -> Path:
+    """Refit selected ensemble members on the full training set and save to pickle.
+
+    After build_ensemble() selects members and optimizes weights from OOF arrays,
+    this function refits each selected model on the full dataset (all LOYO folds
+    combined) and bundles everything into a deployable pickle.
+
+    Parameters
+    ----------
+    features_path : Path
+        Path to game_features.parquet.
+    models_dir : Path
+        Directory containing params_{target}_{family}_{tier}.json files.
+    target : str
+        Target column name.
+    tier : str
+        Data tier ("A", "B", or "C").
+    members : list[str]
+        Family names selected by build_ensemble().
+    weights : list[float]
+        Blend weights aligned with members.
+    data_mode : str
+        "2015+" or "all".
+    output_path : Path, optional
+        Destination pickle path. Defaults to models_dir/ensemble_{target}_{tier}.pkl.
+
+    Returns
+    -------
+    Path
+        Path to the saved ensemble pickle.
+    """
+    from sklearn.preprocessing import StandardScaler
+
+    from .data import _semantic_impute, compute_temporal_weights, load_features
+    from .models import build_model
+
+    models_dir = Path(models_dir)
+    output_path = output_path or models_dir / f"ensemble_{target}_{tier}.pkl"
+    task = "classification" if target in TARGETS_CLASSIFICATION else "regression"
+
+    # Drop negligible-weight members — SLSQP may return tiny floats (e.g. 1e-8) rather
+    # than exact zeros; threshold at 1% so rounding artifacts don't survive into the pickle
+    nonzero = [(m, w) for m, w in zip(members, weights) if w >= 0.01]
+    if len(nonzero) < len(members):
+        dropped = [m for m, w in zip(members, weights) if w == 0]
+        log.info(f"Dropping {len(dropped)} zero-weight members: {dropped}")
+        members, weights = zip(*nonzero)
+        members, weights = list(members), list(weights)
+
+    log.info(f"Refitting {len(members)} ensemble members for {target} on full training data")
+
+    X, y, seasons = load_features(features_path, target, data_mode)
+    sample_weights = compute_temporal_weights(seasons)
+
+    # Load importance filter if present — mirrors train_target() behavior
+    filter_report = None
+    from .config import IMPORTANCE_DIR
+    report_path = IMPORTANCE_DIR / target / "filtered" / "feature_report.csv"
+    if report_path.exists():
+        filter_report = pd.read_csv(report_path, index_col="feature")
+        log.info(f"  Importance filter loaded: {len(filter_report)} features")
+
+    member_bundles = []
+
+    for family in members:
+        params_file = models_dir / f"params_{target}_{family}_{tier}.json"
+        if not params_file.exists():
+            raise FileNotFoundError(
+                f"Params file not found: {params_file}. Run train first."
+            )
+        with open(params_file) as f:
+            best_params = json.load(f)
+
+        # Resolve feature set (mirrors prepare_fold logic in train.py)
+        importance_features = None
+        if filter_report is not None:
+            from ..analysis.feature_routing import get_feature_set
+            importance_features = get_feature_set(family, filter_report)
+
+        X_fit = X[importance_features] if importance_features is not None else X
+        feature_columns = list(X_fit.columns)
+
+        # Imputation then scaling — both fit only on training data (the full set here)
+        if family in NEEDS_IMPUTATION:
+            X_fit = _semantic_impute(X_fit)
+
+        scaler = None
+        if family in NEEDS_SCALING:
+            scaler = StandardScaler()
+            X_arr = scaler.fit_transform(X_fit.values)
+        else:
+            X_arr = X_fit.values
+
+        model = build_model(family, task, best_params)
+        fit_kwargs = {}
+        if "sample_weight" in inspect.signature(model.fit).parameters:
+            fit_kwargs["sample_weight"] = sample_weights.values
+
+        model.fit(X_arr, y.values, **fit_kwargs)
+
+        member_bundles.append({
+            "family": family,
+            "model": model,
+            "scaler": scaler,
+            "feature_columns": feature_columns,
+            "needs_imputation": family in NEEDS_IMPUTATION,
+        })
+
+        log.info(f"  Fitted {family} on {X_arr.shape[0]} rows")
+        del X_arr
+        gc.collect()
+
+    bundle = {
+        "target": target,
+        "task": task,
+        "tier": tier,
+        "members": members,
+        "weights": np.array(weights),
+        "member_bundles": member_bundles,
+    }
+
+    with open(output_path, "wb") as f:
+        pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    log.info(f"Ensemble saved to {output_path}")
+    return output_path
