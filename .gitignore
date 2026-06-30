@@ -1,2 +1,13 @@
+# Cache
 __pycache__/
 *.pyc
+.pytest_cache
+
+# Artifacts
+artifacts/
+
+# Logs
+*.logs
+
+# Sensitive
+.env
