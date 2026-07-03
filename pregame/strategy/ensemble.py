@@ -91,9 +91,36 @@ def build_ensemble(
             viable[name] = auc
         log.info(f"Filtering: {len(oof_matrix)} candidates → {len(viable)} survivors (AUC dead-zone filter)")
     else:
-        # For regression all candidates with OOF arrays are viable; SLSQP prunes.
-        viable = {name: 0.0 for name in oof_matrix}
-        log.info(f"Regression: passing all {len(viable)} candidates to SLSQP")
+        # Filter by MAE quality and R² before greedy selection. Without this,
+        # diversity-first selection seeds from an arbitrary (alphabetical) model
+        # and adds low-correlation candidates regardless of quality, letting
+        # MLP/KNN in via orthogonality alone. R²<0 means worse than predicting
+        # the mean — no ensemble role regardless of diversity value.
+        mae_scores = {
+            name: metrics[name]["mae"]
+            for name in oof_matrix
+            if name in metrics and "mae" in metrics[name]
+        }
+        r2_scores = {
+            name: metrics[name].get("r2", 0.0)
+            for name in oof_matrix
+            if name in metrics
+        }
+        # Drop models worse than predicting the mean
+        negative_r2 = [n for n, r2 in r2_scores.items() if r2 < 0]
+        if negative_r2:
+            log.info(f"  Regression R²<0 filter: dropped {negative_r2}")
+            mae_scores = {n: v for n, v in mae_scores.items() if n not in negative_r2}
+        if mae_scores:
+            best_mae = min(mae_scores.values())
+            threshold = best_mae * metric_tolerance
+            viable = {name: mae_scores[name] for name in mae_scores if mae_scores[name] <= threshold}
+            dropped = [n for n in oof_matrix if n not in viable]
+            if dropped:
+                log.info(f"  Regression MAE quality filter (≤ {threshold:.4f}): dropped {dropped}")
+        else:
+            viable = {name: 0.0 for name in oof_matrix}
+        log.info(f"Regression: {len(oof_matrix)} candidates → {len(viable)} after quality filter")
 
     if not viable:
         return {"members": [], "weights": [], "error": "all candidates in AUC dead zone"}
@@ -113,11 +140,11 @@ def build_ensemble(
     # --- Step 3: Greedy forward selection ---
     # Seed with the model that has the strongest standalone signal.
     # Classification: highest AUC (viable values are AUC scores).
-    # Regression: viable values are all 0.0 (no ranking); fall back to first name.
+    # Regression: lowest MAE (viable values are MAE scores after quality filter).
     if task == "classification":
         best_candidate = max(viable_names, key=lambda n: viable[n])
     else:
-        best_candidate = viable_names[0]
+        best_candidate = min(viable_names, key=lambda n: viable[n])
     selected = [best_candidate]
     remaining = [n for n in viable_names if n != best_candidate]
 
