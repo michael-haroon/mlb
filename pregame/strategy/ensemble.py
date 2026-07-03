@@ -91,26 +91,15 @@ def build_ensemble(
             viable[name] = auc
         log.info(f"Filtering: {len(oof_matrix)} candidates → {len(viable)} survivors (AUC dead-zone filter)")
     else:
-        # Filter by MAE quality and R² before greedy selection. Without this,
+        # Filter by MAE quality before greedy selection. Without this,
         # diversity-first selection seeds from an arbitrary (alphabetical) model
         # and adds low-correlation candidates regardless of quality, letting
-        # MLP/KNN in via orthogonality alone. R²<0 means worse than predicting
-        # the mean — no ensemble role regardless of diversity value.
+        # MLP/KNN in via orthogonality alone.
         mae_scores = {
             name: metrics[name]["mae"]
             for name in oof_matrix
             if name in metrics and "mae" in metrics[name]
         }
-        r2_scores = {
-            name: metrics[name].get("r2", 0.0)
-            for name in oof_matrix
-            if name in metrics
-        }
-        # Drop models worse than predicting the mean
-        negative_r2 = [n for n, r2 in r2_scores.items() if r2 < 0]
-        if negative_r2:
-            log.info(f"  Regression R²<0 filter: dropped {negative_r2}")
-            mae_scores = {n: v for n, v in mae_scores.items() if n not in negative_r2}
         if mae_scores:
             best_mae = min(mae_scores.values())
             threshold = best_mae * metric_tolerance

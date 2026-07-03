@@ -283,10 +283,6 @@ def _run_ensemble(args):
                     val = agg.get(primary)
                     if val is not None:
                         family_metrics[fam] = {primary: val}
-                        if task == "regression":
-                            r2 = agg.get("r2")
-                            if r2 is not None:
-                                family_metrics[fam]["r2"] = r2
 
         # Align OOF arrays to y_true length (OOF may be shorter if early seasons skipped)
         n = len(y_true)
@@ -440,10 +436,6 @@ def _run_compare_ensemble(args):
                     val = agg.get(primary)
                     if val is not None:
                         family_metrics[fam] = {primary: val}
-                        if task == "regression":
-                            r2 = agg.get("r2")
-                            if r2 is not None:
-                                family_metrics[fam]["r2"] = r2
 
         # Align OOF arrays to y_true length (OOF may be shorter if early seasons skipped)
         n = len(y_true)
