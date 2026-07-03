@@ -214,3 +214,52 @@ def _build_bias_correction(
         }
 
     return correction
+
+
+def fit_platt(oof_raw: np.ndarray, y_true: np.ndarray):
+    """Fit Platt scaling: logistic regression on raw scores.
+
+    Returns (clf, clip_lo, clip_hi) where clf is a fitted LogisticRegression.
+    C=1e5 makes it nearly unconstrained — we want the sigmoid shape, not regularization.
+    """
+    from sklearn.linear_model import LogisticRegression
+    clip_lo = np.nanpercentile(oof_raw, 0.1)
+    clip_hi = np.nanpercentile(oof_raw, 99.9)
+    X = np.clip(oof_raw, clip_lo, clip_hi).reshape(-1, 1)
+    clf = LogisticRegression(C=1e5, solver="lbfgs", max_iter=1000)
+    clf.fit(X, y_true)
+    return clf, clip_lo, clip_hi
+
+def apply_platt(oof_raw: np.ndarray, clf, clip_lo: float, clip_hi: float) -> np.ndarray:
+    X = np.clip(oof_raw, clip_lo, clip_hi).reshape(-1, 1)
+    return clf.predict_proba(X)[:, 1]
+
+def fit_temperature(oof_raw: np.ndarray, y_true: np.ndarray) -> float:
+    """Fit temperature scaling: single scalar T minimizing NLL.
+
+    p_cal = sigmoid(logit(p) / T). T>1 softens, T<1 sharpens.
+    """
+    from scipy.optimize import minimize_scalar
+    p = np.clip(oof_raw, 1e-7, 1 - 1e-7)
+    logits = np.log(p / (1 - p))
+
+    def nll(T):
+        T = max(T, 1e-3)
+        p_cal = 1.0 / (1.0 + np.exp(-logits / T))
+        p_cal = np.clip(p_cal, 1e-7, 1 - 1e-7)
+        return -np.mean(y_true * np.log(p_cal) + (1 - y_true) * np.log(1 - p_cal))
+
+    result = minimize_scalar(nll, bounds=(0.1, 10.0), method="bounded")
+    return float(result.x)
+
+def apply_temperature(oof_raw: np.ndarray, T: float) -> np.ndarray:
+    p = np.clip(oof_raw, 1e-7, 1 - 1e-7)
+    logits = np.log(p / (1 - p))
+    return 1.0 / (1.0 + np.exp(-logits / T))
+
+def fit_isotonic_per_model(oof_raw: np.ndarray, y_true: np.ndarray):
+    """Fit isotonic regression on a single model's OOF predictions."""
+    from sklearn.isotonic import IsotonicRegression
+    ir = IsotonicRegression(out_of_bounds="clip")
+    ir.fit(oof_raw, y_true)
+    return ir

@@ -105,6 +105,19 @@ def main() -> None:
     ens_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
     ens_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
 
+    # --- Compare Ensemble ---
+    cmp_parser = subparsers.add_parser(
+        "compare-ensemble",
+        help="Compare calibration × ensemble method combinations (diagnostic, no pickle changes)",
+    )
+    cmp_parser.add_argument("--models", required=True, help="Path to models directory (contains OOF .npy and params .json)")
+    cmp_parser.add_argument("--features", default="pregame/artifacts/features/game_features.parquet",
+                             help="Path to game_features.parquet")
+    cmp_parser.add_argument("--output", default=None, help="Output directory for comparison JSON (default: same as --models)")
+    cmp_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
+    cmp_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
+    cmp_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
+
     # --- Evaluate ---
     eval_parser = subparsers.add_parser("evaluate", help="Evaluation and diagnostics")
     eval_parser.add_argument("--models", required=True, help="Path to models directory")
@@ -135,6 +148,8 @@ def main() -> None:
         _run_train(args)
     elif args.command == "ensemble":
         _run_ensemble(args)
+    elif args.command == "compare-ensemble":
+        _run_compare_ensemble(args)
     elif args.command == "evaluate":
         _run_evaluate(args)
     elif args.command == "predict":
@@ -275,6 +290,20 @@ def _run_ensemble(args):
         for fam, arr in oof_matrix.items():
             aligned_oof[fam] = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
 
+        # 2020 was a 60-game shortened season played under pandemic protocols: no fans,
+        # neutral-site bubble games, universal DH for the first time, and dramatically
+        # compressed schedule. Every distributional property (run environment, rest
+        # patterns, win rates) is a structural outlier — including it in ensemble weight
+        # optimization or calibration contaminates both. Exclude permanently and silently.
+        #
+        # OOF arrays are positionally aligned to the non-null target rows of the full df
+        # (same row order as y_series). The no2020_mask is therefore built over those
+        # same non-null rows so the boolean index is compatible with both y_true and
+        # each OOF array.
+        no2020_mask = (df.loc[y_series.index, "season"] != 2020).values
+        y_true = y_true[no2020_mask]
+        aligned_oof = {fam: arr[no2020_mask] for fam, arr in aligned_oof.items()}
+
         ens_result = build_ensemble(
             oof_matrix=aligned_oof,
             y_true=y_true,
@@ -295,7 +324,9 @@ def _run_ensemble(args):
         print(f"[{target}] Weights: {[round(w, 3) for _, w in nonzero_members]}")
         print(f"[{target}] Ensemble metrics: {ens_result.get('ensemble_metrics')}")
 
-        # Refit on full data and save pickle
+        # Refit on full data and save pickle.
+        # Pass aligned_oof so fit_and_save_ensemble can fit per-model isotonic calibrators
+        # that match the calibration applied during SLSQP weight optimization.
         pkl_path = fit_and_save_ensemble(
             features_path=features_path,
             models_dir=models_dir,
@@ -305,14 +336,35 @@ def _run_ensemble(args):
             weights=weights,
             data_mode=args.data_mode,
             output_path=output_dir / f"ensemble_{target}_{args.tier}.pkl",
+            oof_matrix=aligned_oof,
         )
 
-        # Calibrate using ensemble OOF blend
+        # Calibrate using ensemble OOF blend.
+        # For classification: apply each member's per-model isotonic calibrator
+        # before blending so the CalibrationBundle is fitted on the same
+        # distribution it will receive at inference time (calibrated blend,
+        # not raw blend). Without this, the bundle corrects the wrong distribution.
         valid_mask = ~np.isnan(y_true)
         for fam in members:
             valid_mask &= ~np.isnan(aligned_oof[fam])
 
-        selected_preds = np.column_stack([aligned_oof[m][valid_mask] for m in members])
+        import pickle as _pickle
+        with open(pkl_path, "rb") as _f:
+            _saved_bundle = _pickle.load(_f)
+        _member_map = {mb["family"]: mb for mb in _saved_bundle["member_bundles"]}
+
+        if task == "classification":
+            cal_cols = []
+            for fam in members:
+                col = aligned_oof[fam][valid_mask]
+                iso = _member_map.get(fam, {}).get("isotonic_calibrator")
+                if iso is not None:
+                    col = iso.predict(col)
+                cal_cols.append(col)
+            selected_preds = np.column_stack(cal_cols)
+        else:
+            selected_preds = np.column_stack([aligned_oof[m][valid_mask] for m in members])
+
         oof_blend = selected_preds @ np.array(weights)
         oof_std = selected_preds.std(axis=1)
         yt = y_true[valid_mask]
@@ -322,13 +374,10 @@ def _run_ensemble(args):
         else:
             cal_bundle = calibrate_regression(yt, oof_blend, oof_std)
 
-        # Attach calibration to pickle
-        import pickle
-        with open(pkl_path, "rb") as f:
-            bundle = pickle.load(f)
-        bundle["calibration"] = cal_bundle
+        # Attach calibration to pickle (reuse _saved_bundle already loaded above)
+        _saved_bundle["calibration"] = cal_bundle
         with open(pkl_path, "wb") as f:
-            pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+            _pickle.dump(_saved_bundle, f, protocol=_pickle.HIGHEST_PROTOCOL)
 
         results[target] = {
             "status": "success",
@@ -340,6 +389,117 @@ def _run_ensemble(args):
         gc.collect()
 
     print(json.dumps(results, indent=2, default=str))
+
+
+def _run_compare_ensemble(args):
+    import gc
+
+    import numpy as np
+    import pandas as pd
+
+    from .strategy.config import ALL_TARGETS, TARGETS_CLASSIFICATION
+    from .strategy.ensemble import compare_ensemble_methods, load_ensemble_oof
+
+    models_dir = Path(args.models)
+    output_dir = Path(args.output) if args.output else models_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    features_path = Path(args.features)
+
+    targets = [args.target] if args.target else ALL_TARGETS
+    df = pd.read_parquet(features_path)
+
+    for target in targets:
+        task = "classification" if target in TARGETS_CLASSIFICATION else "regression"
+
+        if target not in df.columns:
+            print(f"[{target}] Not found in features, skipping")
+            continue
+
+        oof_matrix = load_ensemble_oof(models_dir, target, args.tier)
+        if not oof_matrix:
+            print(f"[{target}] No OOF files found, skipping")
+            continue
+
+        y_series = df[target].dropna()
+        y_true = y_series.values
+
+        # Build per-family aggregate metrics from training_summary for quality filtering
+        summary_path = models_dir / f"training_summary_{target}_{args.tier}.json"
+        family_metrics = {}
+        if summary_path.exists():
+            with open(summary_path) as f:
+                summary = json.load(f)
+            primary = "log_loss" if task == "classification" else "mae"
+            for fam, v in summary.items():
+                if v.get("status") == "success":
+                    agg = v.get("aggregate_metrics", {})
+                    val = agg.get(primary)
+                    if val is not None:
+                        family_metrics[fam] = {primary: val}
+
+        # Align OOF arrays to y_true length (OOF may be shorter if early seasons skipped)
+        n = len(y_true)
+        aligned_oof = {}
+        for fam, arr in oof_matrix.items():
+            aligned_oof[fam] = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
+
+        # Exclude 2020: structural outlier (60-game pandemic season) — same logic as _run_ensemble.
+        # OOF arrays are positionally aligned to the non-null target rows of the full df.
+        no2020_mask = (df.loc[y_series.index, "season"] != 2020).values
+        y_true = y_true[no2020_mask]
+        aligned_oof = {fam: arr[no2020_mask] for fam, arr in aligned_oof.items()}
+
+        print(f"\n[{target}] Running calibration × ensemble comparison ({task})")
+        comparison = compare_ensemble_methods(
+            oof_matrix=aligned_oof,
+            y_true=y_true,
+            task=task,
+            metrics=family_metrics,
+        )
+
+        if "error" in comparison:
+            print(f"[{target}] Error: {comparison['error']}")
+            continue
+
+        # Print results table sorted by primary metric
+        primary = "log_loss" if task == "classification" else "mae"
+        if task == "classification":
+            col_keys = ["log_loss", "auc_roc", "brier_score", "ece"]
+        else:
+            col_keys = ["mae", "rmse", "r2"]
+
+        # Build rows: (primary_val, key, metrics_dict)
+        rows = []
+        for key, v in comparison.items():
+            if "error" in v:
+                continue
+            em = v.get("ensemble_metrics", {})
+            pval = em.get(primary, float("inf"))
+            rows.append((pval, key, em))
+        rows.sort()
+
+        # Header
+        col_w = 10
+        header = f"  {'Method':<30}"
+        for c in col_keys:
+            header += f"  {c.upper():<{col_w}}"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+
+        for pval, key, em in rows:
+            line = f"  {key:<30}"
+            for c in col_keys:
+                val = em.get(c, float("nan"))
+                line += f"  {val:<{col_w}.4f}"
+            print(line)
+
+        # Save full results JSON
+        out_path = output_dir / f"comparison_{target}_{args.tier}.json"
+        with open(out_path, "w") as f:
+            json.dump(comparison, f, indent=2, default=str)
+        print(f"[{target}] Full results saved to {out_path}")
+
+        gc.collect()
 
 
 def _run_evaluate(args):

@@ -43,11 +43,13 @@ def predict_game(
     with open(ensemble_path, "rb") as f:
         bundle = pickle.load(f)
 
-    models = bundle["models"]
+    # member_bundles is the authoritative list of fitted members; older pickles used
+    # "models" (a plain list with no per-model metadata) which caused the scaler,
+    # feature_columns, and isotonic_calibrator to be inaccessible at inference.
+    member_bundles = bundle["member_bundles"]
     weights = np.array(bundle["weights"])
     calibration: CalibrationBundle = bundle["calibration"]
     task = bundle["task"]
-    tier_info = bundle.get("tier_info", {})
 
     # --- Data-availability-conditioned routing ---
     # Check which features are actually populated
@@ -61,34 +63,30 @@ def predict_game(
     preds_per_model = []
     valid_weights = []
 
-    for i, (model_info, model, weight) in enumerate(
-        zip(bundle.get("model_info", [{}] * len(models)), models, weights)
-    ):
-        tier = model_info.get("tier", "A")
-        required_features = model_info.get("feature_columns", features.columns.tolist())
+    for mb, weight in zip(member_bundles, weights):
+        family = mb["family"]
+        model = mb["model"]
+        scaler = mb.get("scaler")
+        feature_columns = mb.get("feature_columns", features.columns.tolist())
+        needs_imputation = mb.get("needs_imputation", False)
+        # Per-model isotonic calibrator fitted on OOF predictions during training.
+        # None for regression targets or when the OOF had too few valid rows.
+        isotonic_cal = mb.get("isotonic_calibrator")
 
-        # Check if this model's required features are available
-        available = [f for f in required_features if f in features.columns]
-        missing_pct = 1.0 - len(available) / max(len(required_features), 1)
+        available = [f for f in feature_columns if f in features.columns]
+        missing_pct = 1.0 - len(available) / max(len(feature_columns), 1)
 
         # Skip models with >30% missing features at inference
         if missing_pct > 0.3:
-            log.debug(f"  Skipping model {i} (tier={tier}): {missing_pct:.0%} features missing")
+            log.debug(f"  Skipping {family}: {missing_pct:.0%} features missing")
             continue
 
         try:
             X_model = features[available].copy()
 
-            # Apply model-specific preprocessing
-            imputer = model_info.get("imputer")
-            scaler = model_info.get("scaler")
-
-            if imputer is not None:
-                X_model = pd.DataFrame(
-                    imputer.transform(X_model),
-                    columns=available,
-                    index=features.index,
-                )
+            if needs_imputation:
+                from .data import _semantic_impute
+                X_model = _semantic_impute(X_model)
             if scaler is not None:
                 X_model = pd.DataFrame(
                     scaler.transform(X_model),
@@ -96,21 +94,28 @@ def predict_game(
                     index=features.index,
                 )
 
-            # Predict
+            # Raw prediction
             if task == "classification":
                 if hasattr(model, "predict_proba"):
                     pred = model.predict_proba(X_model)[:, 1]
                 else:
                     dec = model.decision_function(X_model)
                     pred = 1.0 / (1.0 + np.exp(-dec))
+                # Apply per-model isotonic calibration before blending.
+                # This mirrors the calibration applied to OOFs during SLSQP weight
+                # optimization so that each model's contribution to the blend is on
+                # the same calibrated probability scale as at training time.
+                if isotonic_cal is not None:
+                    pred = isotonic_cal.predict(pred)
             else:
+                # Regression: no per-model isotonic; leave raw prediction unchanged.
                 pred = model.predict(X_model)
 
             preds_per_model.append(pred)
             valid_weights.append(weight)
 
         except Exception as e:
-            log.warning(f"  Model {i} (tier={tier}) prediction failed: {e}")
+            log.warning(f"  {family} prediction failed: {e}")
             continue
 
     if not preds_per_model:
@@ -124,7 +129,11 @@ def predict_game(
     blended = pred_matrix @ w
     ensemble_std = pred_matrix.std(axis=1)
 
-    # --- Apply calibration ---
+    # --- Apply post-blend calibration (CalibrationBundle layer) ---
+    # This is the second calibration stage: a single isotonic fit on the blended
+    # OOF signal. It runs AFTER the per-model isotonic (which already corrected
+    # individual model miscalibration) and corrects any residual miscalibration
+    # introduced by the blending step itself.
     calibrated = apply_calibration(blended, calibration, ensemble_std)
 
     # --- Build output ---
@@ -132,7 +141,7 @@ def predict_game(
         "target": target,
         "task": task,
         "n_models_used": len(preds_per_model),
-        "n_models_total": len(models),
+        "n_models_total": len(member_bundles),
     }
     output.update(calibrated)
 
