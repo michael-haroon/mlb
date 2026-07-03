@@ -140,7 +140,7 @@ def create_objective(
 # ---------------------------------------------------------------------------
 
 def _suggest_lightgbm(trial: optuna.Trial, task: str) -> dict:
-    return {
+    params = {
         "n_estimators": trial.suggest_int("n_estimators", 200, 1500),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
         "max_depth": trial.suggest_int("max_depth", 3, 10),
@@ -152,6 +152,10 @@ def _suggest_lightgbm(trial: optuna.Trial, task: str) -> dict:
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
         "boosting_type": trial.suggest_categorical("boosting_type", ["gbdt", "dart", "goss"]),
     }
+    if task == "regression":
+        # LightGBM huber alpha = fraction of non-outlier samples (0–1); not residual-scale delta
+        params["huber_alpha"] = trial.suggest_float("huber_alpha", 0.5, 0.99)
+    return params
 
 
 def _suggest_xgboost(trial: optuna.Trial, task: str) -> dict:
@@ -169,12 +173,15 @@ def _suggest_xgboost(trial: optuna.Trial, task: str) -> dict:
 
 
 def _suggest_catboost(trial: optuna.Trial, task: str) -> dict:
-    return {
+    params = {
         "n_estimators": trial.suggest_int("n_estimators", 200, 1500),
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
         "max_depth": trial.suggest_int("max_depth", 4, 10),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 0.1, 30.0, log=True),
     }
+    if task == "regression":
+        params["huber_delta"] = trial.suggest_float("huber_delta", 0.5, 5.0)
+    return params
 
 
 def _suggest_random_forest(trial: optuna.Trial, task: str) -> dict:
@@ -250,10 +257,14 @@ def _suggest_sgd(trial: optuna.Trial, task: str) -> dict:
         loss = trial.suggest_categorical("loss", ["log_loss", "modified_huber"])
     else:
         loss = trial.suggest_categorical("loss", ["huber", "epsilon_insensitive", "squared_epsilon_insensitive"])
-    return {
+    params = {
         "loss": loss,
         "alpha": trial.suggest_float("alpha", 1e-6, 1e-1, log=True),
     }
+    # epsilon is the Huber delta for SGD; only relevant when loss="huber"
+    if task == "regression" and loss == "huber":
+        params["epsilon"] = trial.suggest_float("epsilon", 0.1, 5.0)
+    return params
 
 
 def _suggest_knn(trial: optuna.Trial, task: str) -> dict:

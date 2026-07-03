@@ -62,7 +62,8 @@ def _build_lightgbm(task: str, params: dict):
     if task == "classification":
         return lgb.LGBMClassifier(objective="binary", **common)
     else:
-        return lgb.LGBMRegressor(objective="huber", **common)
+        huber_alpha = params.get("huber_alpha", 0.9)
+        return lgb.LGBMRegressor(objective="huber", alpha=huber_alpha, **common)
 
 
 def _build_xgboost(task: str, params: dict):
@@ -108,7 +109,8 @@ def _build_catboost(task: str, params: dict):
     if task == "classification":
         return CatBoostClassifier(loss_function="Logloss", **common)
     else:
-        return CatBoostRegressor(loss_function="Huber:delta=1.0", **common)
+        delta = params.get("huber_delta", 1.0)
+        return CatBoostRegressor(loss_function=f"Huber:delta={delta}", **common)
 
 
 def _build_random_forest(task: str, params: dict):
@@ -253,12 +255,17 @@ def _build_sgd(task: str, params: dict):
             random_state=42,
         )
     else:
+        loss = params.get("loss", "huber")
+        reg_kwargs = {}
+        if loss == "huber":
+            reg_kwargs["epsilon"] = params.get("epsilon", 0.1)
         return SGDRegressor(
-            loss=params.get("loss", "huber"),
+            loss=loss,
             alpha=params.get("alpha", 1e-4),
             max_iter=5000,
             early_stopping=False,
             random_state=42,
+            **reg_kwargs,
         )
 
 
