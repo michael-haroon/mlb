@@ -571,7 +571,7 @@ def fit_and_save_ensemble(
 
     log.info(f"Refitting {len(members)} ensemble members for {target} on full training data")
 
-    X, y, seasons = load_features(features_path, target, data_mode)
+    X, y, seasons, _game_pks = load_features(features_path, target, data_mode)
 
     # 2020 was a 60-game shortened season played under pandemic protocols: no fans,
     # neutral-site bubble games, universal DH for the first time, and dramatically

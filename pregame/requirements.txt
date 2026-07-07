@@ -1,12 +1,16 @@
+boto3
 catboost
+cryptography
 lightgbm
 matplotlib
 numpy
 optuna
 pandas
 pyarrow
+python-dotenv
+requests
 scikit-learn
 scipy
 seaborn
+websocket-client
 xgboost
-boto3

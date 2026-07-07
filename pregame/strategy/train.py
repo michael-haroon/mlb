@@ -90,7 +90,7 @@ def train_target(
     log.info(f"Training target={target}, task={task}, mode={data_mode}, tier={tier}")
 
     # Load data
-    X, y, seasons = load_features(features_path, target, data_mode)
+    X, y, seasons, game_pks = load_features(features_path, target, data_mode)
     splits = generate_loyo_splits(seasons)
 
     # Auto-detect importance filter: use it if feature_report.csv exists
@@ -200,9 +200,12 @@ def train_target(
                 "elapsed_secs": round(elapsed, 1),
             }
 
-            # Save OOF predictions
+            # Save OOF predictions and game_pk index for key-based alignment
             oof_path = output_dir / f"oof_{target}_{family}_{tier}.npy"
             np.save(oof_path, oof_predictions)
+            gpk_path = output_dir / f"oof_game_pks_{target}_{tier}.npy"
+            if not gpk_path.exists():
+                np.save(gpk_path, game_pks.values)
 
             # Save best params
             params_path = output_dir / f"params_{target}_{family}_{tier}.json"

@@ -284,11 +284,19 @@ def _run_ensemble(args):
                     if val is not None:
                         family_metrics[fam] = {primary: val}
 
-        # Align OOF arrays to y_true length (OOF may be shorter if early seasons skipped)
+        # Align OOF arrays to y_true length.
+        # OOF files are positionally aligned with the parquet current at training time.
+        # If the parquet has since been truncated (regenerated from a shorter range),
+        # arr[:n] takes predictions from wrong (older) rows. Tail-align when arr is
+        # longer: the last n positions correspond to the most-recent n training rows,
+        # which match the current parquet when it is a tail subset of the original.
         n = len(y_true)
         aligned_oof = {}
         for fam, arr in oof_matrix.items():
-            aligned_oof[fam] = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
+            if len(arr) >= n:
+                aligned_oof[fam] = arr[-n:]
+            else:
+                aligned_oof[fam] = np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
 
         # 2020 was a 60-game shortened season played under pandemic protocols: no fans,
         # neutral-site bubble games, universal DH for the first time, and dramatically
@@ -437,11 +445,14 @@ def _run_compare_ensemble(args):
                     if val is not None:
                         family_metrics[fam] = {primary: val}
 
-        # Align OOF arrays to y_true length (OOF may be shorter if early seasons skipped)
+        # Align OOF arrays to y_true length (tail-align: see _run_ensemble for rationale).
         n = len(y_true)
         aligned_oof = {}
         for fam, arr in oof_matrix.items():
-            aligned_oof[fam] = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
+            if len(arr) >= n:
+                aligned_oof[fam] = arr[-n:]
+            else:
+                aligned_oof[fam] = np.pad(arr, (0, n - len(arr)), constant_values=np.nan)
 
         # Exclude 2020: structural outlier (60-game pandemic season) — same logic as _run_ensemble.
         # OOF arrays are positionally aligned to the non-null target rows of the full df.
@@ -546,9 +557,12 @@ def _run_evaluate(args):
             oof_files = list(models_dir.glob(f"oof_{target}_*_{tier}.npy"))
             for oof_file in oof_files:
                 oof = np.load(oof_file)
-                valid = ~np.isnan(oof) & ~np.isnan(y_true[:len(oof)])
+                n_oof = len(oof)
+                y_aligned = y_true[-n_oof:] if n_oof <= len(y_true) else y_true
+                oof_aligned = oof[-len(y_true):] if n_oof > len(y_true) else oof
+                valid = ~np.isnan(oof_aligned) & ~np.isnan(y_aligned[:len(oof_aligned)])
                 if valid.sum() > 30:
-                    residuals = y_true[:len(oof)][valid] - oof[valid]
+                    residuals = y_aligned[:len(oof_aligned)][valid] - oof_aligned[valid]
                     generate_qq_plots(residuals, output_dir, target)
                     fit_result = fit_best_distribution(residuals)
                     print(json.dumps({target: fit_result}, indent=2, default=str))
@@ -567,7 +581,7 @@ def _run_evaluate(args):
             member_oofs = []
             for m in members:
                 arr = np.load(models_dir / f"oof_{target}_{m}_{tier}.npy")
-                member_oofs.append(arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan))
+                member_oofs.append(arr[-n:] if len(arr) >= n else np.pad(arr, (0, n - len(arr)), constant_values=np.nan))
 
             if member_oofs:
                 valid_mask = ~np.isnan(y_true)

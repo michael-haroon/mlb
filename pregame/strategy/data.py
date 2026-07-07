@@ -70,7 +70,7 @@ def load_features(
     features_path: Path,
     target: str,
     data_mode: str = "2015+",
-) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """Load game features and extract target column.
 
     Uses a strict allowlist of pregame-knowable feature prefixes to prevent
@@ -88,7 +88,7 @@ def load_features(
 
     Returns
     -------
-    tuple of (features DataFrame, target Series, season Series)
+    tuple of (features DataFrame, target Series, season Series, game_pk Series)
     """
     features_path = Path(features_path)
     if features_path.is_dir():
@@ -121,9 +121,10 @@ def load_features(
     features = df[feature_cols]
     targets = df[target]
     seasons = df["season"]
+    game_pks = df["game_pk"]
 
     log.info(f"Selected {len(feature_cols)} pregame features")
-    return features, targets, seasons
+    return features, targets, seasons, game_pks
 
 
 # Pregame-knowable feature prefixes. Any numeric column matching one of these

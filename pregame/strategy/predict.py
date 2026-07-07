@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 def predict_game(
     features: pd.DataFrame,
-    ensemble_path: Path,
+    ensemble_path,   # Path | dict — pass a pre-loaded bundle to avoid repeated pickle I/O
     target: str,
 ) -> dict:
     """Generate calibrated prediction for one or more games.
@@ -30,8 +30,9 @@ def predict_game(
     ----------
     features : pd.DataFrame
         Feature row(s) for the game(s) to predict.
-    ensemble_path : Path
-        Path to the ensemble .pkl file.
+    ensemble_path : Path or dict
+        Path to the ensemble .pkl file, OR a pre-loaded bundle dict.
+        Passing a dict avoids repeated disk I/O in tight inference loops.
     target : str
         Target name (determines task type and calibration).
 
@@ -39,9 +40,12 @@ def predict_game(
     -------
     dict with calibrated predictions, confidence, and distributional params.
     """
-    # Load ensemble bundle
-    with open(ensemble_path, "rb") as f:
-        bundle = pickle.load(f)
+    # Accept a pre-loaded bundle dict to avoid repeated pickle I/O per market
+    if isinstance(ensemble_path, dict):
+        bundle = ensemble_path
+    else:
+        with open(ensemble_path, "rb") as f:
+            bundle = pickle.load(f)
 
     # member_bundles is the authoritative list of fitted members; older pickles used
     # "models" (a plain list with no per-model metadata) which caused the scaler,
@@ -88,18 +92,23 @@ def predict_game(
                 from .data import _semantic_impute
                 X_model = _semantic_impute(X_model)
             if scaler is not None:
-                X_model = pd.DataFrame(
-                    scaler.transform(X_model),
-                    columns=available,
-                    index=features.index,
-                )
+                # Scalers are always fitted on numpy arrays (no feature names).
+                scaled = scaler.transform(X_model.to_numpy())
+                X_model = pd.DataFrame(scaled, columns=available, index=features.index)
+
+            # LightGBM/XGBoost/CatBoost were trained with a DataFrame and need
+            # feature names at inference. All sklearn estimators were trained on
+            # numpy arrays and warn when given a DataFrame.
+            _tree_families = ("lightgbm", "xgboost", "catboost")
+            needs_df = any(family.lower().startswith(f) for f in _tree_families)
+            X_input = X_model if needs_df else X_model.to_numpy()
 
             # Raw prediction
             if task == "classification":
                 if hasattr(model, "predict_proba"):
-                    pred = model.predict_proba(X_model)[:, 1]
+                    pred = model.predict_proba(X_input)[:, 1]
                 else:
-                    dec = model.decision_function(X_model)
+                    dec = model.decision_function(X_input)
                     pred = 1.0 / (1.0 + np.exp(-dec))
                 # Apply per-model isotonic calibration before blending.
                 # This mirrors the calibration applied to OOFs during SLSQP weight
@@ -109,7 +118,7 @@ def predict_game(
                     pred = isotonic_cal.predict(pred)
             else:
                 # Regression: no per-model isotonic; leave raw prediction unchanged.
-                pred = model.predict(X_model)
+                pred = model.predict(X_input)
 
             preds_per_model.append(pred)
             valid_weights.append(weight)
@@ -130,11 +139,26 @@ def predict_game(
     ensemble_std = pred_matrix.std(axis=1)
 
     # --- Apply post-blend calibration (CalibrationBundle layer) ---
-    # This is the second calibration stage: a single isotonic fit on the blended
-    # OOF signal. It runs AFTER the per-model isotonic (which already corrected
-    # individual model miscalibration) and corrects any residual miscalibration
-    # introduced by the blending step itself.
-    calibrated = apply_calibration(blended, calibration, ensemble_std)
+    # For classification the per-model isotonic calibrators already correct each
+    # model's miscalibration before blending. The CalibrationBundle's second
+    # isotonic adds no further benefit and actively harms calibration when the
+    # bundle was fit on OOF data that doesn't align with the current parquet
+    # (e.g. after parquet regeneration). Skip the second isotonic for
+    # classification; keep apply_calibration for regression (Student-t params).
+    if task == "classification":
+        calibrated = {
+            "calibrated_prob": blended,
+            "raw_prob": blended,
+        }
+        if calibration.std_p33 is not None:
+            tiers = np.where(
+                ensemble_std <= calibration.std_p33, "HIGH",
+                np.where(ensemble_std <= calibration.std_p67, "MEDIUM", "LOW")
+            )
+            calibrated["confidence_tier"] = tiers
+            calibrated["ensemble_std"] = ensemble_std
+    else:
+        calibrated = apply_calibration(blended, calibration, ensemble_std)
 
     # --- Build output ---
     output = {

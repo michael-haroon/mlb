@@ -82,7 +82,7 @@ def run_importance_analysis(
 
     # ── Step 1: Load features ────────────────────────────────────────────
     log.info("Loading features...")
-    X, y, seasons = load_features(features_path, target, data_mode)
+    X, y, seasons, _game_pks = load_features(features_path, target, data_mode)
     sample_weight = compute_temporal_weights(seasons)
 
     # Drop columns with >95% NaN

@@ -167,6 +167,169 @@ def build_features(
     return out_path
 
 
+def build_features_incremental(
+    source: str,
+    output: Path,
+    tune_ratings: bool = False,
+    ratings_params: dict | None = None,
+) -> Path:
+    """Incremental feature build: only load raw data for new games.
+
+    Instead of loading all raw data across all seasons (OOMs on 8GB instances),
+    this function:
+    1. Reads a persisted game-frame checkpoint (pre-ratings, ~16k rows × ~80 cols)
+    2. Loads raw data ONLY for the current season to discover new games
+    3. Builds game frame rows for games not yet in the checkpoint
+    4. Appends new rows and re-runs ratings + feature engineering in-process
+
+    The game frame is ~15 MB; ratings + features on ~32k rows takes seconds.
+    The expensive step (loading millions of pitch-level rows) is limited to one
+    season at a time, well within the 8 GB memory envelope.
+
+    Parameters
+    ----------
+    source : str
+        Local path to raw_cache directory.
+    output : Path
+        Directory to write game_features.parquet.
+    tune_ratings : bool
+        If True, tune rating parameters (should be False during live trading).
+    ratings_params : dict, optional
+        Pre-tuned rating parameters. If provided, uses these directly.
+    """
+    from .game_builder import build_game_frame
+
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+
+    t0 = time.time()
+    ckpt_path = output / "_game_frame.parquet"
+    params_path = output / "ratings_params.json"
+
+    # --- Step 1: Load or bootstrap game frame checkpoint ---
+    if ckpt_path.exists():
+        game_frame = pd.read_parquet(ckpt_path)
+        log.info(f"Loaded game frame checkpoint: {len(game_frame):,} rows, "
+                 f"latest game_date={game_frame['game_date'].max()}")
+    else:
+        log.info("No game frame checkpoint found — bootstrapping from full build")
+        game_frame = _bootstrap_game_frame(source, output)
+        game_frame.to_parquet(ckpt_path, index=False, engine="pyarrow")
+        log.info(f"Bootstrapped game frame: {len(game_frame):,} rows")
+
+    # --- Step 2: Find new games in the current season ---
+    existing_pks = set(game_frame["game_pk"].values)
+    current_season = int(game_frame["game_date"].max()[:4])
+
+    log.info(f"Loading raw data for season {current_season} to find new games...")
+    raw_new = load_all(source, season_start=current_season)
+
+    new_game_frame = build_game_frame(raw_new)
+    new_game_frame = _filter_to_mlb(new_game_frame)
+    del raw_new  # free memory before appending
+
+    new_rows = new_game_frame[~new_game_frame["game_pk"].isin(existing_pks)]
+    log.info(f"Found {len(new_rows):,} new games in season {current_season} "
+             f"({len(new_game_frame):,} total this season, "
+             f"{len(existing_pks):,} already in checkpoint)")
+    del new_game_frame
+
+    # --- Step 3: Append new rows to checkpoint ---
+    out_path = output / "game_features.parquet"
+    if len(new_rows) > 0:
+        game_frame = pd.concat([game_frame, new_rows], ignore_index=True)
+        game_frame = game_frame.sort_values(["game_date", "game_pk"]).reset_index(drop=True)
+        game_frame.to_parquet(ckpt_path, index=False, engine="pyarrow")
+        log.info(f"Updated game frame checkpoint: {len(game_frame):,} rows")
+    elif out_path.exists():
+        elapsed = time.time() - t0
+        log.info(f"No new games and features exist — nothing to do ({elapsed:.1f}s)")
+        return out_path
+
+    # --- Step 4: Resolve rating parameters ---
+    if ratings_params is not None:
+        params = ratings_params
+    elif params_path.exists():
+        with open(params_path) as f:
+            params = json.load(f)
+        log.info(f"Using saved rating params from {params_path}")
+    elif tune_ratings:
+        log.info("Tuning rating parameters...")
+        params = tune_all_ratings(game_frame, n_trials=100)
+        with open(params_path, "w") as f:
+            json.dump(params, f, indent=2)
+    else:
+        from .ratings import DEFAULT_PARAMS
+        params = DEFAULT_PARAMS
+        log.info("Using default rating parameters (tuning disabled)")
+
+    # --- Step 5: Compute ratings + features on full game frame ---
+    from .feature_engineering import _compute_pregame_pitcher_era
+
+    games = game_frame.copy()
+    games = _compute_pregame_pitcher_era(games)
+    games = attach_all_ratings(games, params=params)
+    games = engineer_features(games)
+
+    # Clean up temporary columns
+    temp_cols = [c for c in games.columns if c.startswith("_")]
+    if temp_cols:
+        games.drop(columns=temp_cols, inplace=True)
+
+    # --- Step 6: Write final artifact ---
+    games.to_parquet(out_path, index=False, engine="pyarrow")
+
+    elapsed = time.time() - t0
+    log.info(f"Written {out_path}: {len(games):,} games × {len(games.columns)} features ({elapsed:.1f}s)")
+
+    manifest = {
+        "source": source,
+        "mode": "incremental",
+        "n_games": len(games),
+        "n_features": len(games.columns),
+        "n_new_games": len(new_rows),
+        "ratings_tuned": tune_ratings or ratings_params is not None,
+        "elapsed_secs": round(elapsed, 1),
+    }
+    with open(output / "manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    return out_path
+
+
+def _bootstrap_game_frame(source: str, output: Path) -> pd.DataFrame:
+    """Build initial game frame checkpoint from raw data, one season at a time.
+
+    Loads each season independently to stay within memory limits, then
+    concatenates the resulting game frames (not the raw data).
+    """
+    from .game_builder import build_game_frame
+    from datetime import datetime
+
+    current_year = datetime.now().year
+    start_year = 2015
+    all_frames = []
+
+    for year in range(start_year, current_year + 1):
+        log.info(f"Bootstrap: loading season {year}...")
+        try:
+            raw = load_all(source, season_start=year, season_end=year)
+            frame = build_game_frame(raw)
+            frame = _filter_to_mlb(frame)
+            all_frames.append(frame)
+            log.info(f"  Season {year}: {len(frame):,} games")
+            del raw
+        except Exception as e:
+            log.warning(f"  Season {year} failed: {e}")
+
+    if not all_frames:
+        raise RuntimeError("Bootstrap failed — no seasons loaded successfully")
+
+    result = pd.concat(all_frames, ignore_index=True)
+    result = result.sort_values(["game_date", "game_pk"]).reset_index(drop=True)
+    return result
+
+
 def _filter_to_mlb(games: pd.DataFrame) -> pd.DataFrame:
     """Drop rows that aren't competitive MLB games between two franchises.
 
