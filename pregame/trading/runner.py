@@ -46,7 +46,7 @@ from pregame.trading.models import EnsembleStore
 from pregame.trading.scanner import generate_quotes, min_edge_for_profit
 from pregame.trading.sizing import size_quotes, preload_accuracy_profiles
 from pregame.trading.risk import check_limits
-from pregame.trading.executor import post_two_sided, execute_taker, cancel_order
+from pregame.trading.executor import post_two_sided, execute_taker, cancel_order, _log_decision
 from pregame.trading.portfolio import Portfolio, PositionState
 from pregame.trading.ws import KalshiWS
 from pregame.trading.features import FeatureManager
@@ -178,15 +178,42 @@ class TradingRunner:
         # Execute
         executed = 0
         for sq in sized:
-            # Risk gate
+            bb, ba = book_tops.get(sq.ticker, (None, None))
+            decision = {
+                "ticker": sq.ticker,
+                "target": sq.target,
+                "fair_value": sq.fair_value,
+                "model_prob": sq.model_prob,
+                "ensemble_std": sq.ensemble_std,
+                "confidence_tier": sq.confidence_tier,
+                "bid_cents": sq.bid_cents,
+                "ask_cents": sq.ask_cents,
+                "book_bid": bb,
+                "book_ask": ba,
+                "edge_at_mid": sq.edge_at_mid,
+                "kelly_raw": sq.weight_breakdown.get("kelly_raw"),
+                "accuracy_mult": sq.accuracy_mult,
+                "contracts": sq.contracts,
+            }
+
+            # Time gate
             hours_to_fp = self._hours_to_first_pitch(sq.ticker)
             if hours_to_fp is None:
+                decision["action"] = "SKIP_HOURS"
+                decision["action_reason"] = "first_pitch_unknown"
+                _log_decision(decision, self._dry_run)
                 continue
             if hours_to_fp < EXIT_BUFFER_MINUTES / 60.0:
+                decision["action"] = "SKIP_HOURS"
+                decision["action_reason"] = (
+                    f"hours_to_fp={hours_to_fp:.1f} < {EXIT_BUFFER_MINUTES / 60.0:.2f}"
+                )
+                _log_decision(decision, self._dry_run)
                 continue
 
+            # Risk gate
             state = self._portfolio.get_portfolio_state()
-            allowed, reason = check_limits(
+            allowed, risk_reason = check_limits(
                 ticker=sq.ticker,
                 price=sq.fair_value,
                 contracts=sq.contracts,
@@ -195,13 +222,18 @@ class TradingRunner:
                 portfolio_state=state,
             )
             if not allowed:
-                logger.debug(f"Risk blocked {sq.ticker}: {reason}")
+                logger.debug(f"Risk blocked {sq.ticker}: {risk_reason}")
+                decision["action"] = "SKIP_RISK"
+                decision["action_reason"] = risk_reason
+                _log_decision(decision, self._dry_run)
                 continue
 
             # Check for taker opportunity (book crossed far past our fair)
-            bb, ba = book_tops.get(sq.ticker, (None, None))
             taker_edge = self._check_taker_opportunity(sq, bb, ba)
             if taker_edge:
+                decision["action"] = f"TAKE_{taker_edge['side'].upper()}"
+                decision["action_reason"] = f"edge={taker_edge['edge']:.3f}"
+
                 execute_taker(
                     self._client, sq.ticker,
                     side=taker_edge["side"],
@@ -218,6 +250,19 @@ class TradingRunner:
                     accuracy_mult=sq.accuracy_mult,
                     entry_edge=sq.edge_at_mid,
                 )
+                # Post resting maker on the opposite side
+                post_two_sided(
+                    self._client, sq.ticker,
+                    bid_cents=sq.bid_cents,
+                    ask_cents=sq.ask_cents,
+                    contracts=sq.contracts,
+                    dry_run=self._dry_run,
+                    metadata={"target": sq.target, "fair": sq.fair_value,
+                              "reason": "opposite_side_after_take"},
+                    skip_bid=(taker_edge["side"] == "yes"),
+                    skip_ask=(taker_edge["side"] == "no"),
+                )
+                executed += 1
             else:
                 # Post two-sided maker quote
                 result = post_two_sided(
@@ -229,7 +274,18 @@ class TradingRunner:
                     metadata={"target": sq.target, "fair": sq.fair_value},
                 )
                 if result.get("status") in ("DRY_RUN", "SUBMITTED"):
+                    decision["action"] = "MAKE"
+                    decision["action_reason"] = (
+                        f"two_sided bid={sq.bid_cents}c/ask={sq.ask_cents}c"
+                    )
                     executed += 1
+                else:
+                    decision["action"] = "SKIP_EDGE"
+                    decision["action_reason"] = (
+                        f"post_two_sided status={result.get('status')}"
+                    )
+
+            _log_decision(decision, self._dry_run)
 
         # Reprice existing resting orders to fight for top-of-book
         self._reprice_resting_orders(book_tops)
@@ -472,15 +528,16 @@ class TradingRunner:
 
         return None
 
-    def _compute_cluster_inventory(self) -> dict[str, int]:
-        """Sum current positions by cluster for sizing caps."""
+    def _compute_cluster_inventory(self) -> dict[tuple[str, str], int]:
+        """Sum current positions by (cluster, game_key) for per-game sizing caps."""
         from .market_map import classify_cluster
-        inventory: dict[str, int] = {}
+        inventory: dict[tuple[str, str], int] = {}
         for pos in self._portfolio.get_positions():
             parsed = parse_ticker(pos.get("ticker", ""))
             if parsed:
                 cluster = classify_cluster(parsed.series)
-                inventory[cluster] = inventory.get(cluster, 0) + pos.get("contracts", 0)
+                key = (cluster, parsed.game_key)
+                inventory[key] = inventory.get(key, 0) + pos.get("contracts", 0)
         return inventory
 
     def _parse_rest_book(self, ob: dict) -> tuple[int | None, int | None]:

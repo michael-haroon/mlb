@@ -34,6 +34,7 @@ from .config import (
     KELLY_FRACTION, MAX_CONTRACTS_PER_MARKET, MAX_POSITION_PCT,
     CLUSTER_MAX_CONTRACTS,
 )
+from .market_map import parse_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ class SizedQuote:
 def size_quotes(
     quotes: list[dict],
     bankroll: float,
-    existing_inventory: Optional[dict[str, int]] = None,
+    existing_inventory: Optional[dict[tuple[str, str], int]] = None,
 ) -> list[SizedQuote]:
     """Size a batch of raw quotes into executable SizedQuote objects.
 
@@ -206,7 +207,9 @@ def size_quotes(
     if existing_inventory is None:
         existing_inventory = {}
 
-    cluster_used = {k: existing_inventory.get(k, 0) for k in CLUSTER_MAX_CONTRACTS}
+    # Per-game cluster caps: keyed by (cluster, game_key) so uncorrelated games
+    # don't share allocation.
+    cluster_used: dict[tuple[str, str], int] = dict(existing_inventory)
 
     scored = []
     for q in quotes:
@@ -252,14 +255,18 @@ def size_quotes(
         q = s["quote"]
         cluster = q["cluster"]
 
+        parsed = parse_ticker(q["ticker"])
+        game_key = parsed.game_key if parsed else q["ticker"]
+        cap_key = (cluster, game_key)
+
         max_cluster = CLUSTER_MAX_CONTRACTS.get(cluster, 10)
-        remaining = max_cluster - cluster_used.get(cluster, 0)
+        remaining = max_cluster - cluster_used.get(cap_key, 0)
         if remaining <= 0:
             continue
 
         contracts = int(min(s["contracts_raw"], remaining, MAX_CONTRACTS_PER_MARKET))
         contracts = max(1, contracts)
-        cluster_used[cluster] = cluster_used.get(cluster, 0) + contracts
+        cluster_used[cap_key] = cluster_used.get(cap_key, 0) + contracts
 
         sized.append(SizedQuote(
             ticker=q["ticker"],

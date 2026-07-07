@@ -41,6 +41,16 @@ def _log_order(order: dict, mode: str) -> None:
         f.write(json.dumps(order, default=str) + "\n")
 
 
+def _log_decision(record: dict, dry_run: bool) -> None:
+    """Append per-market decision record to daily JSONL decision log."""
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    suffix = "_dry" if dry_run else ""
+    log_file = LOGS_DIR / f"{date_str}_decisions{suffix}.jsonl"
+    record["ts"] = datetime.now(timezone.utc).isoformat()
+    with open(log_file, "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+
+
 def post_two_sided(
     client: KalshiClient,
     ticker: str,
@@ -49,12 +59,17 @@ def post_two_sided(
     contracts: int,
     dry_run: bool = True,
     metadata: Optional[dict] = None,
+    skip_bid: bool = False,
+    skip_ask: bool = False,
 ) -> dict:
     """Post a two-sided quote: bid (YES buy) + ask (NO buy at 100 - ask).
 
     The ask side is implemented as buying NO at (100 - ask_cents)c,
     which creates the equivalent of a YES ask at ask_cents.
     Maker fees are $0 — spread captured is pure profit.
+
+    Use skip_bid/skip_ask to post only one leg (e.g. after a taker aggression
+    on the other side).
 
     Returns dict with bid/ask order results.
     """
@@ -68,43 +83,44 @@ def post_two_sided(
         "no_buy_cents": no_buy_cents,
         "contracts": contracts,
         "metadata": metadata or {},
+        "skip_bid": skip_bid,
+        "skip_ask": skip_ask,
     }
 
     if dry_run:
         order_info["status"] = "DRY_RUN"
-        logger.info(
-            f"[DRY] QUOTE {ticker}: "
-            f"BID {contracts}x YES@{bid_cents}c / "
-            f"ASK {contracts}x NO@{no_buy_cents}c (=YES ask @{ask_cents}c)"
-        )
+        parts = []
+        if not skip_bid:
+            parts.append(f"BID {contracts}x YES@{bid_cents}c")
+        if not skip_ask:
+            parts.append(f"ASK {contracts}x NO@{no_buy_cents}c (=YES ask @{ask_cents}c)")
+        logger.info(f"[DRY] QUOTE {ticker}: {' / '.join(parts)}")
         _log_order(order_info, "dry_run")
         return order_info
 
     results = {}
 
-    # Post bid: buy YES at bid_cents
-    bid_id = f"bid_{uuid.uuid4().hex[:12]}"
-    results["bid"] = _place_with_retry(
-        client, ticker, side="yes", price=bid_cents,
-        contracts=contracts, client_order_id=bid_id,
-    )
+    if not skip_bid:
+        bid_id = f"bid_{uuid.uuid4().hex[:12]}"
+        results["bid"] = _place_with_retry(
+            client, ticker, side="yes", price=bid_cents,
+            contracts=contracts, client_order_id=bid_id,
+        )
 
-    # Post ask: buy NO at (100 - ask_cents) — equivalent to selling YES at ask_cents
-    ask_id = f"ask_{uuid.uuid4().hex[:12]}"
-    results["ask"] = _place_with_retry(
-        client, ticker, side="no", price=no_buy_cents,
-        contracts=contracts, client_order_id=ask_id,
-    )
+    if not skip_ask:
+        ask_id = f"ask_{uuid.uuid4().hex[:12]}"
+        results["ask"] = _place_with_retry(
+            client, ticker, side="no", price=no_buy_cents,
+            contracts=contracts, client_order_id=ask_id,
+        )
 
     order_info["results"] = results
     order_info["status"] = "SUBMITTED" if any(
         r.get("status") == "SUBMITTED" for r in results.values()
     ) else "ERROR"
 
-    logger.info(
-        f"[LIVE] QUOTE {ticker}: "
-        f"bid={results['bid'].get('status')} / ask={results['ask'].get('status')}"
-    )
+    posted = [f"{k}={v.get('status')}" for k, v in results.items()]
+    logger.info(f"[LIVE] QUOTE {ticker}: {' / '.join(posted)}")
     _log_order(order_info, "live")
     return order_info
 
