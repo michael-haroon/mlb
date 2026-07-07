@@ -148,6 +148,26 @@ class TradingRunner:
             logger.info("No tradeable markets found")
             return
 
+        # Filter out markets whose teams have a pending unprocessed settled game.
+        # This prevents pricing a doubleheader game 2 on stale pre-game-1 features.
+        ready_markets, blocked_games = [], set()
+        for m in markets:
+            parsed = parse_ticker(m["ticker"])
+            if parsed and self._features.is_stale_for_game(parsed.home_team, parsed.away_team):
+                blocked_games.add(parsed.game_key)
+            else:
+                ready_markets.append(m)
+        if blocked_games:
+            logger.info(
+                f"Holding quotes for {len(blocked_games)} game(s) pending feature rebuild: "
+                + ", ".join(sorted(blocked_games))
+            )
+        markets = ready_markets
+
+        if not markets:
+            logger.info("All markets blocked pending feature rebuild")
+            return
+
         # Subscribe to discovered markets for real-time book
         if self._ws:
             for m in markets:
@@ -458,6 +478,12 @@ class TradingRunner:
             logger.warning(f"Could not fetch settlement result for {ticker}: {e}")
 
         if trigger_refresh:
+            parsed = parse_ticker(ticker)
+            if parsed:
+                # Mark both teams stale before the async rebuild starts so that
+                # is_stale_for_game() blocks quoting immediately, not just once
+                # the rebuild lock is acquired.
+                self._features.mark_teams_pending(parsed.home_team, parsed.away_team)
             self._features.refresh_async(callback=self._on_features_refreshed)
 
     def _on_features_refreshed(self, changed: bool) -> None:
