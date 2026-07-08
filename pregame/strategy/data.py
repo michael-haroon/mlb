@@ -69,7 +69,7 @@ class LOYOSplit:
 def load_features(
     features_path: Path,
     target: str,
-    data_mode: str = "2015+",
+    data_mode: str = "2016+",
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """Load game features and extract target column.
 
@@ -84,7 +84,9 @@ def load_features(
     target : str
         Target column name.
     data_mode : str
-        "2015+" or "all" — controls season filtering.
+        "2016+" (default), "2015+", or "all" — controls season filtering.
+        2015 is excluded by default: SP null rates are 3× higher than any
+        subsequent season, indicating data coverage gaps rather than real TBD SPs.
 
     Returns
     -------
@@ -100,13 +102,16 @@ def load_features(
     log.info(f"Loaded {len(df):,} games × {len(df.columns)} columns from {features_path}")
 
     # Filter by data mode
-    if data_mode == "2015+":
+    if data_mode == "2016+":
+        df = df[df["season"] >= 2016].reset_index(drop=True)
+        log.info(f"Filtered to 2016+: {len(df):,} games")
+    elif data_mode == "2015+":
         df = df[df["season"] >= 2015].reset_index(drop=True)
         log.info(f"Filtered to 2015+: {len(df):,} games")
     elif data_mode == "all":
         pass  # use everything
     else:
-        raise ValueError(f"Unknown data_mode: {data_mode!r}. Use '2015+' or 'all'.")
+        raise ValueError(f"Unknown data_mode: {data_mode!r}. Use '2016+', '2015+', or 'all'.")
 
     # Filter to non-null target
     if target not in df.columns:
@@ -385,10 +390,16 @@ _IMPUTATION_RULES: list[tuple[callable, float]] = [
     (lambda c: c == "park_factor", 1.0),
     # Days rest → 7 (offseason proxy for first game of season)
     (lambda c: "days_rest" in c, 7.0),
+    # SP ERA/WHIP differentials → 0.0 (no-edge prior: E[away_ERA - home_ERA] ≈ 0.38 ≈ 0
+    # when both SPs are unknown; using the absolute prior 4.50 here injects a
+    # +1 sigma directional anti-away signal and produces impossible feature vectors
+    # where sp_era_diff disagrees with its components by up to 5.5 raw units).
+    # Must appear BEFORE the level-feature rules (first match wins).
+    (lambda c: c in ("sp_era_diff", "sp_whip_diff"), 0.0),
     # SP season ERA → 4.50 (replacement-level prior, 2015-2024 MLB average ~4.2-4.5)
-    (lambda c: "season_era" in c or c == "sp_era_diff", 4.50),
+    (lambda c: "season_era" in c, 4.50),
     # SP season WHIP → 1.30 (replacement-level prior)
-    (lambda c: "season_whip" in c or c == "sp_whip_diff", 1.30),
+    (lambda c: "season_whip" in c, 1.30),
     # Venue coordinates → 0 (non-informative; these rows are neutral-site games)
     (lambda c: "venue_latitude" in c or "venue_longitude" in c, 0.0),
 ]

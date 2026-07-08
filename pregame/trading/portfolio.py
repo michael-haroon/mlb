@@ -41,6 +41,9 @@ class PositionState(str, Enum):
     EXITED = "exited"        # Sold before settlement
 
 
+_STATE_FILE = LOGS_DIR / "portfolio_state.json"
+
+
 class Portfolio:
     """Thread-safe position and order ledger."""
 
@@ -55,6 +58,38 @@ class Portfolio:
         self._orders: dict[str, dict] = {}
         # Daily realized P&L
         self._daily_pnl: float = 0.0
+
+        if dry_run:
+            self._load_state()
+
+    def _load_state(self) -> None:
+        """Restore dry-run positions and P&L from disk so paper trades survive restarts."""
+        if not _STATE_FILE.exists():
+            return
+        try:
+            state = json.loads(_STATE_FILE.read_text())
+            self._positions = state.get("positions", {})
+            self._daily_pnl = state.get("daily_pnl", 0.0)
+            # Resting orders are not restored — they are ephemeral (no longer on Kalshi).
+            logger.info(
+                f"[POS] Restored dry-run state: {len(self._positions)} positions, "
+                f"P&L ${self._daily_pnl:+.2f}"
+            )
+        except Exception as e:
+            logger.warning(f"[POS] Could not restore state: {e}")
+
+    def _save_state(self) -> None:
+        """Persist dry-run positions and P&L to disk."""
+        try:
+            with self._lock:
+                state = {
+                    "positions": self._positions,
+                    "daily_pnl": self._daily_pnl,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                }
+            _STATE_FILE.write_text(json.dumps(state, default=str))
+        except Exception as e:
+            logger.warning(f"[POS] Could not save state: {e}")
 
     def refresh(self) -> None:
         """Sync state from Kalshi API. No-op in dry-run mode."""
@@ -156,6 +191,8 @@ class Portfolio:
         with self._lock:
             self._positions[ticker] = record
         self._log_event("position_add", record)
+        if self._dry_run:
+            self._save_state()
         logger.info(
             f"{'[DRY] ' if self._dry_run else '[LIVE] '}"
             f"Position: {contracts}x {side} @{entry_price:.0f}c on {ticker} "
@@ -269,6 +306,8 @@ class Portfolio:
             "pnl": pnl,
             "daily_pnl": self._daily_pnl,
         })
+        if self._dry_run:
+            self._save_state()
         logger.info(
             f"{'[DRY] ' if self._dry_run else '[LIVE] '}"
             f"Settled {ticker}: {'YES' if yes_won else 'NO'} won, "
@@ -308,6 +347,8 @@ class Portfolio:
             "pnl": pnl,
             "daily_pnl": self._daily_pnl,
         })
+        if self._dry_run:
+            self._save_state()
         logger.info(
             f"{'[DRY] ' if self._dry_run else '[LIVE] '}"
             f"Exited {ticker}: {side} entry={entry_price:.2f} exit={exit_price:.2f} × {contracts} → "

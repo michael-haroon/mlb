@@ -202,6 +202,10 @@ class KalshiWS:
 
     def _on_open(self, ws):
         logger.info("WebSocket connected")
+        # Clear stale seq counters — new session means new sequence numbering.
+        # Keeping old values would cause every first delta to fire a false seq gap.
+        self.book._seqs.clear()
+        self._snapshot_pending.clear()
         self._send_lifecycle_subscribe()
         for ticker in self._subscribed_tickers:
             self._send_market_subscribe(ticker)
@@ -233,8 +237,14 @@ class KalshiWS:
         logger.warning(f"WS closed: {close_status_code} {close_msg}")
         if self._running:
             logger.info("Reconnecting in 5s...")
-            time.sleep(5)
-            self._connect()
+            # Spawn reconnect on a new thread — calling _connect() directly here
+            # would invoke run_forever() from inside the websocket callback stack,
+            # causing unbounded recursion on rapid disconnect/reconnect cycles.
+            threading.Thread(target=self._reconnect_loop, daemon=True).start()
+
+    def _reconnect_loop(self):
+        time.sleep(5)
+        self._connect()
 
     # ── Message handlers ─────────────────────────────────────────────────────
 
