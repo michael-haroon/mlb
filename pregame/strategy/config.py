@@ -92,7 +92,6 @@ FEATURE_SUBSETS = {
 # ---------------------------------------------------------------------------
 from pathlib import Path
 
-# Enable after running the importance pipeline (run-importance CLI command).
-# When True, train.py loads filter_report.csv and applies per-family routing.
-APPLY_IMPORTANCE_FILTER = False
+# Importance artifacts directory — train.py auto-detects filter_report.csv
+# and applies per-family feature routing when the file exists.
 IMPORTANCE_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "importance"
