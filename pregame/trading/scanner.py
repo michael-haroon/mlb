@@ -194,10 +194,11 @@ def _apply_line(base_result: dict, target: str, line: Optional[float], direction
     """Apply a specific line/direction to a cached inference result.
 
     For classification targets the probability is already final (no line needed).
-    For regression targets we re-integrate the cached Student-t distribution at
+    For regression targets we re-integrate the cached distribution at
     the requested line — much cheaper than re-running the full ensemble.
+    Dispatches on distribution type: NegBin for counts, Student-t for signed.
     """
-    from ..strategy.calibration import cover_probability
+    from ..strategy.calibration import cover_probability, negbin_cover_probability
 
     task = base_result.get("task", "classification")
 
@@ -215,7 +216,22 @@ def _apply_line(base_result: dict, target: str, line: Optional[float], direction
         return {"error": f"Regression target {target} requires a line"}
 
     dist = base_result.get("distribution", {})
-    mu    = float(base_result.get("point_estimate", dist.get("mu", 0)))
+    mu = float(base_result.get("point_estimate", dist.get("mu", 0)))
+    dist_type = dist.get("type", "student_t")
+
+    if dist_type == "negbin":
+        alpha = dist["alpha"]
+        prob = negbin_cover_probability(mu, line, alpha, direction=direction)
+        return {
+            "prob": prob,
+            "ensemble_std": base_result["ensemble_std"],
+            "confidence_tier": base_result["confidence_tier"],
+            "task": task,
+            "n_models_used": base_result["n_models_used"],
+            "point_estimate": mu,
+        }
+
+    # Student-t fallback
     df    = dist.get("df", base_result.get("residual_df", 7))
     scale = dist.get("scale", base_result.get("residual_scale", 1.0))
 

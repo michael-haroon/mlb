@@ -158,7 +158,19 @@ def predict_game(
             calibrated["confidence_tier"] = tiers
             calibrated["ensemble_std"] = ensemble_std
     else:
-        calibrated = apply_calibration(blended, calibration, ensemble_std)
+        if calibration.distribution_type == "negbin":
+            calibrated = {
+                "point_estimate": blended,
+            }
+            if calibration.std_p33 is not None:
+                tiers = np.where(
+                    ensemble_std <= calibration.std_p33, "HIGH",
+                    np.where(ensemble_std <= calibration.std_p67, "MEDIUM", "LOW")
+                )
+                calibrated["confidence_tier"] = tiers
+                calibrated["ensemble_std"] = ensemble_std
+        else:
+            calibrated = apply_calibration(blended, calibration, ensemble_std)
 
     # --- Build output ---
     output = {
@@ -169,14 +181,22 @@ def predict_game(
     }
     output.update(calibrated)
 
-    # For regression targets, compute cover probabilities for common lines
-    if task == "regression" and calibration.residual_df is not None:
-        output["distribution"] = {
-            "type": "student_t",
-            "mu": float(blended[0]) if len(blended) == 1 else blended.tolist(),
-            "df": calibration.residual_df,
-            "scale": calibration.residual_scale,
-        }
+    # For regression targets, attach distribution params for downstream pricing
+    if task == "regression":
+        mu_val = float(blended[0]) if len(blended) == 1 else blended.tolist()
+        if calibration.distribution_type == "negbin":
+            output["distribution"] = {
+                "type": "negbin",
+                "mu": mu_val,
+                "alpha": calibration.negbin_alpha,
+            }
+        elif calibration.residual_df is not None:
+            output["distribution"] = {
+                "type": "student_t",
+                "mu": mu_val,
+                "df": calibration.residual_df,
+                "scale": calibration.residual_scale,
+            }
 
     return output
 

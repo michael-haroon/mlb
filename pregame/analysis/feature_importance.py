@@ -27,11 +27,9 @@ References:
 from __future__ import annotations
 
 import logging
-import warnings
 
 import numpy as np
 import pandas as pd
-from itertools import combinations
 from joblib import Parallel, delayed
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.ensemble import BaggingClassifier, BaggingRegressor
@@ -615,7 +613,8 @@ def feat_imp_pca_mda(X: pd.DataFrame,
     )
 
     # Map back: importance_i = sum_j |W[i,j]| * mean_importance_PC_j
-    pc_imp = pc_summary["mean"].values                          # (k,)
+    # Reindex to PC-index order (feat_imp_mda returns sorted by mean descending)
+    pc_imp = pc_summary.loc[pc_names, "mean"].values            # (k,) in PC_0..PC_k order
     abs_loadings = np.abs(W)                                    # (n_features, k)
     feat_imp_vals = abs_loadings @ pc_imp                       # (n_features,)
 
@@ -673,14 +672,15 @@ def feat_imp_residual_mda(X: pd.DataFrame,
     col_names = list(X.columns)
     n_samples = len(X)
     cluster_sets = {cid: set(members) for cid, members in clusters.items()}
-    X_vals = X.fillna(0).values.astype(np.float64)
+    col_medians = X.median()
+    X_vals = X.fillna(col_medians).values.astype(np.float64)
 
     tasks = []
     for cid, cluster_members in clusters.items():
         other_cols = [c for c in col_names if c not in cluster_sets[cid]]
         if not other_cols:
             continue
-        X_other = X[other_cols].fillna(0).values.astype(np.float64)
+        X_other = X[other_cols].fillna(col_medians[other_cols]).values.astype(np.float64)
         if X_other.shape[1] > n_samples // 10:
             pca_r = PCA(n_components=min(n_samples // 10, X_other.shape[1]))
             X_other = pca_r.fit_transform(X_other)
@@ -1031,6 +1031,8 @@ def feat_imp_cfi_mda(clf,
     is_regression = (scoring == "r2")
     all_labels = None if is_regression else np.unique(y.values)
 
+    rng = np.random.default_rng(42)
+
     for train_idx, test_idx in tqdm(list(cv.split(X, y, groups=years.values)),
                                     desc="CFI-MDA folds", unit="fold", leave=False):
         X_tr = X.iloc[train_idx].copy()
@@ -1061,8 +1063,8 @@ def feat_imp_cfi_mda(clf,
                 continue
             X_te_perm = X_te.copy()
             shuffle_vals = X_te_perm[present].values.copy()
-            np.random.shuffle(shuffle_vals)
-            X_te_perm[present] = shuffle_vals
+            perm_idx = rng.permutation(len(shuffle_vals))
+            X_te_perm[present] = shuffle_vals[perm_idx]
             if is_regression:
                 cluster_perms[cid].append(r2_score(y_te, fit.predict(X_te_perm)))
             else:
@@ -1529,7 +1531,7 @@ def pca_cross_check(X: pd.DataFrame,
     }, index=X_filled.columns)
 
     tau_results = {}
-    for method in ["MDI", "MDA", "SFI"]:
+    for method in ["MDI", "SFI", "CFI_MDA", "DESUB_MDA", "PCA_MDA", "RESID_MDA"]:
         rank_col = f"rank_{method}"
         if rank_col not in importance_summary.columns:
             continue
@@ -1610,7 +1612,7 @@ def compute_shared_clustering(X: pd.DataFrame) -> dict:
              f"noise: {n_noise}, signal variance: {denoising_info['signal_variance_pct']}%")
 
     log.info("  2/2  ONC clustering (greedy divisive on denoised+detoned matrix)...")
-    clusters = onc_cluster(corr_cluster, max_clusters=5)
+    clusters = onc_cluster(corr_cluster, max_clusters=None)
     log.info(f"    Found {len(clusters)} clusters:")
     for cid, members in sorted(clusters.items(), key=lambda x: -len(x[1])):
         log.info(f"    Cluster {cid} ({len(members)} features): {members[:5]}"
@@ -1695,7 +1697,7 @@ def run_all_importance(X: pd.DataFrame,
                  f"signal var: {denoising_info['signal_variance_pct']}%")
 
         log.info("2/10  ONC clustering (greedy divisive)...")
-        clusters = onc_cluster(corr_cluster, max_clusters=5)
+        clusters = onc_cluster(corr_cluster, max_clusters=None)
         log.info(f"    Found {len(clusters)} clusters")
         for cid, members in sorted(clusters.items(), key=lambda x: -len(x[1])):
             log.info(f"    Cluster {cid} ({len(members)} features): {members[:5]}")

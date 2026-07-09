@@ -380,7 +380,7 @@ def _run_ensemble(args):
         if task == "classification":
             cal_bundle = calibrate_classification(yt, oof_blend, oof_std)
         else:
-            cal_bundle = calibrate_regression(yt, oof_blend, oof_std)
+            cal_bundle = calibrate_regression(yt, oof_blend, oof_std, target_name=target)
 
         # Attach calibration to pickle (reuse _saved_bundle already loaded above)
         _saved_bundle["calibration"] = cal_bundle

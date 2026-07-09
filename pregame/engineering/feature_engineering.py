@@ -78,6 +78,9 @@ def engineer_features(games: pd.DataFrame) -> pd.DataFrame:
     log.info("Engineering rolling pitching stats...")
     games = _rolling_pitching_stats(games)
 
+    log.info("Engineering EWMA features...")
+    games = _ewma_features(games)
+
     log.info("Engineering win/loss momentum...")
     games = _momentum_features(games)
 
@@ -89,6 +92,9 @@ def engineer_features(games: pd.DataFrame) -> pd.DataFrame:
 
     log.info("Engineering weather features...")
     games = _weather_features(games)
+
+    log.info("Engineering air density index...")
+    games = _air_density_features(games)
 
     log.info("Engineering starting pitcher features...")
     games = _starting_pitcher_features(games)
@@ -207,6 +213,71 @@ def _rolling_pitching_stats(games: pd.DataFrame) -> pd.DataFrame:
                     .transform(lambda s: s.rolling(w, min_periods=max(3, w // 2)).mean().shift(1))
                 )
 
+    return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
+
+
+# ---------------------------------------------------------------------------
+# EWMA features
+# ---------------------------------------------------------------------------
+
+def _ewma_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Exponentially weighted moving averages with game-index halflife.
+
+    Unlike rolling windows which weight all observations equally, EWMA gives
+    exponentially more weight to recent games. Uses game-index distance (not
+    calendar days) consistent with the codebase's decay philosophy — avoids
+    penalizing offseason gaps.
+
+    halflife=15 means a game 15 starts ago gets half the weight of the most
+    recent game.
+    """
+    halflife = 15  # games, not days — TODO: validate — placeholder
+    new_cols: dict[str, pd.Series] = {}
+
+    for side in ("home", "away"):
+        team_col = f"{side}_team_id"
+        if team_col not in games.columns:
+            continue
+
+        # Per-game rates to EWMA — source columns created by _rolling_batting/pitching_stats
+        stats_to_ewma = {
+            f"{side}_game_avg": f"{side}_ewma_avg",
+            f"{side}_game_obp": f"{side}_ewma_obp",
+            f"{side}_game_slg": f"{side}_ewma_slg",
+            f"{side}_game_era": f"{side}_ewma_era",
+            f"{side}_game_whip": f"{side}_ewma_whip",
+            f"{side}_game_k9": f"{side}_ewma_k9",
+            f"{side}_game_fip": f"{side}_ewma_fip",
+        }
+
+        for src_col, dst_col in stats_to_ewma.items():
+            source = games.get(src_col)
+            if source is None:
+                # Check new_cols in case it was added by a prior step in this function
+                source = new_cols.get(src_col)
+            if source is None:
+                continue
+            new_cols[dst_col] = (
+                source.groupby(games[team_col])
+                .transform(lambda s: s.ewm(halflife=halflife, min_periods=5).mean().shift(1))
+                .astype("float32")
+            )
+
+        # OPS composite from EWMA components
+        obp_key = f"{side}_ewma_obp"
+        slg_key = f"{side}_ewma_slg"
+        if obp_key in new_cols and slg_key in new_cols:
+            new_cols[f"{side}_ewma_ops"] = (new_cols[obp_key] + new_cols[slg_key]).astype("float32")
+
+    # Home - Away differentials for all EWMA stats
+    for stat in ("avg", "obp", "slg", "ops", "era", "whip", "k9", "fip"):
+        h_col = f"home_ewma_{stat}"
+        a_col = f"away_ewma_{stat}"
+        if h_col in new_cols and a_col in new_cols:
+            new_cols[f"diff_ewma_{stat}"] = (new_cols[h_col] - new_cols[a_col]).astype("float32")
+
+    if not new_cols:
+        return games
     return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
 
 
@@ -367,6 +438,48 @@ def _weather_features(games: pd.DataFrame) -> pd.DataFrame:
     if not new_cols:
         return games
     return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Air Density Index
+# ---------------------------------------------------------------------------
+
+# MLB Stats API venue_id → elevation (feet above sea level).
+# Only venues with elevation >400ft included; all others default to 0 (sea level,
+# ADI ≈ 1.0). Elevation affects batted-ball carry — lower air density at altitude
+# reduces drag, increasing HR distance and total run scoring.
+# TODO: validate — placeholder (venue IDs from MLB Stats API; elevations from USGS)
+_VENUE_ELEVATIONS_FT: dict[int, int] = {
+    19: 5280,    # Coors Field (Denver) — extreme outlier
+    15: 1082,    # Chase Field (Phoenix)
+    5325: 551,   # Globe Life Field (Arlington)
+    7: 750,      # Kauffman Stadium (Kansas City)
+    3312: 815,   # Target Field (Minneapolis)
+    2889: 466,   # Busch Stadium (St. Louis)
+    2602: 480,   # Great American Ball Park (Cincinnati)
+    4705: 1050,  # Truist Park (Atlanta)
+    2700: 1555,  # Salt River Fields (spring training, Scottsdale)
+}
+
+
+def _air_density_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Air Density Index from venue elevation via barometric formula.
+
+    ADI = rho(h) / rho(sea_level) — the fraction of sea-level air density
+    at the venue's elevation. Lower ADI → less drag → ball carries farther.
+    Coors (ADI≈0.83) is the extreme; most venues are >0.98.
+    """
+    if "venue_id" not in games.columns:
+        return games
+
+    elevation_ft = games["venue_id"].map(_VENUE_ELEVATIONS_FT).fillna(0)
+    # Barometric formula at T=288K (standard atmosphere):
+    # ADI = exp(-M*g*h / (R*T)) where coefficient = M*g/(R*T) = 0.029*9.81/(8.314*288)
+    # ≈ 1.19e-4 per meter. Convert ft→m: multiply by 0.3048.
+    # Net: ADI = exp(-3.63e-5 * h_ft)
+    adi = np.exp(-3.63e-5 * elevation_ft).astype("float32")
+
+    return pd.concat([games, pd.DataFrame({"air_density_index": adi}, index=games.index)], axis=1)
 
 
 # ---------------------------------------------------------------------------

@@ -372,6 +372,9 @@ class TradingRunner:
         """
         for order in self._portfolio.get_open_orders():
             ticker = order["ticker"]
+            # Skip reprice if a snapshot is pending (orderbook state is uncertain)
+            if ticker in self._ws._snapshot_pending:
+                continue
             bb, ba = book_tops.get(ticker, (None, None))
             if bb is None or ba is None:
                 continue

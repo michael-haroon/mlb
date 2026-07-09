@@ -58,7 +58,7 @@ LINEAR_MODELS = {
 # AdaBoost uses DecisionTree base estimators but sklearn's implementation
 # does NOT handle NaN natively (unlike HistGradientBoosting/XGBoost/LightGBM).
 # It must receive imputed data.
-NEEDS_IMPUTATION = LINEAR_MODELS | {"adaboost"}
+NEEDS_IMPUTATION = LINEAR_MODELS | {"adaboost", "extra_trees", "random_forest"}
 NEEDS_SCALING = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd", "knn", "mlp", "bagging_logreg"}
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,6 @@ FEATURE_SUBSETS = {
 # ---------------------------------------------------------------------------
 from pathlib import Path
 
-# Enable after running the importance pipeline (run-importance CLI command).
-# When True, train.py loads filter_report.csv and applies per-family routing.
-APPLY_IMPORTANCE_FILTER = False
+# Importance artifacts directory — train.py auto-detects filter_report.csv
+# and applies per-family feature routing when the file exists.
 IMPORTANCE_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "importance"

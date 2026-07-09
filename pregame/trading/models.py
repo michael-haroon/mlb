@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from ..strategy.predict import predict_game, predict_spread_lines, predict_total_lines
-from ..strategy.calibration import cover_probability
+from ..strategy.calibration import cover_probability, negbin_cover_probability, negbin_total_cover_probability
 from .config import ARTIFACTS_DIR
 from .market_map import MODEL_TO_SERIES
 
@@ -98,9 +98,10 @@ def predict_derived_team_total(
     home_runs = (total_runs + home_run_diff) / 2
     away_runs = (total_runs - home_run_diff) / 2
 
-    Scale propagation assumes independence (conservative upper bound on uncertainty):
+    When total_runs uses NegBin distribution, team totals are priced as
+    independent NegBin marginals with mu = total_mu / 2 adjusted by diff.
+    For Student-t fallback, scale propagation assumes independence:
       scale_derived = sqrt(scale_total² + scale_diff²) / 2
-    df is taken as min(df_total, df_diff) for heavier tails (more conservative).
     """
     result_total = predict_game(features, total_path, "total_runs")
     if "error" in result_total:
@@ -118,12 +119,6 @@ def predict_derived_team_total(
     else:
         mu = (mu_total - mu_diff) / 2.0
 
-    sc_total = result_total["distribution"]["scale"]
-    sc_diff  = result_diff["distribution"]["scale"]
-    scale = np.sqrt(sc_total ** 2 + sc_diff ** 2) / 2.0
-
-    df = min(result_total["distribution"]["df"], result_diff["distribution"]["df"])
-
     std_total = float(result_total.get("ensemble_std", np.array([0.05]))[0])
     std_diff  = float(result_diff.get("ensemble_std",  np.array([0.05]))[0])
     ensemble_std = np.sqrt(std_total ** 2 + std_diff ** 2) / 2.0
@@ -131,6 +126,39 @@ def predict_derived_team_total(
     tier_total = str(result_total.get("confidence_tier", np.array(["MEDIUM"]))[0])
     tier_diff  = str(result_diff.get("confidence_tier",  np.array(["MEDIUM"]))[0])
     confidence_tier = tier_total if _TIER_RANK.get(tier_total, 1) <= _TIER_RANK.get(tier_diff, 1) else tier_diff
+
+    dist_total = result_total.get("distribution", {})
+    dist_type = dist_total.get("type", "student_t")
+
+    if dist_type == "negbin":
+        alpha = dist_total["alpha"]
+        # NegBin marginal for team total: use the derived mu with same alpha.
+        # Alpha is a global overdispersion param stable across targets (CV=0.059).
+        if line is None:
+            return {
+                "ensemble_std": ensemble_std,
+                "confidence_tier": confidence_tier,
+                "task": "regression",
+                "n_models_used": result_total["n_models_used"] + result_diff["n_models_used"],
+                "point_estimate": mu,
+                "distribution": {"type": "negbin", "mu": mu, "alpha": alpha},
+            }
+        prob = negbin_cover_probability(mu, line, alpha, direction=direction)
+        return {
+            "prob": prob,
+            "ensemble_std": ensemble_std,
+            "confidence_tier": confidence_tier,
+            "task": "regression",
+            "n_models_used": result_total["n_models_used"] + result_diff["n_models_used"],
+            "point_estimate": mu,
+        }
+
+    # Student-t fallback for signed targets
+    sc_total = dist_total.get("scale", 1.0)
+    sc_diff  = result_diff.get("distribution", {}).get("scale", 1.0)
+    scale = np.sqrt(sc_total ** 2 + sc_diff ** 2) / 2.0
+
+    df = min(dist_total.get("df", 7), result_diff.get("distribution", {}).get("df", 7))
 
     # line=None means the scanner wants the raw distribution for caching;
     # _apply_line will re-integrate at each market's specific line cheaply.
@@ -197,17 +225,42 @@ def predict_market_prob(
             "n_models_used": result["n_models_used"],
         }
 
-    # Regression: need a specific line to price
-    if line is None:
-        return {"error": f"Regression target {target} requires a line to price"}
-
+    # Regression: extract distribution params
     mu = float(result["point_estimate"][0]) if hasattr(result["point_estimate"], "__len__") else float(result["point_estimate"])
-    df = result["distribution"]["df"]
-    scale = result["distribution"]["scale"]
-
-    prob = cover_probability(mu, line, df, scale, direction=direction)
     std = float(result.get("ensemble_std", np.array([0.05]))[0])
     tier = result.get("confidence_tier", np.array(["MEDIUM"]))[0]
+    dist = result.get("distribution", {})
+    dist_type = dist.get("type", "student_t")
+
+    # line=None: scanner wants the raw distribution for caching;
+    # _apply_line will re-integrate at each market's specific line cheaply.
+    if line is None:
+        return {
+            "ensemble_std": std,
+            "confidence_tier": str(tier),
+            "task": task,
+            "n_models_used": result["n_models_used"],
+            "point_estimate": mu,
+            "distribution": dist,
+        }
+
+    # Price at specific line using the appropriate distributional model
+    if dist_type == "negbin":
+        alpha = dist["alpha"]
+        prob = negbin_cover_probability(mu, line, alpha, direction=direction)
+        return {
+            "prob": prob,
+            "ensemble_std": std,
+            "confidence_tier": str(tier),
+            "task": task,
+            "n_models_used": result["n_models_used"],
+            "point_estimate": mu,
+        }
+
+    # Student-t fallback
+    df = dist.get("df", 7)
+    scale = dist.get("scale", 1.0)
+    prob = cover_probability(mu, line, df, scale, direction=direction)
 
     return {
         "prob": prob,
