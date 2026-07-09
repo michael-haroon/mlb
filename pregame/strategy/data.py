@@ -141,6 +141,8 @@ _PREGAME_FEATURE_PREFIXES = (
     "home_roll", "away_roll",
     # Differentials and sums of rolling features
     "diff_roll", "sum_roll",
+    # EWMA features (game-index halflife decay, shift(1) internally)
+    "home_ewma_", "away_ewma_", "diff_ewma_",
     # Schedule context
     "home_days_rest", "away_days_rest",
     "home_games_last_7d", "away_games_last_7d",
@@ -161,9 +163,10 @@ _PREGAME_FEATURE_PREFIXES = (
     "log5_prob", "consensus_home_win_prob", "consensus_home_win_std",
     # Head-to-head from prior meetings
     "h2h_",
-    # Venue and weather (known before game)
+    # Venue, weather, and air density (known before game)
     "park_factor", "temp_f", "is_dome", "is_night_game", "is_doubleheader",
     "venue_capacity", "venue_latitude", "venue_longitude",
+    "air_density_index",
     # Starting pitcher season-level stats (from prior starts, not this game)
     "sp_home_season_era", "sp_home_season_whip",
     "sp_away_season_era", "sp_away_season_whip",
@@ -319,12 +322,22 @@ def prepare_fold(
             observation_masks = X_train[[f"{c}_observed" for c in mnar_cols]]
             feature_cols = list(X_train.columns)
 
+    # --- LEA context: era-adaptive priors from training fold ---
+    # Median-of-medians avoids sensitivity to team imbalance in column naming
+    era_context: dict[str, float] = {}
+    era_cols = [c for c in X_train.columns if "season_era" in c and "diff" not in c]
+    whip_cols = [c for c in X_train.columns if "season_whip" in c and "diff" not in c]
+    if era_cols:
+        era_context["season_era"] = float(X_train[era_cols].median().median())
+    if whip_cols:
+        era_context["season_whip"] = float(X_train[whip_cols].median().median())
+
     # --- Semantic imputation (for models that cannot handle NaN) ---
     scaler = None
 
     if model_family in NEEDS_IMPUTATION:
-        X_train = _semantic_impute(X_train)
-        X_val = _semantic_impute(X_val)
+        X_train = _semantic_impute(X_train, era_context=era_context or None)
+        X_val = _semantic_impute(X_val, era_context=era_context or None)
 
     if model_family in NEEDS_SCALING:
         scaler = StandardScaler()
@@ -388,8 +401,10 @@ _IMPUTATION_RULES: list[tuple[callable, float]] = [
     (lambda c: "winrate" in c or "log5_prob" in c or "consensus_home_win_prob" in c, 0.5),
     # Park factor → 1.0 (league-average multiplier by definition)
     (lambda c: c == "park_factor", 1.0),
-    # Days rest → 7 (offseason proxy for first game of season)
-    (lambda c: "days_rest" in c, 7.0),
+    # Days rest → 4 (All-Star break proxy — most common NaN scenario;
+    # median MLB days_rest is ~1-2, so 7.0 was a +3σ outlier)
+    # TODO: validate — placeholder
+    (lambda c: "days_rest" in c, 4.0),
     # SP ERA/WHIP differentials → 0.0 (no-edge prior: E[away_ERA - home_ERA] ≈ 0.38 ≈ 0
     # when both SPs are unknown; using the absolute prior 4.50 here injects a
     # +1 sigma directional anti-away signal and produces impossible feature vectors
@@ -412,12 +427,13 @@ _IMPUTATION_RULES: list[tuple[callable, float]] = [
 _DEFAULT_FILL = 0.0
 
 
-def _semantic_impute(df: pd.DataFrame) -> pd.DataFrame:
-    """Fill NaN with domain-correct static priors.
+def _semantic_impute(df: pd.DataFrame, era_context: dict[str, float] | None = None) -> pd.DataFrame:
+    """Fill NaN with domain-correct priors, optionally era-adaptive.
 
-    No data-dependent estimation (no MICE, no training-set mean) — each fill
-    value is a fixed semantic prior derived from the feature's definition.
-    This avoids lookahead bias and BayesianRidge overflow.
+    When era_context is provided (computed from the training fold), season_era
+    and season_whip use the fold's league median instead of a static constant.
+    This adapts to dead-ball vs juiced-ball eras without lookahead bias —
+    the context is derived solely from X_train.
     """
     if not df.isna().any().any():
         return df
@@ -431,6 +447,14 @@ def _semantic_impute(df: pd.DataFrame) -> pd.DataFrame:
             if matcher(col):
                 fill_value = value
                 break
+
+        # LEA override: use training-fold league median when available
+        if era_context:
+            if "season_era" in col and "diff" not in col and "season_era" in era_context:
+                fill_value = era_context["season_era"]
+            elif "season_whip" in col and "diff" not in col and "season_whip" in era_context:
+                fill_value = era_context["season_whip"]
+
         df[col] = df[col].fillna(fill_value)
 
     return df

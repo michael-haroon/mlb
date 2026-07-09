@@ -58,7 +58,7 @@ LINEAR_MODELS = {
 # AdaBoost uses DecisionTree base estimators but sklearn's implementation
 # does NOT handle NaN natively (unlike HistGradientBoosting/XGBoost/LightGBM).
 # It must receive imputed data.
-NEEDS_IMPUTATION = LINEAR_MODELS | {"adaboost"}
+NEEDS_IMPUTATION = LINEAR_MODELS | {"adaboost", "extra_trees", "random_forest"}
 NEEDS_SCALING = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd", "knn", "mlp", "bagging_logreg"}
 
 # ---------------------------------------------------------------------------
