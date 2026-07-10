@@ -37,6 +37,11 @@ class EnsembleStore:
         self._models_dir = models_dir
         self._bundles: dict[str, Path] = {}  # target → ensemble .pkl path
         self._loaded: dict[str, dict] = {}   # target → loaded bundle dict (cached)
+        # Cross-scan inference cache: (away, home, target, features_hash) → result dict.
+        # Cleared on reload_all() — i.e. only after a settlement-triggered feature rebuild.
+        # Without this, 608 markets × full ensemble runs every 60s all night on unchanged data.
+        self.inference_cache: dict[tuple, dict] = {}
+        self._inference_cache_features_hash: str | None = None
 
     def discover(self) -> list[str]:
         """Find all trained ensemble .pkl files and register them.
@@ -73,9 +78,16 @@ class EnsembleStore:
         return bundle
 
     def reload_all(self) -> None:
-        """Clear cache and re-discover. Call after feature refresh."""
+        """Clear caches and re-discover. Call after feature refresh."""
         self._loaded.clear()
+        self.inference_cache.clear()
+        self._inference_cache_features_hash = None
         self.discover()
+
+    def invalidate_inference_cache(self) -> None:
+        """Clear the cross-scan inference cache when features change."""
+        self.inference_cache.clear()
+        self._inference_cache_features_hash = None
 
     @property
     def tradeable_targets(self) -> list[str]:
@@ -92,6 +104,7 @@ def predict_derived_team_total(
     diff_path: Path,
     line: float,
     direction: str = "over",
+    label: str = "",
 ) -> dict:
     """Price a team-total market by deriving from total_runs and home_run_diff.
 
@@ -103,11 +116,11 @@ def predict_derived_team_total(
     For Student-t fallback, scale propagation assumes independence:
       scale_derived = sqrt(scale_total² + scale_diff²) / 2
     """
-    result_total = predict_game(features, total_path, "total_runs")
+    result_total = predict_game(features, total_path, "total_runs", label=label)
     if "error" in result_total:
         return result_total
 
-    result_diff = predict_game(features, diff_path, "home_run_diff")
+    result_diff = predict_game(features, diff_path, "home_run_diff", label=label)
     if "error" in result_diff:
         return result_diff
 
@@ -194,6 +207,7 @@ def predict_market_prob(
     ensemble_path: Path,
     line: Optional[float] = None,
     direction: str = "over",
+    label: str = "",
 ) -> dict:
     """Generate a calibrated probability for a specific market line.
 
@@ -206,7 +220,7 @@ def predict_market_prob(
     Returns:
         dict with keys: prob, ensemble_std, confidence_tier, task, n_models_used
     """
-    result = predict_game(features, ensemble_path, target)
+    result = predict_game(features, ensemble_path, target, label=label)
 
     if "error" in result:
         return result

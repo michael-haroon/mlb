@@ -18,7 +18,7 @@ from .config import (
     MAX_POSITION_PCT, MAX_DAILY_EXPOSURE_PCT,
     MAX_CONCURRENT_POSITIONS, DAILY_LOSS_LIMIT_PCT,
     MAX_CONTRACTS_PER_MARKET, MIN_HOURS_TO_FIRST_PITCH,
-    MAX_HOURS_TO_FIRST_PITCH, PRICE_FLOOR, PRICE_CEILING,
+    PRICE_FLOOR, PRICE_CEILING,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,11 +83,10 @@ def check_limits(
             f"> max ${max_exp:.2f} ({MAX_DAILY_EXPOSURE_PCT}%)"
         )
 
-    # Timing gates
+    # Timing gate: only block markets too close to first pitch.
+    # No upper-bound cap — we want to trade as early as possible pregame.
     if hours_to_first_pitch < MIN_HOURS_TO_FIRST_PITCH:
         return False, f"Too close to first pitch ({hours_to_first_pitch:.1f}h)"
-    if hours_to_first_pitch > MAX_HOURS_TO_FIRST_PITCH:
-        return False, f"Too far from first pitch ({hours_to_first_pitch:.1f}h)"
 
     # Price range
     if price < PRICE_FLOOR:

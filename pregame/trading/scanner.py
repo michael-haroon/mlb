@@ -154,9 +154,18 @@ def generate_quotes(
     Returns:
         list of quote dicts ready for sizing.size_quotes()
     """
-    # Pre-compute inference results keyed by (away_team, home_team, target).
-    # This ensures we call predict_game once per game×target, not once per market.
-    _result_cache: dict[tuple, dict] = {}
+    # Use the persistent cross-scan cache on EnsembleStore.
+    # Inference only re-runs when features change (settlement rebuild) or models reload.
+    # Between rebuilds, the same feature rows produce the same predictions — no need to
+    # re-run hundreds of ensemble calls every 60s on unchanged data.
+    _features_hash = str(pd.util.hash_pandas_object(features).sum())
+    if ensemble_store._inference_cache_features_hash != _features_hash:
+        ensemble_store.invalidate_inference_cache()
+        ensemble_store._inference_cache_features_hash = _features_hash
+        logger.info("Features hash changed — inference cache invalidated")
+
+    result_cache = ensemble_store.inference_cache
+    cache_hits_before = len(result_cache)
 
     quotes = []
 
@@ -174,7 +183,7 @@ def generate_quotes(
             logger.debug(f"No feature row for {parsed.away_team}@{parsed.home_team}, skipping {ticker}")
             continue
 
-        quote = _price_market(parsed, game_row, ensemble_store, book_tops, _result_cache)
+        quote = _price_market(parsed, game_row, ensemble_store, book_tops, result_cache)
         if quote is None:
             continue
 
@@ -186,7 +195,11 @@ def generate_quotes(
     _check_batch_sharpness(quotes)
     quotes = [q for q in quotes if q["target"] not in _sharpness_halted]
 
-    logger.info(f"Generated {len(quotes)} quotes from {len(markets)} markets")
+    new_inferences = len(result_cache) - cache_hits_before
+    logger.info(
+        f"Generated {len(quotes)} quotes from {len(markets)} markets "
+        f"(inference: {new_inferences} new, {cache_hits_before} from cache)"
+    )
     return quotes
 
 
@@ -270,6 +283,7 @@ def _price_market(
 
     # Run inference once per (game, target); subsequent markets reuse cached result
     cache_key = (parsed.away_team, parsed.home_team, target)
+    game_label = f"{parsed.away_team}@{parsed.home_team}"
     if cache_key not in result_cache:
         if target in ("home_runs", "away_runs"):
             total_bundle = ensemble_store.get_bundle("total_runs")
@@ -278,7 +292,8 @@ def _price_market(
                 logger.debug(f"Missing total_runs or home_run_diff ensemble, skipping {ticker}")
                 return None
             result_cache[cache_key] = predict_derived_team_total(
-                target, game_row, total_bundle, diff_bundle, line=None, direction="over"
+                target, game_row, total_bundle, diff_bundle, line=None, direction="over",
+                label=game_label,
             )
         else:
             bundle = ensemble_store.get_bundle(target)
@@ -286,7 +301,8 @@ def _price_market(
                 logger.debug(f"No ensemble for target {target}, skipping {ticker}")
                 return None
             result_cache[cache_key] = predict_market_prob(
-                target, game_row, bundle, line=None, direction="over"
+                target, game_row, bundle, line=None, direction="over",
+                label=game_label,
             )
 
     base_result = result_cache[cache_key]

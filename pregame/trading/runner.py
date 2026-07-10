@@ -51,6 +51,7 @@ from pregame.trading.portfolio import Portfolio, PositionState
 from pregame.trading.ws import KalshiWS
 from pregame.trading.features import FeatureManager
 from pregame.trading.market_map import parse_ticker
+from pregame.trading import schedule as gumbo_schedule
 
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -339,23 +340,28 @@ class TradingRunner:
     # ── Market discovery ─────────────────────────────────────────────────────
 
     def _discover_tradeable_markets(self) -> list[dict]:
-        """Find all open MLB markets across tradeable series."""
+        """Find all open MLB markets whose game has not yet started.
+
+        Uses GUMBO gameDate (UTC) for first-pitch time — accurate to the minute.
+        The old approach of exp - 3h was a guess and caused markets to be wrongly
+        included (games in progress) or excluded (markets with unusual expiry offsets).
+        """
         all_markets = []
         for series in TRADEABLE_SERIES:
             try:
                 resp = self._client.get_markets(series_ticker=series, status="open", limit=200)
                 markets = resp.get("markets", [])
-                # Filter: only markets that haven't started yet
-                now = datetime.now(timezone.utc)
                 for m in markets:
-                    # Kalshi provides expected_expiration_time; first pitch ≈ expiration - 3h
-                    exp_str = m.get("expected_expiration_time", "")
-                    if exp_str:
-                        exp = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-                        first_pitch_approx = exp - timedelta(hours=3)
-                        if first_pitch_approx > now:
-                            all_markets.append(m)
-                    else:
+                    parsed = parse_ticker(m["ticker"])
+                    if parsed is None:
+                        continue
+                    # Extract the calendar date from the Kalshi game_key (first 7 chars: YYMMMDD)
+                    game_key = parsed.game_key
+                    date_str = _game_key_to_date(game_key)
+                    if date_str is None:
+                        all_markets.append(m)  # can't determine date → include conservatively
+                        continue
+                    if not gumbo_schedule.game_has_started(parsed.away_team, parsed.home_team, date_str):
                         all_markets.append(m)
             except Exception as e:
                 logger.warning(f"Market discovery failed for {series}: {e}")
@@ -515,18 +521,18 @@ class TradingRunner:
             logger.warning("Could not verify netting status — proceed with caution")
 
     def _hours_to_first_pitch(self, ticker: str) -> float | None:
-        """Estimate hours until first pitch from market metadata."""
-        try:
-            market = self._client.get_market(ticker)
-            exp_str = market.get("market", {}).get("expected_expiration_time", "")
-            if not exp_str:
-                return None
-            exp = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-            first_pitch = exp - timedelta(hours=3)
-            delta = (first_pitch - datetime.now(timezone.utc)).total_seconds() / 3600.0
-            return max(0, delta)
-        except Exception:
+        """Return hours until first pitch using GUMBO gameDate (UTC).
+
+        No REST call per ticker — uses the shared GUMBO schedule cache.
+        Returns negative values for games already in progress (caller decides action).
+        """
+        parsed = parse_ticker(ticker)
+        if parsed is None:
             return None
+        date_str = _game_key_to_date(parsed.game_key)
+        if date_str is None:
+            return None
+        return gumbo_schedule.hours_to_first_pitch(parsed.away_team, parsed.home_team, date_str)
 
     def _check_taker_opportunity(
         self, sq, best_bid: int | None, best_ask: int | None,
@@ -579,6 +585,26 @@ class TradingRunner:
             return best_bid, best_ask
         except (IndexError, ValueError, TypeError):
             return None, None
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _game_key_to_date(game_key: str) -> str | None:
+    """Convert a Kalshi game_key (e.g. '26JUL101840PHIDET') to 'YYYY-MM-DD'.
+
+    Game keys start with YYMMMDD (7 chars): '26JUL10' → 2026-07-10.
+    The date is the local calendar date of the game, which matches GUMBO's
+    officialDate field.  West Coast night games may have a UTC gameDate that
+    falls on the following calendar day — GUMBO handles this correctly when
+    queried by officialDate, so we pass the encoded date as-is.
+    """
+    try:
+        from datetime import datetime as _dt
+        prefix = game_key[:7]  # e.g. "26JUL10"
+        dt = _dt.strptime(prefix, "%y%b%d")
+        return dt.strftime("%Y-%m-%d")
+    except (ValueError, IndexError):
+        return None
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────

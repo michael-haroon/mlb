@@ -52,7 +52,6 @@ SHADE_SIGMA = {
 
 # ── Timing ───────────────────────────────────────────────────────────────────
 MIN_HOURS_TO_FIRST_PITCH = 0.5     # MLB lineups confirmed ~1h before; trade from 30min out
-MAX_HOURS_TO_FIRST_PITCH = 48.0    # Features stale beyond 2 days
 CANCEL_BEFORE_FIRST_PITCH_MIN = 10 # Cancel all resting orders this many min before first pitch
 EXIT_BUFFER_MINUTES = 15           # Stop posting new quotes this many min before first pitch
 

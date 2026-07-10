@@ -23,6 +23,7 @@ def predict_game(
     features: pd.DataFrame,
     ensemble_path,   # Path | dict — pass a pre-loaded bundle to avoid repeated pickle I/O
     target: str,
+    label: str = "",  # human-readable game label for logging, e.g. "PHI@DET"
 ) -> dict:
     """Generate calibrated prediction for one or more games.
 
@@ -61,7 +62,8 @@ def predict_game(
     n_features = len(features.columns)
     n_populated = (populated_pct > 0.5).sum()
 
-    log.info(f"Predicting {target}: {n_populated}/{n_features} features populated (>{50}%)")
+    game_ctx = f" [{label}]" if label else ""
+    log.info(f"Predicting {target}{game_ctx}: {n_populated}/{n_features} features populated")
 
     # Generate per-model predictions
     preds_per_model = []
