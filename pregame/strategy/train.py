@@ -103,6 +103,24 @@ def train_target(
     else:
         log.info(f"  No importance filter found at {report_path} — using all features.")
 
+    # Auto-detect per-family sizing caps from sizing_curve_{target}.json.
+    # Each family gets its own S* determined by its own model type.
+    per_family_sizing = {}
+    sizing_path = Path(output_dir).parent / "sizing" / f"sizing_curve_{target}.json"
+    if sizing_path.exists():
+        import json as _json
+        with open(sizing_path) as _f:
+            sizing_data = _json.load(_f)
+        if "per_family" in sizing_data:
+            for fam, fam_data in sizing_data["per_family"].items():
+                if "optimal_S" in fam_data:
+                    per_family_sizing[fam] = fam_data["optimal_S"]
+            log.info(f"  Per-family sizing loaded: {len(per_family_sizing)} families from {sizing_path.name}")
+        elif "optimal_S" in sizing_data and "error" not in sizing_data:
+            # Legacy format: single global S* — apply only to hist_gradient_boosting
+            per_family_sizing["hist_gradient_boosting"] = sizing_data["optimal_S"]
+            log.info(f"  Legacy sizing cap: S*={sizing_data['optimal_S']} (hist_gb only)")
+
     if families is None:
         families = list_families()
 
@@ -121,6 +139,16 @@ def train_target(
             log.warning(f"  [{family}] Skipping: importance filter returned 0 features for this target")
             results[family] = {"status": "no_features"}
             continue
+
+        # Apply per-family sizing cap from empirical sizing curve.
+        # importance_features is already in hierarchical priority order from
+        # get_feature_set — simply truncate to S* (cut from tail = lowest priority).
+        if family in per_family_sizing and importance_features is not None:
+            family_s = per_family_sizing[family]
+            if family_s < len(importance_features):
+                pre_cap = len(importance_features)
+                importance_features = importance_features[:family_s]
+                log.info(f"  [{family}] Sizing S*={family_s}: {pre_cap} → {len(importance_features)} features")
 
         X_hpo = X[importance_features] if importance_features is not None else X
 
@@ -173,6 +201,30 @@ def train_target(
                 # Fold metrics
                 metrics = compute_metrics(prepared.y_val.values, preds, task)
                 metrics["val_season"] = int(split.val_season)
+
+                # Train metrics for overfit detection — prefixed to avoid collisions
+                if task == "classification":
+                    if hasattr(model, "predict_proba"):
+                        train_preds = model.predict_proba(prepared.X_train)[:, 1]
+                    else:
+                        dec = model.decision_function(prepared.X_train)
+                        train_preds = 1.0 / (1.0 + np.exp(-dec))
+                else:
+                    train_preds = model.predict(prepared.X_train)
+                train_metrics = compute_metrics(prepared.y_train.values, train_preds, task)
+                for k, v in train_metrics.items():
+                    if k != "n_valid":
+                        metrics[f"train_{k}"] = v
+
+                primary = "log_loss" if task == "classification" else "mae"
+                gap = metrics.get(primary, 0) - metrics.get(f"train_{primary}", 0)
+                log.debug(
+                    f"  [{family}] fold {split.val_season}: "
+                    f"val_{primary}={metrics.get(primary, 0):.4f} "
+                    f"train_{primary}={metrics.get(f'train_{primary}', 0):.4f} "
+                    f"gap={gap:+.4f}"
+                )
+
                 fold_metrics.append(metrics)
 
             except Exception as e:
@@ -212,6 +264,22 @@ def train_target(
             with open(params_path, "w") as f:
                 json.dump(best_params, f, indent=2, default=str)
 
+            primary = "log_loss" if task == "classification" else "mae"
+            mean_val = agg_metrics.get(primary)
+            mean_train = agg_metrics.get(f"train_{primary}")
+            if mean_val is not None and mean_train is not None:
+                mean_gap = mean_val - mean_train
+                fit_label = (
+                    "OVERFIT" if mean_gap > 0.10
+                    else "underfit" if mean_gap < 0.01 and mean_val > 0.35
+                    else "ok"
+                )
+                log.info(
+                    f"  [{family}] fit={fit_label} "
+                    f"val_{primary}={mean_val:.4f} "
+                    f"train_{primary}={mean_train:.4f} "
+                    f"gap={mean_gap:+.4f}"
+                )
             log.info(f"  [{family}] Done: {agg_metrics}")
         else:
             results[family] = {"status": "all_folds_failed"}

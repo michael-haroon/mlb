@@ -1,17 +1,23 @@
 """Evidence-based feature routing to model families.
 
 Routes features based on which de Prado importance tests they pass,
-not a naive top-pct threshold. Each model family gets the features
-whose evidence profile matches its capacity to exploit them:
+matched to each model's architectural capacity to exploit them.
 
-  TREE_BOOSTED (lgbm/xgb/catboost/adaboost/hist_gb) — exploits interactions,
-      sequential feature selection via boosting, redundancy is cheap
-  TREE_BAGGED (random_forest/extra_trees) — same capacity as boosted trees
-  NEURAL (mlp) — learns interactions via hidden layers, needs raw inputs
-  LINEAR (logreg/ridge/lasso/elasticnet/sgd/bagging_logreg) — cannot learn
-      interactions, only features with standalone signal are useful
-  FRAGILE (knn/lda/qda/gaussian_nb) — curse of dimensionality or
-      distributional assumptions; only proven-individual features
+Routing logic derives from two principles:
+1. A feature's pass/fail pattern across tests reveals its signal TYPE
+   (standalone, interaction-only, linear-orthogonal, redundant)
+2. Each model architecture can exploit specific signal types based on
+   its mathematical mechanism (splitting, gradient descent, distance, etc.)
+
+Key architectural distinctions:
+- Column subsampling (RF/ET always, LGB/XGB via config) makes redundant
+  features safe via stochastic decorrelation across estimators
+- AdaBoost lacks shrinkage AND subsampling — interaction-only features
+  cause it to overfit via residual reweighting on noise
+- MDI rank is a tree-split statistic — irrelevant for gradient-based MLP
+- Lasso/ElasticNet do embedded L1 selection — don't pre-filter aggressively
+- GaussianNB assumes conditional independence — orthogonal features ideal,
+  dependency-implying features (complementary/redundant) are pathological
 """
 from __future__ import annotations
 
@@ -24,27 +30,6 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Model family groupings — based on capacity to exploit feature types
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Can learn nonlinear interactions, tolerant of redundancy
-TREE_BOOSTED = {"lightgbm", "xgboost", "catboost", "adaboost", "hist_gradient_boosting"}
-TREE_BAGGED = {"random_forest", "extra_trees"}
-
-# Learns interactions via hidden layers
-NEURAL = {"mlp"}
-
-# Linear decision boundary — cannot exploit interaction-only features.
-# bagging_logreg base estimator is LogisticRegression(C=0.1) — still linear.
-LINEAR = {"logistic_regression", "ridge", "lasso", "elasticnet", "sgd", "bagging_logreg"}
-
-# Distance-based or generative models — curse of dimensionality.
-# QDA estimates p*(p+1)/2 covariance params per class; GaussianNB assumes
-# feature independence; KNN distance degrades with irrelevant dimensions.
-FRAGILE = {"knn", "lda", "qda", "gaussian_nb"}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  Per-feature classification based on pass/fail patterns
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -54,11 +39,11 @@ def _classify_feature(row: pd.Series) -> str:
     Uses the pass/fail pattern across all importance methods to determine
     what kind of signal the feature carries:
 
-      accepted     — all methods agree: proven predictive signal
-      complementary — MDI+desub/CFI pass, SFI fails: interaction signal
+      accepted     — all methods agree OR SFI+PCA+RESID: proven predictive signal
+      complementary — interaction signal (desub/CFI/MDI pass, SFI fails)
       standalone   — SFI passes: standalone predictive power
       linear_only  — PCA+RESID pass, MDI+SFI fail: linear-space signal only
-      absorbed     — MDI passes alone: redundant with better features
+      absorbed     — partial signal, redundant with better features
       redundant    — only cluster-level CFI-MDA passes
       noise        — no method passes
       rejected     — explicitly flagged REJECTED by filter
@@ -68,7 +53,6 @@ def _classify_feature(row: pd.Series) -> str:
     if row.get("tier") == "ACCEPTED":
         return "accepted"
 
-    # Extract pass/fail signals (coerce NaN → False for missing methods)
     mdi = bool(row.get("mdi_passes") is True)
     sfi = bool(row.get("sfi_passes") is True)
     pca = bool(row.get("pca_mda_passes") is True)
@@ -76,16 +60,16 @@ def _classify_feature(row: pd.Series) -> str:
     desub = bool(row.get("desub_mda_passes") is True)
     cfi = bool(row.get("cfi_mda_cluster_passes") is True)
 
-    # Interaction signal: feature works in combination (desub or CFI pass)
-    # but fails standalone (SFI fails)
-    if (desub or cfi) and not sfi:
-        return "complementary"
-
     # Standalone signal: SFI passes (feature has predictive power alone)
     if sfi:
         if pca and resid:
             return "accepted"  # promote: standalone + orthogonal = strong
         return "standalone"
+
+    # Interaction signal: desub/CFI/MDI pass but SFI fails
+    # MDI+PCA+RESID without SFI = tree-exploitable with structural backing
+    if desub or cfi or (mdi and pca and resid):
+        return "complementary"
 
     # Linear-only signal: PCA+RESID pass but tree methods fail
     if pca and resid and not mdi:
@@ -103,7 +87,6 @@ def _classify_feature(row: pd.Series) -> str:
     if pca and not resid:
         return "absorbed"
 
-    # Nothing passes
     return "noise"
 
 
@@ -116,42 +99,53 @@ def classify_all_features(filter_report: pd.DataFrame) -> pd.Series:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Per-family feature set routing
+#  Within-category ordering logic
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _order_by_rank(features: list[str], report: pd.DataFrame, rank_col: str) -> list[str]:
+    """Order features by a specific rank column (lower = better)."""
+    if not features or rank_col not in report.columns:
+        return features
+    subset = report.loc[[f for f in features if f in report.index], rank_col].dropna()
+    ordered = subset.sort_values().index.tolist()
+    # Append any features missing from the rank column at the end
+    remaining = [f for f in features if f not in ordered]
+    return ordered + remaining
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-family feature set routing with hierarchical ordering
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Models with column subsampling — safe for absorbed/redundant features.
+# RF/ET: max_features='sqrt' always active
+# LGB/XGB: colsample_bytree in [0.4, 1.0] Optuna range, default 0.8
+# CatBoost: rsm in [0.4, 1.0] Optuna range, default 0.8
+# HistGB: max_features in [0.4, 1.0] Optuna range, default 0.8
+# NOTE: routing absorbed here is architecturally coherent but remains a
+# hypothesis — actual trial values may land near 1.0, and even confirmed
+# subsampling doesn't guarantee absorbed features are net-positive vs
+# net-neutral. Ablation on holdout is the real test.
+COLUMN_SUBSAMPLE_ACTIVE = {
+    "random_forest", "extra_trees", "lightgbm", "xgboost",
+    "catboost", "hist_gradient_boosting",
+}
+
+
 def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
-    """Return the feature list appropriate for this model family.
+    """Return hierarchically-ordered feature list for this model family.
 
-    Routing matches evidence profile to model capacity:
+    Features are layered by category priority, and within each category
+    ordered by the method that defines that category's signal strength:
 
-      TREE_BOOSTED/TREE_BAGGED: accepted + complementary + standalone
-          Boosting self-selects features via sequential residual fitting;
-          bagged trees use random subsets per tree. Both exploit interactions
-          natively. Complementary features passed tree-based tests (MDI/desub/
-          CFI) confirming tree-exploitable signal. AdaBoost depth-3 trees use
-          ~3-7 features per weak learner — redundancy is pruned implicitly.
+      accepted    → composite_rank (all methods pass, average is meaningful)
+      standalone  → SFI rank (defining test for marginal power)
+      complementary → MDI rank for trees, SFI rank for MLP
+      linear_only → PCA rank (orthogonality is the relevant dimension)
+      absorbed    → MDI rank (only for models with column subsampling)
 
-      NEURAL (mlp): accepted + complementary + standalone
-          Hidden layers learn feature interactions internally. The complementary
-          features (interaction-only signal) become useful once combined through
-          nonlinear activations. 128+64 hidden units need sufficient input
-          dimensionality to learn meaningful representations.
-
-      LINEAR: accepted + standalone + linear_only
-          Cannot model interactions (y = Xw + b). Complementary features that
-          only work in combination add noise to a linear decision boundary.
-          Lasso/elasticnet handle redundancy among the features that DO have
-          standalone signal. PCA-MDA-identified features (linear_only) are
-          appropriate because PCA operates in the same linear subspace.
-
-      FRAGILE: accepted + standalone
-          KNN: distance degrades with irrelevant/redundant dimensions.
-          QDA: p*(p+1)/2 covariance params per class — singular with p>>n.
-          GaussianNB: independence assumption violated by correlated features.
-          LDA: Fisher discriminant is linear — same logic as LINEAR, but no
-              regularization to handle redundancy from linear_only features.
-          Standalone features (SFI-confirmed) have proven individual power
-          and approximate independence, making them safe for these methods.
+    The returned list encodes this priority: features at the front are
+    higher-priority. When S* caps are applied, they cut from the tail.
     """
     groups = classify_all_features(filter_report)
 
@@ -159,19 +153,83 @@ def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
     complementary = filter_report.index[groups == "complementary"].tolist()
     standalone = filter_report.index[groups == "standalone"].tolist()
     linear_only = filter_report.index[groups == "linear_only"].tolist()
+    absorbed = filter_report.index[groups.isin(["absorbed", "redundant"])].tolist()
 
-    if family in TREE_BOOSTED | TREE_BAGGED:
-        return sorted(accepted + complementary + standalone)
-    elif family in NEURAL:
-        return sorted(accepted + complementary + standalone)
-    elif family in LINEAR:
-        return sorted(accepted + standalone + linear_only)
-    elif family in FRAGILE:
-        return sorted(accepted + standalone)
-    # Unknown family → all survivors (complementary features have at least
-    # one positive importance test, so excluding them is the aggressive choice)
-    log.warning(f"Unknown family {family!r} — using all surviving features")
-    return sorted(accepted + complementary + standalone + linear_only)
+    # Order within each category by the relevant method rank
+    accepted_ordered = _order_by_rank(accepted, filter_report, "composite_rank")
+    standalone_ordered = _order_by_rank(standalone, filter_report, "sfi_rank")
+    complementary_by_mdi = _order_by_rank(complementary, filter_report, "mdi_rank")
+    complementary_by_sfi = _order_by_rank(complementary, filter_report, "sfi_rank")
+    linear_only_ordered = _order_by_rank(linear_only, filter_report, "pca_mda_rank")
+    absorbed_ordered = _order_by_rank(absorbed, filter_report, "mdi_rank")
+
+    # ── Tree ensembles with column subsampling ───────────────────────────────
+    # All 6 now have subsampling tuned via Optuna (rsm for CatBoost,
+    # max_features for HistGB, colsample_bytree for LGB/XGB, sqrt for RF/ET).
+    # Can exploit: interactions (tree splits), redundancy (subsampling decorrelates).
+    if family in COLUMN_SUBSAMPLE_ACTIVE:
+        return (accepted_ordered + standalone_ordered
+                + complementary_by_mdi + absorbed_ordered)
+
+    # ── AdaBoost ───────────────────────────────────────────────────────────
+    # No shrinkage, no subsampling, sequential reweighting on residuals.
+    # Interaction-only features (complementary) are noise sources for stumps.
+    # Absorbed features amplify reweighting instability.
+    if family == "adaboost":
+        return accepted_ordered + standalone_ordered
+
+    # ── MLP ────────────────────────────────────────────────────────────────
+    # Dense layers learn interactions via hidden units — complementary is valid.
+    # BUT ordering by MDI is wrong (tree-split statistic, irrelevant for MLP).
+    # Use SFI (model-agnostic permutation importance) to order complementary.
+    # No column subsampling mechanism → redundant features create correlated
+    # gradients without adding information.
+    if family == "mlp":
+        return accepted_ordered + standalone_ordered + complementary_by_sfi
+
+    # ── Lasso / ElasticNet ─────────────────────────────────────────────────
+    # L1 component IS the selection mechanism. Don't pre-filter aggressively.
+    # Give wider pool: accepted + standalone + linear_only (all of it).
+    if family in ("lasso", "elasticnet"):
+        return accepted_ordered + standalone_ordered + linear_only_ordered
+
+    # ── Linear models without embedded selection ───────────────────────────
+    # Ridge, LogReg, SGD, BaggingLogReg: linear boundary, no interaction capacity.
+    # Pre-filtering by PCA rank is appropriate (they can't select on their own).
+    if family in ("logistic_regression", "ridge", "sgd", "bagging_logreg"):
+        return accepted_ordered + standalone_ordered + linear_only_ordered
+
+    # ── LDA ────────────────────────────────────────────────────────────────
+    # Shared covariance matrix across classes, linear boundary.
+    # Collinear features → singular Σ → LDA crashes.
+    # linear_only (PCA+RESID pass = orthogonal) is safe for covariance estimation.
+    if family == "lda":
+        return accepted_ordered + standalone_ordered + linear_only_ordered
+
+    # ── QDA ────────────────────────────────────────────────────────────────
+    # Per-class covariance matrices — even more sensitive to dimensionality.
+    # More features = more parameters per class = singularity risk.
+    # Conservative: accepted + standalone only (fewer, proven features).
+    if family == "qda":
+        return accepted_ordered + standalone_ordered
+
+    # ── GaussianNB ─────────────────────────────────────────────────────────
+    # Conditional independence assumption.
+    # linear_only (PCA+RESID = orthogonal) ≈ conditional independence = ideal.
+    # complementary/absorbed imply dependency → double-counting under NB.
+    if family == "gaussian_nb":
+        return accepted_ordered + standalone_ordered + linear_only_ordered
+
+    # ── KNN ────────────────────────────────────────────────────────────────
+    # Distance-based, curse of dimensionality.
+    # Every feature must carry standalone signal strong enough to improve
+    # neighbor quality despite the added dimension.
+    if family == "knn":
+        return accepted_ordered + standalone_ordered
+
+    # Unknown family → conservative (accepted + standalone + complementary)
+    log.warning(f"Unknown family {family!r} — using default routing")
+    return accepted_ordered + standalone_ordered + complementary_by_mdi
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,10 +251,15 @@ def route_features(filter_report: pd.DataFrame) -> dict:
             filter_report.index[groups == group_name].tolist()
         )
 
-    all_families = TREE_BOOSTED | TREE_BAGGED | LINEAR | FRAGILE | NEURAL
+    all_families = [
+        "lightgbm", "xgboost", "catboost", "random_forest", "extra_trees",
+        "hist_gradient_boosting", "adaboost", "mlp",
+        "logistic_regression", "ridge", "lasso", "elasticnet", "sgd",
+        "bagging_logreg", "knn", "lda", "qda", "gaussian_nb",
+    ]
     per_family = {
         family: get_feature_set(family, filter_report)
-        for family in sorted(all_families)
+        for family in all_families
     }
 
     summary = {group: len(members) for group, members in group_dict.items()}
