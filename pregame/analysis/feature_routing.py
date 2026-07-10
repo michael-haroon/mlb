@@ -66,9 +66,12 @@ def _classify_feature(row: pd.Series) -> str:
             return "accepted"  # promote: standalone + orthogonal = strong
         return "standalone"
 
-    # Interaction signal: desub or CFI passes but SFI fails.
-    # These tests specifically detect joint/interaction effects.
-    if desub or cfi:
+    # Tree-exploitable, non-standalone signal. Three paths:
+    # 1. desub/CFI pass: specific interaction tests confirm joint effects
+    # 2. MDI + RESID pass: tree-useful AND non-redundant (unique signal that
+    #    trees can exploit even though desub/CFI didn't fire — those tests
+    #    are not omniscient interaction detectors)
+    if desub or cfi or (mdi and resid):
         return "complementary"
 
     # Linear-only signal: PCA+RESID pass but tree methods fail
