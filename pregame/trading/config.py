@@ -95,7 +95,7 @@ MIN_SHARPNESS_RATIO = 0.40  # halt target if live_std < 40% of expected
 
 # ── Feature refresh ─────────────────────────────────────────────────────────
 S3_DATA_URI = "s3://mlb-265753586044-us-east-1-an/data"
-FEATURES_MAX_AGE_HOURS = 6         # Rebuild if parquet older than this
+FEATURES_MAX_AGE_HOURS = 12         # Rebuild if parquet older than this
 FEATURES_PERIODIC_REFRESH_HOURS = 2
 
 # ── Kalshi connection ────────────────────────────────────────────────────────
