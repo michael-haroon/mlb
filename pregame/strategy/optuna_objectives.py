@@ -178,7 +178,6 @@ def _suggest_catboost(trial: optuna.Trial, task: str) -> dict:
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
         "max_depth": trial.suggest_int("max_depth", 4, 10),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 0.1, 30.0, log=True),
-        "rsm": trial.suggest_float("rsm", 0.4, 1.0),
     }
     if task == "regression":
         params["huber_delta"] = trial.suggest_float("huber_delta", 0.5, 5.0)
@@ -210,7 +209,6 @@ def _suggest_hist_gradient_boosting(trial: optuna.Trial, task: str) -> dict:
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
         "max_depth": trial.suggest_int("max_depth", 3, 12),
         "min_samples_leaf": trial.suggest_int("min_samples_leaf", 5, 100),
-        "max_features": trial.suggest_float("max_features", 0.4, 1.0),
     }
 
 

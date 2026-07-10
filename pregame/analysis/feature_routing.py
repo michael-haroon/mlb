@@ -66,17 +66,18 @@ def _classify_feature(row: pd.Series) -> str:
             return "accepted"  # promote: standalone + orthogonal = strong
         return "standalone"
 
-    # Interaction signal: desub/CFI/MDI pass but SFI fails
-    # MDI+PCA+RESID without SFI = tree-exploitable with structural backing
-    if desub or cfi or (mdi and pca and resid):
+    # Interaction signal: desub or CFI passes but SFI fails.
+    # These tests specifically detect joint/interaction effects.
+    if desub or cfi:
         return "complementary"
 
     # Linear-only signal: PCA+RESID pass but tree methods fail
     if pca and resid and not mdi:
         return "linear_only"
 
-    # MDI-only: tree sees it but no OOS confirmation
-    if mdi and not sfi and not desub and not pca:
+    # MDI passes but no OOS interaction confirmation (desub/CFI both fail).
+    # Tree splits see the feature but standalone tests don't confirm it.
+    if mdi and not sfi and not desub:
         return "absorbed"
 
     # Cluster-level only
@@ -117,19 +118,19 @@ def _order_by_rank(features: list[str], report: pd.DataFrame, rank_col: str) -> 
 #  Per-family feature set routing with hierarchical ordering
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Models with column subsampling — safe for absorbed/redundant features.
-# RF/ET: max_features='sqrt' always active
-# LGB/XGB: colsample_bytree in [0.4, 1.0] Optuna range, default 0.8
-# CatBoost: rsm in [0.4, 1.0] Optuna range, default 0.8
-# HistGB: max_features in [0.4, 1.0] Optuna range, default 0.8
-# NOTE: routing absorbed here is architecturally coherent but remains a
-# hypothesis — actual trial values may land near 1.0, and even confirmed
-# subsampling doesn't guarantee absorbed features are net-positive vs
-# net-neutral. Ablation on holdout is the real test.
-COLUMN_SUBSAMPLE_ACTIVE = {
-    "random_forest", "extra_trees", "lightgbm", "xgboost",
-    "catboost", "hist_gradient_boosting",
-}
+# Models with CONFIRMED column subsampling — safe for absorbed/redundant.
+# RF/ET: max_features='sqrt' hardcoded (always active).
+# LGB/XGB: colsample_bytree in [0.4, 1.0] Optuna range, default 0.8.
+#   NOTE: actual trial values not yet verified — search space includes 1.0.
+#   Routing absorbed here is architecturally coherent but remains a hypothesis
+#   pending ablation (with vs without absorbed on holdout).
+COLUMN_SUBSAMPLE_CONFIRMED = {"random_forest", "extra_trees", "lightgbm", "xgboost"}
+
+# CatBoost (rsm) and HistGB (max_features) are NOT activated yet.
+# Decision: defer adding rsm/max_features to Optuna until the ablation on
+# RF/ET/LGB/XGB confirms absorbed features are net-positive. Adding new
+# Optuna params reopens the trial space and invalidates comparisons.
+COLUMN_SUBSAMPLE_DEFERRED = {"catboost", "hist_gradient_boosting"}
 
 
 def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
@@ -163,13 +164,18 @@ def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
     linear_only_ordered = _order_by_rank(linear_only, filter_report, "pca_mda_rank")
     absorbed_ordered = _order_by_rank(absorbed, filter_report, "mdi_rank")
 
-    # ── Tree ensembles with column subsampling ───────────────────────────────
-    # All 6 now have subsampling tuned via Optuna (rsm for CatBoost,
-    # max_features for HistGB, colsample_bytree for LGB/XGB, sqrt for RF/ET).
+    # ── Tree ensembles WITH confirmed column subsampling ──────────────────────
+    # RF/ET: hardcoded sqrt. LGB/XGB: Optuna [0.4, 1.0], default 0.8.
     # Can exploit: interactions (tree splits), redundancy (subsampling decorrelates).
-    if family in COLUMN_SUBSAMPLE_ACTIVE:
+    if family in COLUMN_SUBSAMPLE_CONFIRMED:
         return (accepted_ordered + standalone_ordered
                 + complementary_by_mdi + absorbed_ordered)
+
+    # ── Tree ensembles WITHOUT confirmed column subsampling ────────────────────
+    # CatBoost (rsm not yet activated), HistGB (max_features not yet activated).
+    # Can exploit interactions but redundancy risks substitution effects.
+    if family in COLUMN_SUBSAMPLE_DEFERRED:
+        return accepted_ordered + standalone_ordered + complementary_by_mdi
 
     # ── AdaBoost ───────────────────────────────────────────────────────────
     # No shrinkage, no subsampling, sequential reweighting on residuals.

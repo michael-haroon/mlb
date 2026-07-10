@@ -101,7 +101,6 @@ def _build_catboost(task: str, params: dict):
         "learning_rate": params.get("learning_rate", 0.03),
         "depth": params.get("max_depth", 6),
         "l2_leaf_reg": params.get("l2_leaf_reg", 3.0),
-        "rsm": params.get("rsm", 0.8),
         "random_seed": 42,
         "verbose": 0,
         "thread_count": -1,
@@ -157,7 +156,6 @@ def _build_hist_gradient_boosting(task: str, params: dict):
         "max_depth": params.get("max_depth", 5),
         "learning_rate": params.get("learning_rate", 0.05),
         "min_samples_leaf": params.get("min_samples_leaf", 20),
-        "max_features": params.get("max_features", 0.8),
         "random_state": 42,
     }
 
