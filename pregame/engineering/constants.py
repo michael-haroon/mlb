@@ -175,3 +175,34 @@ BOXSCORE_PITCHING_COLUMNS = (
 )
 
 PLAYERS_COLUMNS = ["player_id", "pitch_hand_code"]
+
+# Per-pitch columns needed by pitch_level_features.py.
+# One row per pitch event (millions of rows). Only the columns actually consumed
+# are listed here to avoid loading the full 170-column pitches table.
+PITCH_LEVEL_COLUMNS = [
+    "game_pk",
+    "season",
+    "game_date",
+    "game_type_code",
+    "home_team_id",
+    "away_team_id",
+    "pitcher_id",
+    "batter_id",
+    "is_pitch",
+    "release_speed",
+    "coord_x0",
+    "coord_z0",
+    "pitch_type",
+    "bat_side_code",
+    "pitch_hand_code",
+    "at_bat_event",
+    "event_type",
+    "at_bat_index",
+    "pitch_number",
+    "inning",
+    "inning_half",
+    "cum_outs",
+    "pre_on_first_id",
+    "pre_on_second_id",
+    "pre_on_third_id",
+]
