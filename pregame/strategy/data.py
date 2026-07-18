@@ -113,6 +113,12 @@ def load_features(
     else:
         raise ValueError(f"Unknown data_mode: {data_mode!r}. Use '2016+', '2015+', or 'all'.")
 
+    # Exclude structural outlier seasons (e.g. 2020 COVID)
+    if SKIP_SEASONS:
+        pre_len = len(df)
+        df = df[~df["season"].isin(SKIP_SEASONS)].reset_index(drop=True)
+        log.info(f"Excluded seasons {SKIP_SEASONS}: {pre_len:,} → {len(df):,} games")
+
     # Filter to non-null target
     if target not in df.columns:
         raise ValueError(f"Target {target!r} not in columns. Available: {sorted(df.columns)}")

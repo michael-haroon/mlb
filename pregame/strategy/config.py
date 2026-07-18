@@ -18,7 +18,7 @@ ALL_TARGETS = TARGETS_CLASSIFICATION + TARGETS_REGRESSION
 # ---------------------------------------------------------------------------
 # Cross-validation
 # ---------------------------------------------------------------------------
-SKIP_SEASONS: list[int] = []
+SKIP_SEASONS: list[int] = [2020]  # COVID shortened season — structural outlier
 SHORT_SEASON = {2020: 60}
 LOYO_MIN_TRAIN_SEASONS = 3
 

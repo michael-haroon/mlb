@@ -69,6 +69,8 @@ def build_features(
     ckpt_games_rated = output / "_ckpt_games_rated.parquet"
     params_path      = output / "ratings_params.json"
 
+    from ..strategy.config import SKIP_SEASONS
+
     # --- Step 1: Load raw data ---
     if ckpt_games_raw.exists():
         log.info(f"Resuming: loading game frame from checkpoint {ckpt_games_raw}")
@@ -90,6 +92,13 @@ def build_features(
 
         games.to_parquet(ckpt_games_raw, index=False, engine="pyarrow")
         log.info(f"Checkpoint written: {ckpt_games_raw} ({len(games):,} rows)")
+
+    # --- Step 2c: Exclude structural outlier seasons ---
+    if SKIP_SEASONS and "season" in games.columns:
+        pre_len = len(games)
+        games = games[~games["season"].isin(SKIP_SEASONS)].reset_index(drop=True)
+        if len(games) < pre_len:
+            log.info(f"Excluded seasons {SKIP_SEASONS}: {pre_len:,} → {len(games):,} rows")
 
     # --- Step 3: Tune rating parameters (or use provided) ---
     if ratings_params is not None:
@@ -206,6 +215,8 @@ def build_features_incremental(
     ckpt_path = output / "_game_frame.parquet"
     params_path = output / "ratings_params.json"
 
+    from ..strategy.config import SKIP_SEASONS
+
     # --- Step 1: Load or bootstrap game frame checkpoint ---
     if ckpt_path.exists():
         game_frame = pd.read_parquet(ckpt_path)
@@ -216,6 +227,13 @@ def build_features_incremental(
         game_frame = _bootstrap_game_frame(source, output)
         game_frame.to_parquet(ckpt_path, index=False, engine="pyarrow")
         log.info(f"Bootstrapped game frame: {len(game_frame):,} rows")
+
+    # Filter stale SKIP_SEASONS from checkpoint (may predate this exclusion)
+    if SKIP_SEASONS and "season" in game_frame.columns:
+        pre_len = len(game_frame)
+        game_frame = game_frame[~game_frame["season"].isin(SKIP_SEASONS)].reset_index(drop=True)
+        if len(game_frame) < pre_len:
+            log.info(f"Purged {pre_len - len(game_frame)} SKIP_SEASONS rows from checkpoint")
 
     # --- Step 2: Find new games in the current season ---
     existing_pks = set(game_frame["game_pk"].values)
@@ -310,7 +328,12 @@ def _bootstrap_game_frame(source: str, output: Path) -> pd.DataFrame:
     start_year = 2015
     all_frames = []
 
+    from ..strategy.config import SKIP_SEASONS
+
     for year in range(start_year, current_year + 1):
+        if year in SKIP_SEASONS:
+            log.info(f"Bootstrap: skipping season {year} (in SKIP_SEASONS)")
+            continue
         log.info(f"Bootstrap: loading season {year}...")
         try:
             raw = load_all(source, season_start=year, season_end=year)

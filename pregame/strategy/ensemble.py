@@ -573,16 +573,6 @@ def fit_and_save_ensemble(
 
     X, y, seasons, _game_pks = load_features(features_path, target, data_mode)
 
-    # 2020 was a 60-game shortened season played under pandemic protocols: no fans,
-    # neutral-site bubble games, universal DH for the first time, and dramatically
-    # compressed schedule. Every distributional property (run environment, rest
-    # patterns, win rates) is a structural outlier — never refit ensemble members
-    # on it, as it would corrupt all models' learned weights and biases.
-    no2020 = (seasons != 2020).values
-    X = X[no2020].reset_index(drop=True)
-    y = y[no2020].reset_index(drop=True)
-    seasons = seasons[no2020].reset_index(drop=True)
-
     sample_weights = compute_temporal_weights(seasons)
 
     # Load importance filter if present — mirrors train_target() behavior
@@ -602,13 +592,23 @@ def fit_and_save_ensemble(
                 f"Params file not found: {params_file}. Run train first."
             )
         with open(params_file) as f:
-            best_params = json.load(f)
+            params_data = json.load(f)
+        # Support both new format {"best_params": ..., "feature_columns": ...}
+        # and legacy format (flat dict of hyperparams only)
+        best_params = params_data.get("best_params", params_data) if isinstance(params_data, dict) and "best_params" in params_data else params_data
 
         # Resolve feature set (mirrors prepare_fold logic in train.py)
         importance_features = None
         if filter_report is not None:
             from ..analysis.feature_routing import get_feature_set
             importance_features = get_feature_set(family, filter_report)
+
+        if importance_features is not None and len(importance_features) == 0:
+            log.warning(
+                f"  {family}: routing returned 0 features — skipping refit "
+                f"(stale OOF from prior run was selected by ensemble)"
+            )
+            continue
 
         X_fit = X[importance_features] if importance_features is not None else X
         feature_columns = list(X_fit.columns)
