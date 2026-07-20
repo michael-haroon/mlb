@@ -19,6 +19,7 @@ from .constants import (
     BOXSCORE_PITCHING_COLUMNS,
     LINESCORE_COLUMNS,
     PITCH_META_COLUMNS,
+    PITCH_LEVEL_COLUMNS,
     PLAYERS_COLUMNS,
 )
 
@@ -44,6 +45,9 @@ _TABLE_CONFIG: dict[str, dict] = {
     "boxscore_pitching": {"columns": BOXSCORE_PITCHING_COLUMNS, "season_agnostic": False},
     "linescore": {"columns": LINESCORE_COLUMNS, "season_agnostic": False},
     "pitches": {"columns": PITCH_META_COLUMNS, "season_agnostic": False},
+    # pitches_raw loads per-pitch columns (one row per pitch, millions of rows).
+    # Separate from "pitches" which loads only game-meta columns for the game frame.
+    "pitches_raw": {"columns": PITCH_LEVEL_COLUMNS, "season_agnostic": False},
     "players": {"columns": PLAYERS_COLUMNS, "season_agnostic": True},
 }
 

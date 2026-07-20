@@ -90,6 +90,16 @@ def build_features(
         if n_dropped > 0:
             log.info(f"Dropped {n_dropped} non-MLB rows (exhibitions, all-star, non-franchise teams)")
 
+        # --- Step 2c: Pitch-level features ---
+        # pitches_raw is only in memory here (not in any checkpoint), so we must
+        # compute pitch-level features before writing ckpt_games_raw. The columns
+        # are baked into the checkpoint so downstream steps (ratings, engineer_features)
+        # see them without re-loading millions of pitch rows.
+        if "pitches_raw" in raw:
+            from .pitch_level_features import compute_pitch_level_features
+            log.info("Computing pitch-level features...")
+            games = compute_pitch_level_features(raw["pitches_raw"], games)
+
         games.to_parquet(ckpt_games_raw, index=False, engine="pyarrow")
         log.info(f"Checkpoint written: {ckpt_games_raw} ({len(games):,} rows)")
 
@@ -244,6 +254,15 @@ def build_features_incremental(
 
     new_game_frame = build_game_frame(raw_new)
     new_game_frame = _filter_to_mlb(new_game_frame)
+
+    # Compute pitch-level features for the new game rows while pitches_raw is
+    # still in memory. The rolling aggregations use only historical rows (shift(1))
+    # so we pass the full new_game_frame (all current-season games) as context.
+    if "pitches_raw" in raw_new:
+        from .pitch_level_features import compute_pitch_level_features
+        log.info("Computing pitch-level features for new games...")
+        new_game_frame = compute_pitch_level_features(raw_new["pitches_raw"], new_game_frame)
+
     del raw_new  # free memory before appending
 
     new_rows = new_game_frame[~new_game_frame["game_pk"].isin(existing_pks)]
