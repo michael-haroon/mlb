@@ -25,6 +25,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -40,6 +41,7 @@ from pregame.trading.config import (
     SCAN_INTERVAL_SEC, EXIT_BUFFER_MINUTES, CANCEL_BEFORE_FIRST_PITCH_MIN,
     TAKER_EDGE_THRESHOLD, REPRICE_MIN_TICK_MOVE, MIN_REPRICE_INTERVAL_SEC,
     MAX_REPRICES_PER_ORDER, TRADEABLE_SERIES, LOGS_DIR, DRY_RUN,
+    DISCOVERY_INTERVAL_SEC,
 )
 from pregame.trading.kalshi_client import make_client, make_write_client
 from pregame.trading.models import EnsembleStore
@@ -93,6 +95,12 @@ class TradingRunner:
         # Reprice tracking: {order_id: {"count": int, "last_reprice": float}}
         self._reprice_state: dict[str, dict] = {}
 
+        # Market set: ticker → market dict. Maintained via WS lifecycle events
+        # with hourly REST reconciliation as fallback.
+        self._market_set: dict[str, dict] = {}
+        self._market_set_lock = threading.Lock()
+        self._last_full_discovery: float = 0
+
     def start(self) -> None:
         """Initialize all components and start the trading loop."""
         logger.info(f"Starting MLB pregame trader (mode={'DRY' if self._dry_run else 'LIVE'}, "
@@ -103,7 +111,6 @@ class TradingRunner:
             self._client = make_client(self._env)
         else:
             self._client = make_write_client(self._env)
-            # Verify netting is enabled — hard invariant
             self._verify_netting()
 
         # 2. Load features
@@ -119,7 +126,7 @@ class TradingRunner:
         self._portfolio = Portfolio(client=self._client, dry_run=self._dry_run)
         self._portfolio.refresh()
 
-        # 5. Start WebSocket
+        # 5. Start WebSocket with lifecycle-driven discovery callbacks
         api_key = os.environ.get("KALSHI_READ_KEY", "")
         rsa_path = os.environ.get("KALSHI_READ_RSA_PATH", "")
         if api_key and rsa_path:
@@ -129,11 +136,24 @@ class TradingRunner:
                 env=self._env,
                 on_game_start=self._handle_game_start,
                 on_settle=self._handle_settlement,
+                on_market_created=self._handle_market_created,
+                on_close_date_updated=self._handle_close_date_updated,
             )
+            self._ws._on_reconnect = self._on_ws_reconnect
             self._ws.start()
             logger.info("WebSocket connected")
         else:
             logger.warning("No WS credentials — running without real-time book updates")
+
+        # 6. Initial full REST discovery to populate market set
+        self._full_discovery()
+
+        # 7. Subscribe to all discovered markets in one batch
+        if self._ws:
+            with self._market_set_lock:
+                tickers = list(self._market_set.keys())
+            self._ws.subscribe_markets_batch(tickers)
+            time.sleep(2)  # allow snapshots to arrive
 
         self._running = True
         logger.info(f"Initialized. {self._portfolio.summary()}")
@@ -141,16 +161,24 @@ class TradingRunner:
     def run_once(self) -> None:
         """Execute a single scan cycle."""
         self._portfolio.refresh()
+        self._sweep_stale_positions()
         self._features.check_and_refresh()
 
-        # Discover tradeable games
-        markets = self._discover_tradeable_markets()
+        # Periodic REST reconciliation (hourly) to catch markets missed during WS gaps
+        if time.time() - self._last_full_discovery >= DISCOVERY_INTERVAL_SEC:
+            self._full_discovery()
+
+        # Use the maintained market set (populated by initial discovery + WS lifecycle)
+        with self._market_set_lock:
+            markets = list(self._market_set.values())
+
         if not markets:
             logger.info("No tradeable markets found")
             return
 
+        logger.debug(f"Active market set: {len(markets)} markets")
+
         # Filter out markets whose teams have a pending unprocessed settled game.
-        # This prevents pricing a doubleheader game 2 on stale pre-game-1 features.
         ready_markets, blocked_games = [], set()
         for m in markets:
             parsed = parse_ticker(m["ticker"])
@@ -169,18 +197,11 @@ class TradingRunner:
             logger.info("All markets blocked pending feature rebuild")
             return
 
-        # Subscribe to discovered markets for real-time book
-        if self._ws:
-            for m in markets:
-                self._ws.subscribe_market(m["ticker"])
-            time.sleep(1)  # brief pause for snapshots to arrive
-
-        # Get current book state
+        # Get current book state from WS (already subscribed)
         book_tops = {}
         if self._ws:
             book_tops = self._ws.get_all_book_tops()
         else:
-            # REST fallback for book data
             for m in markets:
                 try:
                     ob = self._client.get_orderbook(m["ticker"], depth=3)
@@ -339,14 +360,13 @@ class TradingRunner:
 
     # ── Market discovery ─────────────────────────────────────────────────────
 
-    def _discover_tradeable_markets(self) -> list[dict]:
-        """Find all open MLB markets whose game has not yet started.
+    def _full_discovery(self) -> None:
+        """Full REST discovery: populate/reconcile the market set.
 
-        Uses GUMBO gameDate (UTC) for first-pitch time — accurate to the minute.
-        The old approach of exp - 3h was a guess and caused markets to be wrongly
-        included (games in progress) or excluded (markets with unusual expiry offsets).
+        Called once at startup and then hourly as a fallback to catch markets
+        that may have been missed during WS disconnection windows.
         """
-        all_markets = []
+        discovered = {}
         for series in TRADEABLE_SERIES:
             try:
                 resp = self._client.get_markets(series_ticker=series, status="open", limit=200)
@@ -355,19 +375,73 @@ class TradingRunner:
                     parsed = parse_ticker(m["ticker"])
                     if parsed is None:
                         continue
-                    # Extract the calendar date from the Kalshi game_key (first 7 chars: YYMMMDD)
                     game_key = parsed.game_key
                     date_str = _game_key_to_date(game_key)
                     if date_str is None:
-                        all_markets.append(m)  # can't determine date → include conservatively
+                        discovered[m["ticker"]] = m
                         continue
                     if not gumbo_schedule.game_has_started(parsed.away_team, parsed.home_team, date_str):
-                        all_markets.append(m)
+                        discovered[m["ticker"]] = m
             except Exception as e:
                 logger.warning(f"Market discovery failed for {series}: {e}")
 
-        logger.info(f"Discovered {len(all_markets)} open pre-game markets")
-        return all_markets
+        # Diff against current set: subscribe new, unsubscribe removed
+        with self._market_set_lock:
+            current_tickers = set(self._market_set.keys())
+            new_tickers = set(discovered.keys())
+            added = new_tickers - current_tickers
+            removed = current_tickers - new_tickers
+            self._market_set = discovered
+
+        if self._ws and added:
+            self._ws.subscribe_markets_batch(list(added))
+        if self._ws and removed:
+            self._ws.unsubscribe_markets_batch(list(removed))
+
+        self._last_full_discovery = time.time()
+        logger.info(
+            f"Discovery reconciliation: {len(discovered)} markets "
+            f"(+{len(added)} new, -{len(removed)} removed)"
+        )
+
+    def _handle_market_created(self, ticker: str, info: dict) -> None:
+        """WS lifecycle: new market created. Add to market set if pre-game."""
+        parsed = parse_ticker(ticker)
+        if parsed is None:
+            return
+
+        date_str = _game_key_to_date(parsed.game_key)
+        if date_str and gumbo_schedule.game_has_started(parsed.away_team, parsed.home_team, date_str):
+            return  # game already in progress
+
+        market_dict = {"ticker": ticker, "status": "open"}
+        with self._market_set_lock:
+            self._market_set[ticker] = market_dict
+
+        if self._ws:
+            self._ws.subscribe_markets_batch([ticker])
+
+        logger.info(f"Market created via WS: {ticker}")
+
+    def _handle_close_date_updated(self, ticker: str, close_ts: int) -> None:
+        """WS lifecycle: close date changed (delay/postponement).
+
+        Invalidate GUMBO schedule cache for the affected date so that
+        hours_to_first_pitch re-fetches the updated time.
+        """
+        parsed = parse_ticker(ticker)
+        if parsed is None:
+            return
+
+        date_str = _game_key_to_date(parsed.game_key)
+        if date_str:
+            gumbo_schedule.invalidate(date_str)
+            logger.info(f"Schedule invalidated for {date_str} due to close_date_updated on {ticker}")
+
+    def _on_ws_reconnect(self) -> None:
+        """Called after WS reconnects. Market subscriptions are already re-sent
+        in the WS _on_open handler via the batch mechanism."""
+        logger.info("WS reconnected — subscriptions restored")
 
     # ── Repricing ────────────────────────────────────────────────────────────
 
@@ -436,13 +510,22 @@ class TradingRunner:
     # ── Lifecycle handlers ───────────────────────────────────────────────────
 
     def _handle_game_start(self, ticker: str) -> None:
-        """Called via WS when a game transitions to active (first pitch)."""
+        """Called via WS when a market is deactivated (game started, trading paused)."""
         parsed = parse_ticker(ticker)
         if not parsed:
             return
 
         game_key = parsed.game_key
-        logger.info(f"Game started: {game_key}")
+        logger.info(f"Game started (deactivated): {game_key} — {ticker}")
+
+        # Remove all markets for this game from the active set
+        with self._market_set_lock:
+            to_remove = [t for t in self._market_set if game_key in t]
+            for t in to_remove:
+                del self._market_set[t]
+
+        if self._ws and to_remove:
+            self._ws.unsubscribe_markets_batch(to_remove)
 
         # Cancel all unfilled orders for this game
         for order in self._portfolio.get_open_orders():
@@ -464,8 +547,12 @@ class TradingRunner:
     })
 
     def _handle_settlement(self, ticker: str) -> None:
-        """Called via WS when a market settles."""
+        """Called via WS when a market settles or is determined."""
         logger.info(f"Settled: {ticker}")
+
+        # Remove from active market set
+        with self._market_set_lock:
+            self._market_set.pop(ticker, None)
 
         # Only rebuild features when a game-level market settles. Player props
         # (KXMLBHR, KXMLBRBI, KXMLBSB, KXMLBF5*) settle in batches of 50+
@@ -494,6 +581,61 @@ class TradingRunner:
                 # the rebuild lock is acquired.
                 self._features.mark_teams_pending(parsed.home_team, parsed.away_team)
             self._features.refresh_async(callback=self._on_features_refreshed)
+
+    # ── Stale position recovery ────────────────────────────────────────────────
+
+    _STALE_POSITION_HOURS = 6  # positions older than this get polled via REST
+
+    def _sweep_stale_positions(self) -> None:
+        """Settle positions whose markets are determined/settled but we missed the WS event.
+
+        WS reconnections can cause missed 'settled' lifecycle events, leaving
+        positions in 'filled' state indefinitely. This polls REST as a fallback.
+        Runs once per scan but only queries positions old enough to have settled.
+        """
+        now = datetime.now(timezone.utc)
+        stale = []
+        for pos in self._portfolio.get_positions():
+            if pos.get("state") not in (PositionState.FILLED, "filled"):
+                continue
+            opened_at = pos.get("opened_at")
+            if not opened_at:
+                stale.append(pos)
+                continue
+            try:
+                opened = datetime.fromisoformat(opened_at)
+                age_hours = (now - opened).total_seconds() / 3600.0
+                if age_hours >= self._STALE_POSITION_HOURS:
+                    stale.append(pos)
+            except (ValueError, TypeError):
+                stale.append(pos)
+
+        if not stale:
+            return
+
+        settled_count = 0
+        for pos in stale:
+            ticker = pos["ticker"]
+            try:
+                market_resp = self._client.get_market(ticker)
+                market = market_resp.get("market", {})
+                result = market.get("result", "")
+                status = market.get("status", "")
+                if result in ("yes", "no"):
+                    yes_won = result == "yes"
+                    pnl = self._portfolio.record_settlement(ticker, yes_won=yes_won)
+                    logger.info(f"Sweep-settled stale position {ticker}: "
+                                f"{'YES' if yes_won else 'NO'} won, P&L ${pnl:+.2f}")
+                    settled_count += 1
+                elif status in ("settled", "finalized"):
+                    logger.warning(f"Market {ticker} is {status} but result={result!r} — cannot settle")
+            except Exception as e:
+                logger.debug(f"Could not poll {ticker} for sweep: {e}")
+
+        if settled_count:
+            logger.info(f"Stale sweep settled {settled_count}/{len(stale)} positions")
+            if self._dry_run:
+                self._portfolio._save_state()
 
     def _on_features_refreshed(self, changed: bool) -> None:
         """Callback after async feature refresh."""

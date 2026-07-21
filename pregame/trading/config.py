@@ -69,6 +69,7 @@ MIN_REPRICE_INTERVAL_SEC = 30      # Rate limit: don't churn faster than this
 
 # ── Scanning ─────────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SEC = 60             # Main loop cadence
+DISCOVERY_INTERVAL_SEC = 3600      # Full REST discovery reconciliation (hourly)
 
 # ── Cluster caps (correlated position limits) ────────────────────────────────
 # Prevents concentration in correlated markets within a single game.

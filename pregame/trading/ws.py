@@ -6,11 +6,14 @@ Kalshi WebSocket client for MLB pregame trading.
 Maintains:
 - Real-time orderbook via orderbook_delta channel
 - Trade tape via trade channel
-- Market lifecycle events (game start, settlement) via market_lifecycle_v2
+- Market lifecycle events (creation, game start, settlement) via market_lifecycle_v2
+- Incremental market discovery via lifecycle `created` events
 
-The lifecycle events drive the hold/exit transition:
-- "active" → game started, cancel unfilled quotes, enter position management
-- "settled" → trigger feature refresh + P&L logging
+The lifecycle events drive:
+- Discovery: `created` with MLB series prefix → add to tradeable market set
+- Game start: `deactivated` on game markets → cancel unfilled quotes
+- Delays: `close_date_updated` → invalidate GUMBO schedule cache
+- Settlement: `settled` / `determined` → trigger feature refresh + P&L logging
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ import websocket
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from .config import KALSHI_WS_URL, KALSHI_DEMO_WS_URL, LOGS_DIR
+from .config import KALSHI_WS_URL, KALSHI_DEMO_WS_URL, LOGS_DIR, TRADEABLE_SERIES
 from .kalshi_client import _load_private_key
 
 logger = logging.getLogger(__name__)
@@ -59,9 +62,7 @@ class LocalBook:
             if seq <= last_seq:
                 return True  # duplicate
             if seq != last_seq + 1:
-                logger.warning(f"Seq gap on {ticker} (sid={sid}): expected {last_seq+1}, got {seq}")
-                # Advance past the gap so subsequent messages don't all trigger warnings.
-                # The book is stale; snapshot will re-sync it.
+                logger.debug(f"Seq gap on {ticker} (sid={sid}): expected {last_seq+1}, got {seq}")
                 self._seqs[sid] = seq
                 return False
 
@@ -105,12 +106,19 @@ class LocalBook:
         with self._lock:
             return ticker in self._books
 
+    def remove_ticker(self, ticker: str):
+        with self._lock:
+            self._books.pop(ticker, None)
+
 
 class KalshiWS:
     """Persistent WebSocket connection to Kalshi for MLB markets.
 
     Subscribes to orderbook_delta, trade, and market_lifecycle_v2.
-    Calls on_game_start and on_settle callbacks when lifecycle events fire.
+    Uses batched subscription via market_tickers array and incremental
+    update_subscription for add/remove operations.
+
+    Lifecycle events drive game-start, settlement, and discovery callbacks.
     """
 
     def __init__(
@@ -120,12 +128,16 @@ class KalshiWS:
         env: str = "prod",
         on_game_start: Optional[Callable[[str], None]] = None,
         on_settle: Optional[Callable[[str], None]] = None,
+        on_market_created: Optional[Callable[[str, dict], None]] = None,
+        on_close_date_updated: Optional[Callable[[str, int], None]] = None,
     ):
         self._api_key = api_key
         self._private_key = _load_private_key(rsa_key_path)
         self._url = KALSHI_WS_URL if env == "prod" else KALSHI_DEMO_WS_URL
         self._on_game_start = on_game_start
         self._on_settle = on_settle
+        self._on_market_created = on_market_created
+        self._on_close_date_updated = on_close_date_updated
 
         self.book = LocalBook()
         self._trades: list[dict] = []
@@ -136,8 +148,15 @@ class KalshiWS:
         self._running = False
         self._msg_id = 0
         self._subscribed_tickers: set[str] = set()
-        # Tickers with a snapshot request already in-flight; prevents request storms on seq gaps.
         self._snapshot_pending: set[str] = set()
+
+        # SID tracking for update_subscription calls
+        self._orderbook_sid: Optional[int] = None
+        self._trade_sid: Optional[int] = None
+        self._lifecycle_sid: Optional[int] = None
+
+        # Callback for runner to know when subscriptions are ready after reconnect
+        self._on_reconnect: Optional[Callable[[], None]] = None
 
         self._tape_file = LOGS_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}_ws_trades.jsonl"
 
@@ -164,51 +183,151 @@ class KalshiWS:
 
     # ── Subscription management ──────────────────────────────────────────────
 
-    def subscribe_market(self, ticker: str):
-        """Subscribe to orderbook_delta and trade for a market."""
-        self._subscribed_tickers.add(ticker)
-        if self._ws and self._running:
-            self._send_market_subscribe(ticker)
+    def subscribe_markets_batch(self, tickers: list[str]):
+        """Subscribe to orderbook_delta and trade for a batch of markets.
 
-    def unsubscribe_market(self, ticker: str):
-        self._subscribed_tickers.discard(ticker)
-        if self._ws and self._running:
+        Uses the market_tickers array parameter for a single WS message per channel
+        instead of one message per ticker.
+        """
+        if not tickers:
+            return
+
+        new_tickers = [t for t in tickers if t not in self._subscribed_tickers]
+        if not new_tickers:
+            return
+
+        self._subscribed_tickers.update(new_tickers)
+
+        if not (self._ws and self._running):
+            return
+
+        # If we already have subscription SIDs, use update_subscription to add
+        if self._orderbook_sid is not None:
             self._ws.send(json.dumps({
                 "id": self._next_id(),
-                "cmd": "unsubscribe",
-                "params": {"channels": ["orderbook_delta", "trade"], "market_ticker": ticker},
+                "cmd": "update_subscription",
+                "params": {
+                    "sid": self._orderbook_sid,
+                    "market_tickers": new_tickers,
+                    "action": "add_markets",
+                },
+            }))
+        else:
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": new_tickers,
+                },
             }))
 
-    def _send_market_subscribe(self, ticker: str):
-        self._ws.send(json.dumps({
-            "id": self._next_id(),
-            "cmd": "subscribe",
-            "params": {"channels": ["orderbook_delta"], "market_ticker": ticker},
-        }))
-        self._ws.send(json.dumps({
-            "id": self._next_id(),
-            "cmd": "subscribe",
-            "params": {"channels": ["trade"], "market_ticker": ticker},
-        }))
+        if self._trade_sid is not None:
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "update_subscription",
+                "params": {
+                    "sid": self._trade_sid,
+                    "market_tickers": new_tickers,
+                    "action": "add_markets",
+                },
+            }))
+        else:
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["trade"],
+                    "market_tickers": new_tickers,
+                },
+            }))
 
-    def _send_lifecycle_subscribe(self):
+        logger.info(f"Subscribed to {len(new_tickers)} new markets (total: {len(self._subscribed_tickers)})")
+
+    def unsubscribe_markets_batch(self, tickers: list[str]):
+        """Unsubscribe from orderbook_delta and trade for a batch of markets."""
+        to_remove = [t for t in tickers if t in self._subscribed_tickers]
+        if not to_remove:
+            return
+
+        self._subscribed_tickers -= set(to_remove)
+
+        if not (self._ws and self._running):
+            return
+
+        if self._orderbook_sid is not None:
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "update_subscription",
+                "params": {
+                    "sid": self._orderbook_sid,
+                    "market_tickers": to_remove,
+                    "action": "delete_markets",
+                },
+            }))
+
+        if self._trade_sid is not None:
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "update_subscription",
+                "params": {
+                    "sid": self._trade_sid,
+                    "market_tickers": to_remove,
+                    "action": "delete_markets",
+                },
+            }))
+
+        for t in to_remove:
+            self.book.remove_ticker(t)
+
+    def subscribe_market(self, ticker: str):
+        """Subscribe to a single market (convenience wrapper)."""
+        self.subscribe_markets_batch([ticker])
+
+    def unsubscribe_market(self, ticker: str):
+        """Unsubscribe from a single market (convenience wrapper)."""
+        self.unsubscribe_markets_batch([ticker])
+
+    # ── WebSocket callbacks ──────────────────────────────────────────────────
+
+    def _on_open(self, ws):
+        logger.info("WebSocket connected")
+        self.book._seqs.clear()
+        self._snapshot_pending.clear()
+        self._orderbook_sid = None
+        self._trade_sid = None
+        self._lifecycle_sid = None
+
+        # Subscribe to lifecycle first (global, no ticker filter needed)
         self._ws.send(json.dumps({
             "id": self._next_id(),
             "cmd": "subscribe",
             "params": {"channels": ["market_lifecycle_v2"]},
         }))
 
-    # ── WebSocket callbacks ──────────────────────────────────────────────────
+        # Re-subscribe to all tracked tickers in one batch per channel
+        if self._subscribed_tickers:
+            tickers_list = list(self._subscribed_tickers)
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": tickers_list,
+                },
+            }))
+            self._ws.send(json.dumps({
+                "id": self._next_id(),
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["trade"],
+                    "market_tickers": tickers_list,
+                },
+            }))
+            logger.info(f"Re-subscribed {len(tickers_list)} markets after reconnect")
 
-    def _on_open(self, ws):
-        logger.info("WebSocket connected")
-        # Clear stale seq counters — new session means new sequence numbering.
-        # Keeping old values would cause every first delta to fire a false seq gap.
-        self.book._seqs.clear()
-        self._snapshot_pending.clear()
-        self._send_lifecycle_subscribe()
-        for ticker in self._subscribed_tickers:
-            self._send_market_subscribe(ticker)
+        if self._on_reconnect:
+            threading.Thread(target=self._on_reconnect, daemon=True).start()
 
     def _on_message(self, ws, raw):
         try:
@@ -226,6 +345,8 @@ class KalshiWS:
             self._handle_trade(msg)
         elif msg_type == "market_lifecycle_v2":
             self._handle_lifecycle(msg)
+        elif msg_type == "subscribed":
+            self._handle_subscribed(msg)
         elif msg_type == "error":
             err = msg.get("msg", {})
             logger.error(f"WS error: code={err.get('code')} msg={err.get('msg')}")
@@ -237,9 +358,6 @@ class KalshiWS:
         logger.warning(f"WS closed: {close_status_code} {close_msg}")
         if self._running:
             logger.info("Reconnecting in 5s...")
-            # Spawn reconnect on a new thread — calling _connect() directly here
-            # would invoke run_forever() from inside the websocket callback stack,
-            # causing unbounded recursion on rapid disconnect/reconnect cycles.
             threading.Thread(target=self._reconnect_loop, daemon=True).start()
 
     def _reconnect_loop(self):
@@ -247,6 +365,21 @@ class KalshiWS:
         self._connect()
 
     # ── Message handlers ─────────────────────────────────────────────────────
+
+    def _handle_subscribed(self, msg):
+        """Track SIDs returned from subscribe commands for later update_subscription."""
+        inner = msg.get("msg", {})
+        channel = inner.get("channel", "")
+        sid = inner.get("sid")
+        if sid is None:
+            return
+        if channel == "orderbook_delta":
+            self._orderbook_sid = sid
+        elif channel == "trade":
+            self._trade_sid = sid
+        elif channel == "market_lifecycle_v2":
+            self._lifecycle_sid = sid
+        logger.debug(f"Subscribed to {channel}, sid={sid}")
 
     def _handle_snapshot(self, msg):
         data = msg.get("msg", {})
@@ -260,8 +393,6 @@ class KalshiWS:
             seq, sid,
         )
         self._snapshot_pending.discard(ticker)
-        bb, ba = self.book.get_top(ticker)
-        logger.debug(f"[BOOK] Snapshot {ticker}: bid={bb} ask={ba}")
 
     def _handle_delta(self, msg):
         data = msg.get("msg", {})
@@ -276,17 +407,17 @@ class KalshiWS:
             seq, sid,
         )
         if not ok and ticker not in self._snapshot_pending:
-            # Sequence gap: request fresh snapshot (rate-limit: one in-flight per ticker)
             self._snapshot_pending.add(ticker)
-            self._ws.send(json.dumps({
-                "id": self._next_id(),
-                "cmd": "subscribe",
-                "params": {
-                    "channels": ["orderbook_delta"],
-                    "market_ticker": ticker,
-                    "update_subscription": {"action": "get_snapshot"},
-                },
-            }))
+            if self._orderbook_sid is not None:
+                self._ws.send(json.dumps({
+                    "id": self._next_id(),
+                    "cmd": "update_subscription",
+                    "params": {
+                        "sid": self._orderbook_sid,
+                        "market_tickers": [ticker],
+                        "action": "get_snapshot",
+                    },
+                }))
 
     def _handle_trade(self, msg):
         data = msg.get("msg", {})
@@ -309,19 +440,46 @@ class KalshiWS:
         ticker = data.get("market_ticker", "")
 
         # Only process MLB markets
-        if not any(ticker.startswith(s) for s in ("KXMLB",)):
+        if not ticker.startswith("KXMLB"):
             return
 
         logger.info(f"[LIFECYCLE] {event_type} → {ticker}")
 
-        if event_type == "active" and self._on_game_start:
-            threading.Thread(
-                target=self._on_game_start, args=(ticker,), daemon=True
-            ).start()
-        elif event_type == "settled" and self._on_settle:
-            threading.Thread(
-                target=self._on_settle, args=(ticker,), daemon=True
-            ).start()
+        if event_type == "created":
+            # New market created — check if it's a series we trade
+            series = ticker.split("-")[0]
+            if series in TRADEABLE_SERIES and self._on_market_created:
+                close_ts = data.get("close_ts")
+                metadata = data.get("additional_metadata", {})
+                threading.Thread(
+                    target=self._on_market_created,
+                    args=(ticker, {"close_ts": close_ts, "metadata": metadata}),
+                    daemon=True,
+                ).start()
+
+        elif event_type == "deactivated":
+            # Game markets get `deactivated` when game starts (trading paused)
+            if self._on_game_start:
+                threading.Thread(
+                    target=self._on_game_start, args=(ticker,), daemon=True
+                ).start()
+
+        elif event_type == "close_date_updated":
+            # Schedule change (delay, postponement) — new close_ts provided
+            close_ts = data.get("close_ts")
+            if close_ts and self._on_close_date_updated:
+                threading.Thread(
+                    target=self._on_close_date_updated,
+                    args=(ticker, close_ts),
+                    daemon=True,
+                ).start()
+
+        elif event_type in ("settled", "determined"):
+            self._subscribed_tickers.discard(ticker)
+            if self._on_settle:
+                threading.Thread(
+                    target=self._on_settle, args=(ticker,), daemon=True
+                ).start()
 
     # ── Connection management ────────────────────────────────────────────────
 
@@ -336,9 +494,6 @@ class KalshiWS:
             on_error=self._on_error,
             on_close=self._on_close,
         )
-        # ping_interval=20 keeps the connection alive; ping_timeout=10 gives Kalshi
-        # enough slack under high load (500+ subscriptions) without triggering false
-        # disconnects that were observed at ping_timeout=5 during busy game periods.
         self._ws.run_forever(ping_interval=20, ping_timeout=10)
 
     def start(self):
@@ -365,3 +520,7 @@ class KalshiWS:
     def get_all_book_tops(self) -> dict[str, tuple[Optional[int], Optional[int]]]:
         """Get all tracked books' top-of-book."""
         return {t: self.book.get_top(t) for t in self._subscribed_tickers}
+
+    @property
+    def is_connected(self) -> bool:
+        return self._ws is not None and self._running
