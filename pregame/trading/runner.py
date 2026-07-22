@@ -41,7 +41,7 @@ from pregame.trading.config import (
     SCAN_INTERVAL_SEC, EXIT_BUFFER_MINUTES, CANCEL_BEFORE_FIRST_PITCH_MIN,
     TAKER_EDGE_THRESHOLD, REPRICE_MIN_TICK_MOVE, MIN_REPRICE_INTERVAL_SEC,
     MAX_REPRICES_PER_ORDER, TRADEABLE_SERIES, LOGS_DIR, DRY_RUN,
-    DISCOVERY_INTERVAL_SEC,
+    DISCOVERY_INTERVAL_SEC, PORTFOLIO_RECONCILE_SEC,
 )
 from pregame.trading.kalshi_client import make_client, make_write_client
 from pregame.trading.models import EnsembleStore
@@ -100,6 +100,7 @@ class TradingRunner:
         self._market_set: dict[str, dict] = {}
         self._market_set_lock = threading.Lock()
         self._last_full_discovery: float = 0
+        self._last_portfolio_reconcile: float = 0
 
     def start(self) -> None:
         """Initialize all components and start the trading loop."""
@@ -112,6 +113,9 @@ class TradingRunner:
         else:
             self._client = make_write_client(self._env)
             self._verify_netting()
+
+        # Upgrade rate limit to Advanced (300r/300w) — idempotent
+        self._upgrade_rate_limit()
 
         # 2. Load features
         self._features = FeatureManager()
@@ -126,7 +130,7 @@ class TradingRunner:
         self._portfolio = Portfolio(client=self._client, dry_run=self._dry_run)
         self._portfolio.refresh()
 
-        # 5. Start WebSocket with lifecycle-driven discovery callbacks
+        # 5. Start WebSocket with lifecycle-driven discovery callbacks + trading activity
         api_key = os.environ.get("KALSHI_READ_KEY", "")
         rsa_path = os.environ.get("KALSHI_READ_RSA_PATH", "")
         if api_key and rsa_path:
@@ -138,10 +142,13 @@ class TradingRunner:
                 on_settle=self._handle_settlement,
                 on_market_created=self._handle_market_created,
                 on_close_date_updated=self._handle_close_date_updated,
+                on_fill=self._handle_ws_fill,
+                on_order_update=self._handle_ws_order,
+                on_position_update=self._handle_ws_position,
             )
             self._ws._on_reconnect = self._on_ws_reconnect
             self._ws.start()
-            logger.info("WebSocket connected")
+            logger.info("WebSocket connected (orderbook + fill/order/position channels)")
         else:
             logger.warning("No WS credentials — running without real-time book updates")
 
@@ -160,7 +167,14 @@ class TradingRunner:
 
     def run_once(self) -> None:
         """Execute a single scan cycle."""
-        self._portfolio.refresh()
+        # Portfolio state is maintained in real-time via WS fill/order/position channels.
+        # REST refresh as fallback: when WS is down, or every PORTFOLIO_RECONCILE_SEC
+        # to catch drift from missed events during reconnection windows.
+        if not self._ws or not self._ws.is_connected:
+            self._portfolio.refresh()
+        elif time.time() - self._last_portfolio_reconcile >= PORTFOLIO_RECONCILE_SEC:
+            self._portfolio.refresh()
+            self._last_portfolio_reconcile = time.time()
         self._sweep_stale_positions()
         self._features.check_and_refresh()
 
@@ -440,8 +454,26 @@ class TradingRunner:
 
     def _on_ws_reconnect(self) -> None:
         """Called after WS reconnects. Market subscriptions are already re-sent
-        in the WS _on_open handler via the batch mechanism."""
-        logger.info("WS reconnected — subscriptions restored")
+        in the WS _on_open handler via the batch mechanism.
+
+        REST reconciliation catches anything missed during the disconnect window.
+        """
+        logger.info("WS reconnected — subscriptions restored, running REST reconciliation")
+        self._portfolio.refresh()
+
+    # ── WS trading activity handlers ────────────────────────────────────────
+
+    def _handle_ws_fill(self, fill: dict) -> None:
+        """WS fill event: our order was matched."""
+        self._portfolio.on_fill(fill)
+
+    def _handle_ws_order(self, order: dict) -> None:
+        """WS order state change: resting, canceled, or executed."""
+        self._portfolio.on_order_update(order)
+
+    def _handle_ws_position(self, position: dict) -> None:
+        """WS position update: authoritative net position from exchange."""
+        self._portfolio.on_position_update(position)
 
     # ── Repricing ────────────────────────────────────────────────────────────
 
@@ -661,6 +693,14 @@ class TradingRunner:
             logger.info(f"Netting/collateral return confirmed: {netting}")
         except KeyError:
             logger.warning("Could not verify netting status — proceed with caution")
+
+    def _upgrade_rate_limit(self) -> None:
+        """Upgrade API rate limit to Advanced tier (300r/300w). Idempotent."""
+        try:
+            self._client.upgrade_rate_limit()
+            logger.info("API rate limit upgraded to Advanced (300r/300w)")
+        except Exception as e:
+            logger.warning(f"Rate limit upgrade failed (may already be at Advanced+): {e}")
 
     def _hours_to_first_pitch(self, ticker: str) -> float | None:
         """Return hours until first pitch using GUMBO gameDate (UTC).

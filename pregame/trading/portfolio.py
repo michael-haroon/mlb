@@ -68,12 +68,17 @@ class Portfolio:
             return
         try:
             state = json.loads(_STATE_FILE.read_text())
-            self._positions = state.get("positions", {})
+            raw_positions = state.get("positions", {})
+            _CLOSED = ("settled", "exited")
+            self._positions = {
+                k: v for k, v in raw_positions.items()
+                if v.get("state") not in _CLOSED
+            }
+            n_pruned = len(raw_positions) - len(self._positions)
             self._daily_pnl = state.get("daily_pnl", 0.0)
-            # Resting orders are not restored — they are ephemeral (no longer on Kalshi).
             logger.info(
-                f"[POS] Restored dry-run state: {len(self._positions)} positions, "
-                f"P&L ${self._daily_pnl:+.2f}"
+                f"[POS] Restored dry-run state: {len(self._positions)} open positions "
+                f"(pruned {n_pruned} settled), P&L ${self._daily_pnl:+.2f}"
             )
         except Exception as e:
             logger.warning(f"[POS] Could not restore state: {e}")
@@ -293,9 +298,8 @@ class Portfolio:
             pnl = -entry_price * contracts if side == "yes" else (1.0 - entry_price) * contracts
 
         with self._lock:
-            pos["state"] = PositionState.SETTLED
-            pos["settled_pnl"] = pnl
             self._daily_pnl += pnl
+            del self._positions[ticker]
 
         self._log_event("settlement", {
             "ticker": ticker,
@@ -334,9 +338,8 @@ class Portfolio:
             pnl = (entry_price - exit_price) * contracts
 
         with self._lock:
-            pos["state"] = PositionState.EXITED
-            pos["exited_pnl"] = pnl
             self._daily_pnl += pnl
+            del self._positions[ticker]
 
         self._log_event("exit", {
             "ticker": ticker,
@@ -376,10 +379,13 @@ class Portfolio:
     # ── Exposure and P&L ─────────────────────────────────────────────────────
 
     def total_exposure(self) -> float:
-        """Total dollars at risk: filled positions + resting orders."""
+        """Total dollars at risk: open positions + resting orders (excludes settled/exited)."""
+        _CLOSED = (PositionState.SETTLED, PositionState.EXITED, "settled", "exited")
         with self._lock:
             pos_exp = sum(
-                p["entry_price"] * p["contracts"] for p in self._positions.values()
+                p["entry_price"] * p["contracts"]
+                for p in self._positions.values()
+                if p.get("state") not in _CLOSED
             )
             ord_exp = sum(
                 o["price_cents"] / 100.0 * o["contracts"] for o in self._orders.values()
@@ -430,6 +436,123 @@ class Portfolio:
         entry = {"event": event_type, "ts": datetime.now(timezone.utc).isoformat(), **data}
         with open(log_file, "a") as f:
             f.write(json.dumps(entry, default=str) + "\n")
+
+    # ── WS-driven updates (no polling needed) ─────────────────────────────────
+
+    def on_fill(self, fill: dict) -> None:
+        """Update state from a WS fill event.
+
+        Converts a resting order to a position if fully filled,
+        or updates remaining count for partial fills.
+        """
+        order_id = fill.get("order_id", "")
+        ticker = fill.get("market_ticker", "")
+        side = fill.get("purchased_side", fill.get("side", ""))
+        count = fill.get("count", 0)
+        yes_price = fill.get("yes_price", 0)
+
+        entry_price = yes_price if side == "yes" else (1.0 - yes_price)
+
+        with self._lock:
+            order = self._orders.get(order_id)
+            if order:
+                remaining = order.get("contracts", 0) - int(count)
+                if remaining <= 0:
+                    del self._orders[order_id]
+                else:
+                    order["contracts"] = remaining
+
+            # Update or create position
+            existing = self._positions.get(ticker)
+            if existing:
+                old_contracts = existing["contracts"]
+                new_contracts = old_contracts + int(count)
+                # Weighted average entry price
+                existing["entry_price"] = (
+                    (existing["entry_price"] * old_contracts + entry_price * int(count))
+                    / new_contracts
+                )
+                existing["contracts"] = new_contracts
+            else:
+                self._positions[ticker] = {
+                    "ticker": ticker,
+                    "side": side,
+                    "entry_price": entry_price,
+                    "contracts": int(count),
+                    "state": PositionState.FILLED,
+                    "target": "",
+                    "confidence_tier": "MEDIUM",
+                    "accuracy_mult": 1.0,
+                    "entry_edge": 0.0,
+                    "opened_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+        self._log_event("ws_fill", fill)
+        if self._dry_run:
+            self._save_state()
+
+    def on_order_update(self, order: dict) -> None:
+        """Update order ledger from a WS user_order event."""
+        order_id = order.get("order_id", "")
+        ticker = order.get("ticker", "")
+        status = order.get("status", "")
+
+        with self._lock:
+            if status == "resting":
+                side = order.get("side", "")
+                price_cents = round(order.get("yes_price", 0) * 100)
+                if side == "no":
+                    price_cents = 100 - price_cents
+                self._orders[order_id] = {
+                    "order_id": order_id,
+                    "ticker": ticker,
+                    "side": side,
+                    "price_cents": price_cents,
+                    "contracts": int(order.get("remaining_count", 0)),
+                }
+            elif status in ("canceled", "executed"):
+                self._orders.pop(order_id, None)
+
+        self._log_event("ws_order", {"order_id": order_id, "ticker": ticker, "status": status})
+
+    def on_position_update(self, position: dict) -> None:
+        """Authoritative position snapshot from WS market_positions channel.
+
+        This is the source of truth — overrides any local bookkeeping drift.
+        """
+        ticker = position.get("market_ticker", "")
+        net_pos = position.get("position", 0)
+        cost = position.get("position_cost", 0)
+        realized_pnl = position.get("realized_pnl", 0)
+
+        with self._lock:
+            if net_pos == 0:
+                # Position closed (settled or fully exited)
+                old = self._positions.pop(ticker, None)
+                if old and realized_pnl != 0:
+                    self._daily_pnl += realized_pnl
+            else:
+                side = "yes" if net_pos > 0 else "no"
+                contracts = abs(int(net_pos))
+                entry_price = abs(cost) / contracts if contracts else 0.0
+
+                existing = self._positions.get(ticker, {})
+                self._positions[ticker] = {
+                    "ticker": ticker,
+                    "side": side,
+                    "contracts": contracts,
+                    "entry_price": entry_price,
+                    "state": existing.get("state", PositionState.FILLED),
+                    "target": existing.get("target", ""),
+                    "confidence_tier": existing.get("confidence_tier", "MEDIUM"),
+                    "accuracy_mult": existing.get("accuracy_mult", 1.0),
+                    "entry_edge": existing.get("entry_edge", 0.0),
+                    "opened_at": existing.get("opened_at", datetime.now(timezone.utc).isoformat()),
+                }
+
+        self._log_event("ws_position", position)
+        if self._dry_run:
+            self._save_state()
 
     def stop(self) -> None:
         """Cleanup on shutdown."""

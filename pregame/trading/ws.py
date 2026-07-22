@@ -114,11 +114,11 @@ class LocalBook:
 class KalshiWS:
     """Persistent WebSocket connection to Kalshi for MLB markets.
 
-    Subscribes to orderbook_delta, trade, and market_lifecycle_v2.
-    Uses batched subscription via market_tickers array and incremental
-    update_subscription for add/remove operations.
+    Subscribes to orderbook_delta, trade, market_lifecycle_v2, fill,
+    user_orders, and market_positions channels.
 
     Lifecycle events drive game-start, settlement, and discovery callbacks.
+    Fill/order/position events drive real-time portfolio tracking without polling.
     """
 
     def __init__(
@@ -130,6 +130,9 @@ class KalshiWS:
         on_settle: Optional[Callable[[str], None]] = None,
         on_market_created: Optional[Callable[[str, dict], None]] = None,
         on_close_date_updated: Optional[Callable[[str, int], None]] = None,
+        on_fill: Optional[Callable[[dict], None]] = None,
+        on_order_update: Optional[Callable[[dict], None]] = None,
+        on_position_update: Optional[Callable[[dict], None]] = None,
     ):
         self._api_key = api_key
         self._private_key = _load_private_key(rsa_key_path)
@@ -138,6 +141,9 @@ class KalshiWS:
         self._on_settle = on_settle
         self._on_market_created = on_market_created
         self._on_close_date_updated = on_close_date_updated
+        self._on_fill = on_fill
+        self._on_order_update = on_order_update
+        self._on_position_update = on_position_update
 
         self.book = LocalBook()
         self._trades: list[dict] = []
@@ -154,6 +160,9 @@ class KalshiWS:
         self._orderbook_sid: Optional[int] = None
         self._trade_sid: Optional[int] = None
         self._lifecycle_sid: Optional[int] = None
+        self._fill_sid: Optional[int] = None
+        self._user_orders_sid: Optional[int] = None
+        self._positions_sid: Optional[int] = None
 
         # Callback for runner to know when subscriptions are ready after reconnect
         self._on_reconnect: Optional[Callable[[], None]] = None
@@ -297,12 +306,33 @@ class KalshiWS:
         self._orderbook_sid = None
         self._trade_sid = None
         self._lifecycle_sid = None
+        self._fill_sid = None
+        self._user_orders_sid = None
+        self._positions_sid = None
 
         # Subscribe to lifecycle first (global, no ticker filter needed)
         self._ws.send(json.dumps({
             "id": self._next_id(),
             "cmd": "subscribe",
             "params": {"channels": ["market_lifecycle_v2"]},
+        }))
+
+        # Subscribe to user-specific channels (fills, orders, positions)
+        # These are global (no ticker filter) — receive all trading activity
+        self._ws.send(json.dumps({
+            "id": self._next_id(),
+            "cmd": "subscribe",
+            "params": {"channels": ["fill"]},
+        }))
+        self._ws.send(json.dumps({
+            "id": self._next_id(),
+            "cmd": "subscribe",
+            "params": {"channels": ["user_orders"]},
+        }))
+        self._ws.send(json.dumps({
+            "id": self._next_id(),
+            "cmd": "subscribe",
+            "params": {"channels": ["market_positions"]},
         }))
 
         # Re-subscribe to all tracked tickers in one batch per channel
@@ -345,6 +375,12 @@ class KalshiWS:
             self._handle_trade(msg)
         elif msg_type == "market_lifecycle_v2":
             self._handle_lifecycle(msg)
+        elif msg_type == "fill":
+            self._handle_fill(msg)
+        elif msg_type == "user_order":
+            self._handle_user_order(msg)
+        elif msg_type == "market_position":
+            self._handle_market_position(msg)
         elif msg_type == "subscribed":
             self._handle_subscribed(msg)
         elif msg_type == "error":
@@ -379,6 +415,12 @@ class KalshiWS:
             self._trade_sid = sid
         elif channel == "market_lifecycle_v2":
             self._lifecycle_sid = sid
+        elif channel == "fill":
+            self._fill_sid = sid
+        elif channel == "user_orders":
+            self._user_orders_sid = sid
+        elif channel == "market_positions":
+            self._positions_sid = sid
         logger.debug(f"Subscribed to {channel}, sid={sid}")
 
     def _handle_snapshot(self, msg):
@@ -480,6 +522,100 @@ class KalshiWS:
                 threading.Thread(
                     target=self._on_settle, args=(ticker,), daemon=True
                 ).start()
+
+    # ── User trading activity handlers ─────────────────────────────────────────
+
+    def _handle_fill(self, msg):
+        """Process fill notification — our order was (partially) filled."""
+        data = msg.get("msg", {})
+        ticker = data.get("market_ticker", "")
+        if not ticker.startswith("KXMLB"):
+            return
+
+        fill = {
+            "trade_id": data.get("trade_id", ""),
+            "order_id": data.get("order_id", ""),
+            "market_ticker": ticker,
+            "side": data.get("side", ""),
+            "action": data.get("action", ""),
+            "is_taker": data.get("is_taker", False),
+            "yes_price": float(data.get("yes_price_dollars", "0")),
+            "count": float(data.get("count_fp", "0")),
+            "fee_cost": float(data.get("fee_cost", "0")),
+            "post_position": float(data.get("post_position_fp", "0")),
+            "purchased_side": data.get("purchased_side", ""),
+            "ts_ms": data.get("ts_ms", 0),
+            "client_order_id": data.get("client_order_id", ""),
+        }
+
+        logger.info(
+            f"[FILL] {fill['action']} {fill['count']:.0f}x {fill['side']} "
+            f"@{fill['yes_price']:.3f} on {ticker} "
+            f"({'taker' if fill['is_taker'] else 'maker'}, fee=${fill['fee_cost']:.4f})"
+        )
+
+        if self._on_fill:
+            threading.Thread(target=self._on_fill, args=(fill,), daemon=True).start()
+
+    def _handle_user_order(self, msg):
+        """Process order state change — resting, canceled, or executed."""
+        data = msg.get("msg", {})
+        ticker = data.get("ticker", "")
+        if not ticker.startswith("KXMLB"):
+            return
+
+        order = {
+            "order_id": data.get("order_id", ""),
+            "ticker": ticker,
+            "status": data.get("status", ""),
+            "side": data.get("side", ""),
+            "outcome_side": data.get("outcome_side", ""),
+            "yes_price": float(data.get("yes_price_dollars", "0")),
+            "fill_count": float(data.get("fill_count_fp", "0")),
+            "remaining_count": float(data.get("remaining_count_fp", "0")),
+            "initial_count": float(data.get("initial_count_fp", "0")),
+            "taker_fill_cost": float(data.get("taker_fill_cost_dollars", "0")),
+            "maker_fill_cost": float(data.get("maker_fill_cost_dollars", "0")),
+            "taker_fees": float(data.get("taker_fees_dollars", "0")),
+            "maker_fees": float(data.get("maker_fees_dollars", "0")),
+            "client_order_id": data.get("client_order_id", ""),
+            "created_ts_ms": data.get("created_ts_ms", 0),
+            "last_updated_ts_ms": data.get("last_updated_ts_ms", 0),
+        }
+
+        logger.info(
+            f"[ORDER] {order['status']} {order['order_id'][:8]}… "
+            f"{order['side']} @{order['yes_price']:.4f} on {ticker} "
+            f"(filled={order['fill_count']:.0f}, remaining={order['remaining_count']:.0f})"
+        )
+
+        if self._on_order_update:
+            threading.Thread(target=self._on_order_update, args=(order,), daemon=True).start()
+
+    def _handle_market_position(self, msg):
+        """Process position update — net position changed due to fill or settlement."""
+        data = msg.get("msg", {})
+        ticker = data.get("market_ticker", "")
+        if not ticker.startswith("KXMLB"):
+            return
+
+        position = {
+            "market_ticker": ticker,
+            "position": float(data.get("position_fp", "0")),
+            "position_cost": float(data.get("position_cost_dollars", "0")),
+            "realized_pnl": float(data.get("realized_pnl_dollars", "0")),
+            "fees_paid": float(data.get("fees_paid_dollars", "0")),
+            "volume": float(data.get("volume_fp", "0")),
+        }
+
+        logger.info(
+            f"[POSITION] {ticker}: pos={position['position']:.0f} "
+            f"cost=${position['position_cost']:.4f} "
+            f"realized_pnl=${position['realized_pnl']:.4f}"
+        )
+
+        if self._on_position_update:
+            threading.Thread(target=self._on_position_update, args=(position,), daemon=True).start()
 
     # ── Connection management ────────────────────────────────────────────────
 

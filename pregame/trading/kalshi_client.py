@@ -177,6 +177,14 @@ class KalshiClient:
         """Get account info (includes netting/collateral settings)."""
         return self._request("GET", "/account")
 
+    def upgrade_rate_limit(self) -> dict:
+        """Upgrade API usage level from Basic (200r/100w) to Advanced (300r/300w).
+
+        Idempotent: calling when already at Advanced or higher is a no-op on
+        Kalshi's side. Higher tiers (expert+) require trading volume thresholds.
+        """
+        return self._request("POST", "/account/api_usage_level/upgrade")
+
 
 class RateLimitError(Exception):
     """Raised on 429 — caller should retry with backoff."""
