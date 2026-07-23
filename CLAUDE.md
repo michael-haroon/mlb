@@ -24,11 +24,20 @@ Every constant, threshold, or architectural choice must be backed by one of:
 
 Unvalidated values must be marked `# TODO: validate — placeholder`.
 
+## Statistical Rigor
+For every statistical method and test used, clearly state their assumptions and check if the data satisfies their assumptions.
+
 ## Code Philosophy
 - **Comment WHY, not WHAT.** Name the hidden constraint, tradeoff, or non-obvious invariant.
 - **Simplicity first.** No unrequested features, abstractions, or flexibility.
 - **Surgical edits.** Touch only what the request requires. Don't improve adjacent code.
 - **Think before coding.** State assumptions, surface ambiguity, ask before guessing.
+
+## Bug-Fix & Testing Discipline
+- **Failing test first.** Before fixing any bug, write a test that defines expected behavior and demonstrates the failure. No patch without a reproducing test.
+- **Isolate before fixing.** Define expected behavior → write unit test → show it fails → identify root cause → then implement the fix.
+- **Adversarial stress tests after basics.** Once a fix passes its unit test, write adversarial edge cases (year boundaries, traded players, doubleheaders, cold-start, sparse data).
+- **Prove issues before changing.** For design-level decisions (not clear-cut bugs), reproduce the issue with data and raise to the user before modifying code.
 
 ## Logging
 Two handlers everywhere: file at `DEBUG` (granular), stdout at `INFO` (milestones). Never remove or weaken existing log statements.

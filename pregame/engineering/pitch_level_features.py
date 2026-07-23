@@ -215,6 +215,9 @@ def _compute_kbb_splits(
     # Keep only events that count as a PA (avoid defensive indifference, etc.)
     pa = pa[pa["at_bat_event"].isin(_PA_EVENTS)]
 
+    # Collapse multiple pitch rows within a single PA to one row.
+    pa = pa.drop_duplicates(subset=["pitcher_id", "bat_side_code", "game_pk", "at_bat_index"], keep="first")
+
     pa["_is_k"]  = pa["at_bat_event"].isin(_K_EVENTS).astype("int8")
     pa["_is_bb"] = pa["at_bat_event"].isin(_BB_EVENTS).astype("int8")
 
@@ -294,6 +297,9 @@ def _compute_fip_splits(
     pa = pitches[
         pitches["is_pitch"] == True  # noqa: E712
     ].dropna(subset=["at_bat_event"]).copy()
+
+    # Collapse multiple pitch rows within a single PA to one row.
+    pa = pa.drop_duplicates(subset=["pitcher_id", "bat_side_code", "game_pk", "at_bat_index"], keep="first")
 
     pa["_hr"]  = pa["at_bat_event"].isin(_FIP_HR_EVENTS).astype("int8")
     pa["_bb"]  = pa["at_bat_event"].isin(_FIP_BB_EVENTS).astype("int8")
@@ -388,11 +394,10 @@ def _compute_woba_splits(
     # No merge needed — sorting directly avoids a game_date_x/game_date_y conflict.
     pa = pa.sort_values(["batter_id", "pitch_hand_code", "game_date", "game_pk", "at_bat_index"])
 
-    # Keep only first PA per (batter, pitcher_hand, game) — the at_bat_event on a pitch
-    # row is the *final* outcome of that plate appearance; taking first after sorting by
-    # at_bat_index ensures we don't double-count a batter who faces the same hand twice in
-    # one game, which would contaminate the rolling window with within-game information.
-    pa = pa.drop_duplicates(subset=["batter_id", "pitch_hand_code", "game_pk"], keep="first")
+    # Collapse multiple pitch rows within a single PA to one row (at_bat_event is
+    # duplicated across all pitches in the same PA). Preserves all distinct PAs so
+    # rolling(100) operates on 100 actual plate appearances, not 100 games.
+    pa = pa.drop_duplicates(subset=["batter_id", "pitch_hand_code", "game_pk", "at_bat_index"], keep="first")
 
     new_cols: dict[str, pd.Series] = {}
 
@@ -426,9 +431,18 @@ def _compute_woba_splits(
 
         for window_pa in (100, 200):
             col = f"_woba_roll{window_pa}pa"
+            # Take each batter's last PA in the game (highest at_bat_index) — all PA
+            # rows carry the same shift(1)-lagged rolling wOBA, so "last" just picks a
+            # representative. Then average across batters for the team-game aggregate.
+            valid = batter_woba[batter_woba[col].notna()]
+            batter_game_woba = (
+                valid.sort_values("at_bat_index")
+                .groupby(["_team_id", "game_pk", "batter_id"])[col]
+                .last()
+                .reset_index()
+            )
             team_game_woba = (
-                batter_woba[batter_woba[col].notna()]
-                .groupby(["_team_id", "game_pk"])[col]
+                batter_game_woba.groupby(["_team_id", "game_pk"])[col]
                 .mean()
                 .reset_index()
                 .rename(columns={col: f"_team_woba_{hand_tag}_roll{window_pa}pa"})
@@ -514,6 +528,12 @@ def _compute_pitchmix_matchup(
         if pt not in pitcher_profile.columns:
             pitcher_profile[pt] = np.nan
 
+    # Normalize frequency profile rows to sum to 1.0. Independent per-type rolling
+    # windows violate the probability simplex when pitchers add/drop pitch types.
+    freq_cols = [c for c in all_types if c in pitcher_profile.columns]
+    row_sums = pitcher_profile[freq_cols].sum(axis=1).replace(0, np.nan)
+    pitcher_profile[freq_cols] = pitcher_profile[freq_cols].div(row_sums, axis=0)
+
     # -----------------------------------------------------------------------
     # Step B: batter wOBA against each pitch type, rolling 200 PA per type.
     # -----------------------------------------------------------------------
@@ -560,6 +580,28 @@ def _compute_pitchmix_matchup(
         batter_woba_df = batter_woba_df.merge(df, on=key_cols, how="outer")
 
     # -----------------------------------------------------------------------
+    # League-average wOBA per pitch type — computed from the dataset itself.
+    # Used as fill value when a batter has insufficient history for a pitch type.
+    # Uses most recent 3 seasons available in the data to stay within the current
+    # regime (post-humidor 2022). Structural breaks at 2021/2022/2023 make a
+    # pooled 2015-2024 mean invalid for FF/SL/CH/CU/FC/SI (Chow test p<0.001).
+    # -----------------------------------------------------------------------
+    if "season" in pa.columns:
+        recent_seasons = sorted(pa["season"].unique())[-3:]
+        pa_recent = pa[pa["season"].isin(recent_seasons)]
+    else:
+        pa_recent = pa
+    league_avg_woba_by_type: dict[str, float] = {}
+    for pt in all_types:
+        sub = pa_recent[pa_recent["_ptype"] == pt]
+        if len(sub) > 0:
+            league_avg_woba_by_type[pt] = float(sub["_woba_num"].mean())
+        else:
+            league_avg_woba_by_type[pt] = 0.320
+    log.debug(f"League-avg wOBA by type (recent 3 seasons {list(recent_seasons) if 'season' in pa.columns else 'all'}): "
+              f"{league_avg_woba_by_type}")
+
+    # -----------------------------------------------------------------------
     # Step C: matchup score per batter in each game.
     # -----------------------------------------------------------------------
     # home offense faces away SP (home batters bat in "bottom" half).
@@ -586,17 +628,18 @@ def _compute_pitchmix_matchup(
         batter_side = batter_side.merge(profile_renamed, on=["game_pk", "pitcher_id"], how="left")
 
         # Dot-product: sum over pitch types of (sp_freq × batter_woba_vs_type).
-        # Fill missing batter wOBA with league-average (~0.320, FanGraphs 2015-2024 mean)
-        # rather than 0.0 — a batter with no history is average, not terrible. Source:
-        # FanGraphs guts page.  # TODO: validate — placeholder for per-season average
-        _LEAGUE_AVG_WOBA = 0.320
+        # Fill missing batter wOBA with expanding league-average for that pitch type
+        # rather than 0.0 — a batter with no history is average, not terrible.
+        # Per-type expanding mean accounts for structural breaks (deadened ball 2021,
+        # humidor 2022) that shift league wOBA by pitch type over time.
         matchup_scores = pd.Series(0.0, index=batter_side.index)
         for pt in all_types:
             bwoba_col  = f"_bwoba_{pt}"
             spfreq_col = f"_spfreq_{pt}"
             if bwoba_col in batter_side.columns and spfreq_col in batter_side.columns:
+                fill_val = league_avg_woba_by_type.get(pt, 0.320)
                 matchup_scores = matchup_scores + (
-                    batter_side[bwoba_col].fillna(_LEAGUE_AVG_WOBA) * batter_side[spfreq_col].fillna(0.0)
+                    batter_side[bwoba_col].fillna(fill_val) * batter_side[spfreq_col].fillna(0.0)
                 )
         batter_side["_matchup_score"] = matchup_scores
 

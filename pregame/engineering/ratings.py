@@ -105,28 +105,43 @@ def attach_all_ratings(
 def compute_baseruns(games: pd.DataFrame) -> pd.DataFrame:
     """Compute BaseRuns for offense and defense (pitcher-allowed BsR).
 
-    Uses expanding mean of per-game BsR components for temporal safety.
+    Builds a unified per-team timeline so expanding BsR sees ALL games
+    regardless of home/away side.
     """
+    if "home_team_id" not in games.columns or "away_team_id" not in games.columns:
+        return games
+
     for side in ("home", "away"):
         games[f"{side}_bsr_game"] = _baseruns_single_game(games, side)
 
-    # Pitcher-allowed BsR: compute from the opposing team's batting against this side's pitching
-    # home defense = away offense that game, away defense = home offense that game
-    games["home_bsr_defense_game"] = games["away_bsr_game"]
-    games["away_bsr_defense_game"] = games["home_bsr_game"]
-
-    # Expanding mean with shift(1) — only prior games inform current game
+    # Build unified timeline: one row per (team, game) with offense/defense BsR.
+    parts = []
     for side in ("home", "away"):
-        team_col = f"{side}_team_id"
-        if team_col not in games.columns:
-            continue
+        opp_side = "away" if side == "home" else "home"
+        sub = pd.DataFrame({
+            "team_id": games[f"{side}_team_id"],
+            "frame_idx": games.index,
+            "bsr_offense": games[f"{side}_bsr_game"].values,
+            "bsr_defense": games[f"{opp_side}_bsr_game"].values,
+            "side": side,
+        })
+        parts.append(sub)
 
-        for stat, src in [("bsr_offense", f"{side}_bsr_game"),
-                          ("bsr_defense", f"{side}_bsr_defense_game")]:
-            games[f"{side}_{stat}"] = (
-                games.groupby(team_col)[src]
-                .transform(lambda s: s.expanding().mean().shift(1))
-            )
+    timeline = pd.concat(parts, ignore_index=True)
+    timeline = timeline.sort_values("frame_idx").reset_index(drop=True)
+
+    # Expanding mean across ALL games per team
+    for stat in ("bsr_offense", "bsr_defense"):
+        timeline[f"_{stat}"] = (
+            timeline.groupby("team_id")[stat]
+            .transform(lambda s: s.expanding().mean().shift(1))
+        )
+
+    # Map back to game frame
+    for side in ("home", "away"):
+        side_rows = timeline[timeline["side"] == side].set_index("frame_idx")
+        games[f"{side}_bsr_offense"] = side_rows["_bsr_offense"].reindex(games.index)
+        games[f"{side}_bsr_defense"] = side_rows["_bsr_defense"].reindex(games.index)
 
     # Differentials
     if "home_bsr_offense" in games.columns and "away_bsr_offense" in games.columns:
@@ -176,42 +191,79 @@ def _baseruns_single_game(games: pd.DataFrame, side: str) -> pd.Series:
 def compute_pythagenpat(games: pd.DataFrame, z: float = 0.287) -> pd.DataFrame:
     """Compute Pythagenpat expected win% at 3 tiers.
 
-    Tier 1: actual runs scored/allowed
+    Tier 1: actual runs scored/allowed (unified timeline)
     Tier 2: BsR-estimated runs (removes sequencing luck)
     Tier 3: SOS-adjusted tier 2 (not implemented until SRS is computed)
     """
+    if "home_team_id" not in games.columns or "away_team_id" not in games.columns:
+        return games
+
+    # --- Tier 1: Unified timeline for actual runs ---
+    rs_home = f"home_bat_game_runs"
+    rs_away = f"away_bat_game_runs"
+    if rs_home in games.columns and rs_away in games.columns:
+        parts = []
+        for side in ("home", "away"):
+            opp_side = "away" if side == "home" else "home"
+            sub = pd.DataFrame({
+                "team_id": games[f"{side}_team_id"],
+                "frame_idx": games.index,
+                "rs": games[f"{side}_bat_game_runs"].values,
+                "ra": games[f"{opp_side}_bat_game_runs"].values,
+                "side": side,
+            })
+            parts.append(sub)
+
+        timeline = pd.concat(parts, ignore_index=True)
+        timeline = timeline.sort_values("frame_idx").reset_index(drop=True)
+
+        timeline["_rs_cum"] = timeline.groupby("team_id")["rs"].transform(
+            lambda s: s.expanding().sum().shift(1))
+        timeline["_ra_cum"] = timeline.groupby("team_id")["ra"].transform(
+            lambda s: s.expanding().sum().shift(1))
+        timeline["_gp"] = timeline.groupby("team_id").cumcount()
+
+        timeline["_pythag_1st"] = _pythagenpat_formula(
+            timeline["_rs_cum"], timeline["_ra_cum"], timeline["_gp"], z)
+
+        for side in ("home", "away"):
+            side_rows = timeline[timeline["side"] == side].set_index("frame_idx")
+            games[f"{side}_pythag_1st"] = side_rows["_pythag_1st"].reindex(games.index)
+
+    # --- Tier 2: use expanding BsR (already unified from compute_baseruns fix) ---
     for side in ("home", "away"):
-        team_col = f"{side}_team_id"
-        if team_col not in games.columns:
-            continue
-
-        # Expanding cumulative RS/RA with shift(1)
-        rs_col = f"{side}_bat_game_runs" if f"{side}_bat_game_runs" in games.columns else None
-        ra_col = f"{'away' if side == 'home' else 'home'}_bat_game_runs"
-        ra_col = ra_col if ra_col in games.columns else None
-
-        if rs_col and ra_col:
-            rs_cum = games.groupby(team_col)[rs_col].transform(
-                lambda s: s.expanding().sum().shift(1)
-            )
-            ra_cum = games.groupby(team_col)[ra_col].transform(
-                lambda s: s.expanding().sum().shift(1)
-            )
-            gp = games.groupby(team_col).cumcount()  # games played (0-indexed)
-
-            games[f"{side}_pythag_1st"] = _pythagenpat_formula(rs_cum, ra_cum, gp, z)
-
-        # Tier 2: use expanding BsR as estimated runs
         bsr_off = f"{side}_bsr_offense"
         bsr_def = f"{side}_bsr_defense"
         if bsr_off in games.columns and bsr_def in games.columns:
-            # BsR values are already expanding means; multiply by games played for cumulative
-            gp = games.groupby(team_col).cumcount().clip(lower=1)
+            # BsR expanding means × games played gives cumulative estimated runs.
+            # Games played comes from the unified timeline.
+            gp_col = f"{side}_pythag_1st"  # proxy: if tier 1 exists, timeline was built
+            if "_gp" not in dir():
+                # Rebuild unified GP count for tier 2
+                parts_gp = []
+                for s in ("home", "away"):
+                    sub = pd.DataFrame({
+                        "team_id": games[f"{s}_team_id"],
+                        "frame_idx": games.index,
+                        "side": s,
+                    })
+                    parts_gp.append(sub)
+                tl_gp = pd.concat(parts_gp, ignore_index=True).sort_values("frame_idx")
+                tl_gp["_gp"] = tl_gp.groupby("team_id").cumcount().clip(lower=1)
+                for s in ("home", "away"):
+                    sr = tl_gp[tl_gp["side"] == s].set_index("frame_idx")
+                    games[f"_{s}_gp"] = sr["_gp"].reindex(games.index)
+            gp = games.get(f"_{side}_gp", games.groupby(f"{side}_team_id").cumcount().clip(lower=1))
             rs_bsr = games[bsr_off] * gp
             ra_bsr = games[bsr_def] * gp
             games[f"{side}_pythag_2nd"] = _pythagenpat_formula(rs_bsr, ra_bsr, gp, z)
 
-    # Tier 3 (SOS-adjusted) is computed after SRS is available
+    # Clean up temp columns
+    for side in ("home", "away"):
+        col = f"_{side}_gp"
+        if col in games.columns:
+            games = games.drop(columns=[col])
+
     # Differentials
     for tier in ("1st", "2nd"):
         h = f"home_pythag_{tier}"

@@ -88,7 +88,15 @@ def build_game_frame(raw: dict[str, pd.DataFrame]) -> pd.DataFrame:
     # --- Derived batting stats for BaseRuns inputs ---
     games = _compute_derived_batting(games)
 
-    games = games.sort_values(["game_date", "game_pk"]).reset_index(drop=True)
+    # Sort by actual start time (game_datetime_utc) to resolve within-day ordering.
+    # game_pk is NOT monotonic with start time — MLB assigns it at schedule creation,
+    # not at first pitch. Falls back to (game_date, game_pk) if datetime is absent.
+    if "game_datetime_utc" in games.columns:
+        games["_sort_dt"] = pd.to_datetime(games["game_datetime_utc"], errors="coerce", utc=True)
+        games = games.sort_values(["_sort_dt", "game_pk"]).reset_index(drop=True)
+        games = games.drop(columns=["_sort_dt"])
+    else:
+        games = games.sort_values(["game_date", "game_pk"]).reset_index(drop=True)
     log.info(f"Game frame: {len(games):,} rows × {len(games.columns)} columns")
     return games
 
@@ -96,7 +104,8 @@ def build_game_frame(raw: dict[str, pd.DataFrame]) -> pd.DataFrame:
 def _extract_game_metadata(pitches: pd.DataFrame) -> pd.DataFrame:
     """Extract one-row-per-game metadata from pitches table."""
     meta_cols = [
-        "game_pk", "game_date", "venue_id", "venue_name", "venue_latitude", "venue_longitude",
+        "game_pk", "game_date", "game_datetime_utc",
+        "venue_id", "venue_name", "venue_latitude", "venue_longitude",
         "venue_capacity", "venue_roof_type", "weather_condition", "weather_temp",
         "weather_wind", "day_night", "attendance", "home_team_id", "home_team_name",
         "home_team_abbr", "away_team_id", "away_team_name", "away_team_abbr",
