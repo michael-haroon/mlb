@@ -338,23 +338,23 @@ class TestAirDensityFeatures:
         # No same-game outcome data is used
 
     def test_coors_field_adi_value(self):
-        """Coors Field (5280 ft) should have ADI ~0.826."""
+        """Coors Field (5280 ft) should have ADI ~0.854 (ISA lapse-rate)."""
         df = pd.DataFrame({"venue_id": [19]})  # Coors Field
         result = _air_density_features(df)
         adi = result.loc[0, "air_density_index"]
-        # exp(-3.63e-5 * 5280) = exp(-0.1917) ≈ 0.8256
-        expected = np.exp(-3.63e-5 * 5280)
+        # ISA: (1 - 6.8756e-6 * 5280)^4.2558 ≈ 0.854
+        expected = (1.0 - 6.8756e-6 * 5280) ** 4.2558
         assert abs(adi - expected) < 0.001, (
             f"Coors ADI: expected {expected:.4f}, got {adi:.4f}"
         )
-        assert 0.82 < adi < 0.84, f"Coors ADI should be ~0.83, got {adi}"
+        assert 0.84 < adi < 0.87, f"Coors ADI should be ~0.854, got {adi}"
 
     def test_sea_level_adi_value(self):
         """Venues not in elevation dict (sea level) should have ADI ~1.0."""
         df = pd.DataFrame({"venue_id": [9999]})  # Unknown venue
         result = _air_density_features(df)
         adi = result.loc[0, "air_density_index"]
-        # exp(-3.63e-5 * 0) = 1.0
+        # ISA: (1 - 2.2558e-5 * 0)^4.2559 = 1.0
         assert abs(adi - 1.0) < 0.001, f"Sea-level ADI should be 1.0, got {adi}"
 
     def test_adi_range(self, base_games):

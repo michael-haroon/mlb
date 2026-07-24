@@ -526,6 +526,10 @@ def build_feature_store(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
+    # Canonical source: pregame.strategy.config.SKIP_SEASONS
+    from pregame.strategy.config import SKIP_SEASONS
+    skip = set(SKIP_SEASONS)
+
     if seasons is None:
         all_paths = catalog.resolve_table_paths("pitches", seasons=None)
         discovered: set[int] = set()
@@ -533,9 +537,9 @@ def build_feature_store(
             m = re.search(r"season=(\d{4})", p)
             if m:
                 discovered.add(int(m.group(1)))
-        season_list: list[int] = sorted(discovered)
+        season_list: list[int] = sorted(discovered - skip)
     else:
-        season_list = sorted(seasons)
+        season_list = sorted(s for s in seasons if s not in skip)
 
     if not season_list:
         raise RuntimeError("No seasons found — check source_uri and season range.")

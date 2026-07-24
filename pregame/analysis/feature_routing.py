@@ -53,12 +53,12 @@ def _classify_feature(row: pd.Series) -> str:
     if row.get("tier") == "ACCEPTED":
         return "accepted"
 
-    mdi = bool(row.get("mdi_passes") is True)
-    sfi = bool(row.get("sfi_passes") is True)
-    pca = bool(row.get("pca_mda_passes") is True)
-    resid = bool(row.get("resid_mda_passes") is True)
-    desub = bool(row.get("desub_mda_passes") is True)
-    cfi = bool(row.get("cfi_mda_cluster_passes") is True)
+    mdi = row.get("mdi_passes") == True
+    sfi = row.get("sfi_passes") == True
+    pca = row.get("pca_mda_passes") == True
+    resid = row.get("resid_mda_passes") == True
+    desub = row.get("desub_mda_passes") == True
+    cfi = row.get("cfi_mda_cluster_passes") == True
 
     # Standalone signal: SFI passes (feature has predictive power alone)
     if sfi:
@@ -239,6 +239,110 @@ def get_feature_set(family: str, filter_report: pd.DataFrame) -> list[str]:
     # Unknown family → conservative (accepted + standalone + complementary)
     log.warning(f"Unknown family {family!r} — using default routing")
     return accepted_ordered + standalone_ordered + complementary_by_mdi
+
+
+def get_feature_set_uncapped(family: str, filter_report: pd.DataFrame) -> list[str]:
+    """Return ALL features ordered by family's architectural priorities.
+
+    Unlike get_feature_set() which only returns categories the family can
+    exploit, this returns every feature exactly once. Categories that would
+    normally be excluded are appended at the tail in degradation order.
+
+    This enables the sizing curve to explore beyond the routing ceiling:
+    the first N features match get_feature_set() exactly, and additional
+    features are ordered by diminishing architectural fit.
+    """
+    groups = classify_all_features(filter_report)
+
+    accepted = filter_report.index[groups == "accepted"].tolist()
+    complementary = filter_report.index[groups == "complementary"].tolist()
+    standalone = filter_report.index[groups == "standalone"].tolist()
+    linear_only = filter_report.index[groups == "linear_only"].tolist()
+    absorbed = filter_report.index[groups == "absorbed"].tolist()
+    noise = filter_report.index[groups == "noise"].tolist()
+    redundant = filter_report.index[groups == "redundant"].tolist()
+    rejected = filter_report.index[groups == "rejected"].tolist()
+
+    # Order within each category by the relevant method rank
+    accepted_ordered = _order_by_rank(accepted, filter_report, "composite_rank")
+    standalone_ordered = _order_by_rank(standalone, filter_report, "sfi_rank")
+    complementary_by_mdi = _order_by_rank(complementary, filter_report, "mdi_rank")
+    complementary_by_sfi = _order_by_rank(complementary, filter_report, "sfi_rank")
+    linear_only_ordered = _order_by_rank(linear_only, filter_report, "pca_mda_rank")
+    absorbed_by_mdi = _order_by_rank(absorbed, filter_report, "mdi_rank")
+    absorbed_by_sfi = _order_by_rank(absorbed, filter_report, "sfi_rank")
+    noise_ordered = _order_by_rank(noise, filter_report, "composite_rank")
+    redundant_ordered = _order_by_rank(redundant, filter_report, "composite_rank")
+    rejected_ordered = _order_by_rank(rejected, filter_report, "composite_rank")
+
+    # Tail categories always appended last: noise → redundant → rejected
+    tail = noise_ordered + redundant_ordered + rejected_ordered
+
+    # ── RF, ET, LGB, XGB (COLUMN_SUBSAMPLE_CONFIRMED) ────────────────────────
+    if family in COLUMN_SUBSAMPLE_CONFIRMED:
+        return (accepted_ordered + standalone_ordered
+                + complementary_by_mdi + absorbed_by_mdi
+                + linear_only_ordered + tail)
+
+    # ── CatBoost, HistGB (COLUMN_SUBSAMPLE_DEFERRED) ─────────────────────────
+    if family in COLUMN_SUBSAMPLE_DEFERRED:
+        return (accepted_ordered + standalone_ordered
+                + complementary_by_mdi + linear_only_ordered
+                + absorbed_by_mdi + tail)
+
+    # ── AdaBoost ──────────────────────────────────────────────────────────────
+    if family == "adaboost":
+        return (accepted_ordered + standalone_ordered
+                + complementary_by_mdi + linear_only_ordered
+                + absorbed_by_mdi + tail)
+
+    # ── MLP ───────────────────────────────────────────────────────────────────
+    if family == "mlp":
+        return (accepted_ordered + standalone_ordered
+                + complementary_by_sfi + linear_only_ordered
+                + absorbed_by_sfi + tail)
+
+    # ── Lasso, ElasticNet ─────────────────────────────────────────────────────
+    if family in ("lasso", "elasticnet"):
+        return (accepted_ordered + standalone_ordered
+                + linear_only_ordered + complementary_by_mdi
+                + absorbed_by_mdi + tail)
+
+    # ── Linear models without embedded selection ──────────────────────────────
+    if family in ("logistic_regression", "ridge", "sgd", "bagging_logreg"):
+        return (accepted_ordered + standalone_ordered
+                + linear_only_ordered + complementary_by_mdi
+                + absorbed_by_mdi + tail)
+
+    # ── LDA ───────────────────────────────────────────────────────────────────
+    if family == "lda":
+        return (accepted_ordered + standalone_ordered
+                + linear_only_ordered + complementary_by_mdi
+                + absorbed_by_mdi + tail)
+
+    # ── QDA ───────────────────────────────────────────────────────────────────
+    if family == "qda":
+        return (accepted_ordered + standalone_ordered
+                + linear_only_ordered + complementary_by_mdi
+                + absorbed_by_mdi + tail)
+
+    # ── GaussianNB ────────────────────────────────────────────────────────────
+    if family == "gaussian_nb":
+        return (accepted_ordered + standalone_ordered
+                + linear_only_ordered + complementary_by_mdi
+                + absorbed_by_mdi + tail)
+
+    # ── KNN ───────────────────────────────────────────────────────────────────
+    if family == "knn":
+        return (accepted_ordered + standalone_ordered
+                + complementary_by_mdi + linear_only_ordered
+                + absorbed_by_mdi + tail)
+
+    # Unknown family → default ordering
+    log.warning(f"Unknown family {family!r} — using default uncapped ordering")
+    return (accepted_ordered + standalone_ordered
+            + complementary_by_mdi + linear_only_ordered
+            + absorbed_by_mdi + tail)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

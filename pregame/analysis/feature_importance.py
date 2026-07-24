@@ -1414,24 +1414,148 @@ def filter_features(mdi_raw: pd.DataFrame,
         else:
             row.update({"resid_mda_mean": np.nan, "resid_mda_passes": np.nan})
 
-        # ── CFI-MDA (cluster-level, for reporting) ───────────────────────
+        # ── CFI-MDA (cluster-level, Wilcoxon signed-rank gate) ────────────
+        # Same non-parametric test as desub/PCA/resid MDA — no normality
+        # assumption on fold-level importance drops.
+        # n≥5 required: Wilcoxon's smallest one-sided p at n=4 is 1/16=0.0625,
+        # which can never clear alpha=0.05 regardless of effect size.
         cid = feat_to_cluster.get(feat)
         if cfi_mda_raw is not None and cid is not None and cid in cfi_mda_raw.columns:
             vals = cfi_mda_raw[cid].dropna().values.astype(float)
-            if len(vals) >= 2:
-                cfi_mean = vals.mean()
+            if len(vals) >= 5:
+                cfi_mean, cfi_ci_lo, cfi_ci_hi = bootstrap_ci(vals)
+                diffs = vals[vals != 0]
+                p_cfi = scipy_wilcoxon(diffs, alternative='greater')[1] if len(diffs) >= 5 else np.nan
                 row.update({
                     "cfi_mda_cluster_mean": cfi_mean,
-                    "cfi_mda_cluster_passes": cfi_mean > 0,
+                    "cfi_mda_ci_lo": cfi_ci_lo,
+                    "cfi_mda_ci_hi": cfi_ci_hi,
+                    "cfi_mda_p": p_cfi,
+                    "cfi_mda_cluster_passes": (
+                        cfi_ci_lo > 0 or (not np.isnan(p_cfi) and p_cfi < p_threshold)
+                    ),
                 })
             else:
-                row.update({"cfi_mda_cluster_mean": np.nan, "cfi_mda_cluster_passes": False})
+                row.update({"cfi_mda_cluster_mean": np.nan, "cfi_mda_ci_lo": np.nan,
+                            "cfi_mda_ci_hi": np.nan, "cfi_mda_p": np.nan, "cfi_mda_cluster_passes": False})
         else:
-            row.update({"cfi_mda_cluster_mean": np.nan, "cfi_mda_cluster_passes": np.nan})
+            row.update({"cfi_mda_cluster_mean": np.nan, "cfi_mda_ci_lo": np.nan,
+                        "cfi_mda_ci_hi": np.nan, "cfi_mda_p": np.nan, "cfi_mda_cluster_passes": np.nan})
 
         rows.append(row)
 
     report = pd.DataFrame(rows).set_index("feature")
+
+    # ── Benjamini-Hochberg FDR correction per method ─────────────────────
+    # Corrects the OR-logic gates: for methods using Wilcoxon p < alpha,
+    # we adjust p-values within each method independently (not globally,
+    # since features within a method are correlated — rolling stats share
+    # windows, matchup features share structure). BH controls FDR under
+    # positive dependence (Benjamini-Yekutieli 2001 shows BH is valid
+    # under PRDS, which correlated importance scores satisfy).
+    def _bh_adjust(p_values: np.ndarray) -> np.ndarray:
+        """Benjamini-Hochberg adjusted p-values (no external dependency)."""
+        m = len(p_values)
+        order = np.argsort(p_values)
+        ranked = np.empty(m)
+        ranked[order] = np.arange(1, m + 1)
+        adjusted = p_values * m / ranked
+        # Enforce monotonicity: step down from largest
+        adjusted_sorted = adjusted[np.argsort(ranked)[::-1]]
+        for i in range(1, m):
+            adjusted_sorted[i] = min(adjusted_sorted[i], adjusted_sorted[i - 1])
+        adjusted[np.argsort(ranked)[::-1]] = adjusted_sorted
+        return np.clip(adjusted, 0, 1)
+
+    p_col_to_pass_col = {
+        "mdi_p": "mdi_passes",
+        "desub_mda_p": "desub_mda_passes",
+        "pca_mda_p": "pca_mda_passes",
+        "resid_mda_p": "resid_mda_passes",
+        "cfi_mda_p": "cfi_mda_cluster_passes",
+    }
+
+    for p_col, pass_col in p_col_to_pass_col.items():
+        if p_col not in report.columns or pass_col not in report.columns:
+            continue
+
+        # Extract valid p-values for correction
+        valid_mask = report[p_col].notna()
+        if valid_mask.sum() < 2:
+            continue
+
+        p_vals = report.loc[valid_mask, p_col].values
+        p_adjusted = _bh_adjust(p_vals)
+
+        # Store adjusted p-values
+        report.loc[valid_mask, f"{p_col}_bh"] = p_adjusted
+
+        # Recalculate pass/fail using BH-adjusted p-values.
+        # For MDI: mean > 1/F AND (CI lower > 1/F OR adjusted_p < threshold)
+        # For desub/pca/resid: CI lower > 0 OR adjusted_p < threshold
+        if p_col == "mdi_p":
+            report.loc[valid_mask, pass_col] = (
+                (report.loc[valid_mask, "mdi_mean"] > threshold_1F) &
+                ((report.loc[valid_mask, "mdi_ci_lo"] > threshold_1F) |
+                 (p_adjusted < p_threshold))
+            )
+        elif p_col == "cfi_mda_p":
+            # CFI-MDA: cluster-level, CI lower > 0 OR adjusted p < threshold
+            report.loc[valid_mask, pass_col] = (
+                (report.loc[valid_mask, "cfi_mda_ci_lo"] > 0) |
+                (p_adjusted < p_threshold)
+            )
+        else:
+            # desub/pca/resid: CI lower > 0 OR adjusted p < threshold
+            ci_col = p_col.replace("_p", "_ci_lo")
+            if ci_col in report.columns:
+                report.loc[valid_mask, pass_col] = (
+                    (report.loc[valid_mask, ci_col] > 0) |
+                    (p_adjusted < p_threshold)
+                )
+
+    n_corrected = sum(1 for p in p_col_to_pass_col if p in report.columns)
+    log.info(f"    BH-FDR correction applied to {n_corrected} methods (alpha={p_threshold})")
+
+    # ── Margin columns: distance from threshold (positive = passes) ──────
+    # Margins quantify confidence in the pass/fail label. Near-zero margins
+    # indicate borderline decisions where label noise is likely.
+    # MDI: CI-gated, margin = ci_lower - threshold_1F
+    if "mdi_ci_lo" in report.columns:
+        report["mdi_margin"] = report["mdi_ci_lo"] - threshold_1F
+
+    # SFI: CI-gated, margin = ci_lower - sfi_null
+    if "sfi_ci_lo" in report.columns and sfi_null is not None:
+        report["sfi_margin"] = report["sfi_ci_lo"] - sfi_null
+
+    # desub/PCA/resid MDA: OR-gate (ci_lo > 0 OR bh_p < threshold)
+    # margin = max(ci_lo, p_threshold - bh_p) — best of the two gates
+    for method in ["desub_mda", "pca_mda", "resid_mda"]:
+        ci_col = f"{method}_ci_lo"
+        p_bh_col = f"{method}_p_bh"
+        margin_col = f"{method}_margin"
+        if ci_col in report.columns:
+            ci_margin = report[ci_col] - 0.0  # positive = CI above zero
+            if p_bh_col in report.columns:
+                p_margin = p_threshold - report[p_bh_col]  # positive = p below threshold
+                report[margin_col] = np.maximum(
+                    ci_margin.fillna(-np.inf),
+                    p_margin.fillna(-np.inf)
+                ).replace(-np.inf, np.nan)
+            else:
+                report[margin_col] = ci_margin
+
+    # CFI-MDA: OR-gate (ci_lo > 0 OR bh_p < threshold)
+    if "cfi_mda_ci_lo" in report.columns:
+        ci_margin = report["cfi_mda_ci_lo"] - 0.0
+        if "cfi_mda_p_bh" in report.columns:
+            p_margin = p_threshold - report["cfi_mda_p_bh"]
+            report["cfi_mda_margin"] = np.maximum(
+                ci_margin.fillna(-np.inf),
+                p_margin.fillna(-np.inf)
+            ).replace(-np.inf, np.nan)
+        else:
+            report["cfi_mda_margin"] = ci_margin
 
     # Determine pass columns available
     pass_cols = [c for c in ["mdi_passes", "sfi_passes", "desub_mda_passes",

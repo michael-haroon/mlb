@@ -26,8 +26,15 @@ def _compute_pregame_pitcher_era(games: pd.DataFrame) -> pd.DataFrame:
     so that compute_elo's pitcher adjustment has valid pre-game ERA/WHIP.
     _starting_pitcher_features (called later in engineer_features) skips
     recomputing if these columns already exist.
+
+    Accumulates ALL prior starts for a pitcher regardless of home/away side,
+    then maps the cumulative ERA/WHIP back to each game row using
+    probable_pitcher_{side}_id (pre-game announcement) to avoid lookahead from
+    the post-game sp_{side}_id. Falls back to sp_{side}_id when probable
+    pitcher columns are absent.
     """
-    new_cols: dict[str, pd.Series] = {}
+    # Collect (pitcher_id, frame_idx, er, ip, h, bb) from both sides into one timeline.
+    parts = []
     for side in ("home", "away"):
         pid_col = f"sp_{side}_id"
         er_col  = f"sp_{side}_game_earned_runs"
@@ -38,23 +45,72 @@ def _compute_pregame_pitcher_era(games: pd.DataFrame) -> pd.DataFrame:
         if pid_col not in games.columns:
             continue
 
-        pid = games[pid_col]
-        er  = pd.to_numeric(games.get(er_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
-        ip  = pd.to_numeric(games.get(ip_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
-        h   = pd.to_numeric(games.get(h_col,   pd.Series(np.nan, index=games.index)), errors="coerce")
-        bb  = pd.to_numeric(games.get(bb_col,  pd.Series(np.nan, index=games.index)), errors="coerce")
+        mask = games[pid_col].notna()
+        sub = pd.DataFrame({
+            "pitcher_id": games.loc[mask, pid_col],
+            "frame_idx":  games.index[mask],
+            "er":  pd.to_numeric(games.loc[mask, er_col]  if er_col in games.columns else np.nan, errors="coerce"),
+            "ip":  pd.to_numeric(games.loc[mask, ip_col]  if ip_col in games.columns else np.nan, errors="coerce"),
+            "h":   pd.to_numeric(games.loc[mask, h_col]   if h_col  in games.columns else np.nan, errors="coerce"),
+            "bb":  pd.to_numeric(games.loc[mask, bb_col]  if bb_col in games.columns else np.nan, errors="coerce"),
+            "side": side,
+        })
+        parts.append(sub)
 
-        cum_er = er.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-        cum_ip = ip.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-        cum_h  =  h.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-        cum_bb = bb.groupby(pid).transform(lambda s: s.expanding().sum().shift(1))
-
-        safe_ip = cum_ip.replace(0, np.nan)
-        new_cols[f"sp_{side}_season_era"]  = (cum_er / safe_ip * 9.0).astype("float32")
-        new_cols[f"sp_{side}_season_whip"] = ((cum_h + cum_bb) / safe_ip).astype("float32")
-
-    if not new_cols:
+    if not parts:
         return games
+
+    timeline = pd.concat(parts, ignore_index=True)
+    timeline = timeline.sort_values("frame_idx").reset_index(drop=True)
+
+    # Expanding cumulative sums (NO shift) — includes current start's stats.
+    # Exclusion of the current game is handled at lookup time via searchsorted.
+    for col in ("er", "ip", "h", "bb"):
+        timeline[f"cum_{col}"] = (
+            timeline.groupby("pitcher_id")[col]
+            .transform(lambda s: s.expanding().sum())
+        )
+
+    safe_ip = timeline["cum_ip"].replace(0, np.nan)
+    timeline["_era"]  = (timeline["cum_er"] / safe_ip * 9.0).astype("float32")
+    timeline["_whip"] = ((timeline["cum_h"] + timeline["cum_bb"]) / safe_ip).astype("float32")
+
+    # Build lookup: for each pitcher, sorted array of (frame_idx, era, whip).
+    pitcher_history: dict = {}
+    for pid, grp in timeline.groupby("pitcher_id"):
+        arr = grp[["frame_idx", "_era", "_whip"]].values
+        pitcher_history[pid] = arr
+
+    # Map back using probable_pitcher (pre-game) when available, else sp_{side}_id.
+    # searchsorted(side="left") - 1 finds the latest start STRICTLY BEFORE this frame,
+    # which correctly excludes the current game if the pitcher starts it.
+    new_cols: dict[str, pd.Series] = {}
+    for side in ("home", "away"):
+        prob_col = f"probable_pitcher_{side}_id"
+        sp_col = f"sp_{side}_id"
+        lookup_col = prob_col if prob_col in games.columns else sp_col
+        if lookup_col not in games.columns:
+            continue
+
+        lookup_ids = games[lookup_col].values
+        frame_idxs = games.index.values
+        era_vals = np.full(len(games), np.nan, dtype="float32")
+        whip_vals = np.full(len(games), np.nan, dtype="float32")
+
+        for i in range(len(games)):
+            pid = lookup_ids[i]
+            if pd.isna(pid) or pid not in pitcher_history:
+                continue
+            hist = pitcher_history[pid]
+            # Latest start strictly before this frame position
+            pos = np.searchsorted(hist[:, 0], frame_idxs[i], side="left") - 1
+            if pos >= 0:
+                era_vals[i] = hist[pos, 1]
+                whip_vals[i] = hist[pos, 2]
+
+        new_cols[f"sp_{side}_season_era"] = pd.Series(era_vals, index=games.index)
+        new_cols[f"sp_{side}_season_whip"] = pd.Series(whip_vals, index=games.index)
+
     return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
 
 
@@ -81,6 +137,9 @@ def engineer_features(games: pd.DataFrame) -> pd.DataFrame:
     log.info("Engineering EWMA features...")
     games = _ewma_features(games)
 
+    log.info("Engineering unified (overall) rolling stats...")
+    games = _unified_rolling_stats(games)
+
     log.info("Engineering win/loss momentum...")
     games = _momentum_features(games)
 
@@ -99,8 +158,8 @@ def engineer_features(games: pd.DataFrame) -> pd.DataFrame:
     log.info("Engineering starting pitcher features...")
     games = _starting_pitcher_features(games)
 
-    log.info("Engineering head-to-head features...")
-    games = _head_to_head(games)
+    log.info("Engineering schedule context flags...")
+    games = _schedule_context(games)
 
     log.info("Engineering differentials and sums...")
     games = _differentials_and_sums(games)
@@ -282,49 +341,166 @@ def _ewma_features(games: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Unified (overall) rolling stats
+# ---------------------------------------------------------------------------
+
+def _unified_rolling_stats(games: pd.DataFrame) -> pd.DataFrame:
+    """Rolling and EWMA stats across ALL team games (home + away combined).
+
+    Complements per-side features by giving the model a view of overall team
+    form with double the sample size and no staleness gaps from road trips.
+    Uses the same melt-and-map pattern as momentum/rest.
+    """
+    if "home_team_id" not in games.columns or "away_team_id" not in games.columns:
+        return games
+
+    # Melt per-game rates from both sides into a unified timeline.
+    # Source columns are the per-game rates already computed by _rolling_batting/pitching_stats.
+    bat_stats = ["avg", "obp", "slg", "iso", "hr_rate", "k_rate", "bb_rate"]
+    pit_stats = ["era", "whip", "k9", "fip"]
+    all_stats = bat_stats + pit_stats
+
+    parts = []
+    for side in ("home", "away"):
+        sub = pd.DataFrame({
+            "team_id": games[f"{side}_team_id"],
+            "frame_idx": games.index,
+            "side": side,
+        })
+        for stat in all_stats:
+            src_col = f"{side}_game_{stat}"
+            if src_col in games.columns:
+                sub[stat] = games[src_col].values
+        parts.append(sub)
+
+    timeline = pd.concat(parts, ignore_index=True)
+    timeline = timeline.sort_values("frame_idx").reset_index(drop=True)
+
+    # Rolling windows on unified timeline
+    halflife = 15  # games (true games now, not same-side-games)
+    new_cols: dict[str, pd.Series] = {}
+
+    for stat in all_stats:
+        if stat not in timeline.columns:
+            continue
+        for w in (10, 20):
+            timeline[f"_roll{w}_{stat}"] = (
+                timeline.groupby("team_id")[stat]
+                .transform(lambda s, _w=w: s.rolling(_w, min_periods=max(3, _w // 2)).mean().shift(1))
+            )
+        timeline[f"_ewma_{stat}"] = (
+            timeline.groupby("team_id")[stat]
+            .transform(lambda s: s.ewm(halflife=halflife, min_periods=5).mean().shift(1))
+            .astype("float32")
+        )
+
+    # OPS composites
+    for w in (10, 20):
+        obp = f"_roll{w}_obp"
+        slg = f"_roll{w}_slg"
+        if obp in timeline.columns and slg in timeline.columns:
+            timeline[f"_roll{w}_ops"] = timeline[obp] + timeline[slg]
+    if "_ewma_obp" in timeline.columns and "_ewma_slg" in timeline.columns:
+        timeline["_ewma_ops"] = timeline["_ewma_obp"] + timeline["_ewma_slg"]
+
+    # Map back to game frame by (frame_idx, side)
+    unified_stats = [c for c in timeline.columns if c.startswith("_roll") or c.startswith("_ewma")]
+    for side in ("home", "away"):
+        side_rows = timeline[timeline["side"] == side].set_index("frame_idx")
+        for col in unified_stats:
+            feat_name = f"{side}_all{col}"  # e.g. home_all_roll10_avg, home_all_ewma_era
+            if col in side_rows.columns:
+                new_cols[feat_name] = side_rows[col].reindex(games.index)
+
+    # Differentials on unified stats
+    for col in unified_stats:
+        h_col = f"home_all{col}"
+        a_col = f"away_all{col}"
+        if h_col in new_cols and a_col in new_cols:
+            new_cols[f"diff_all{col}"] = new_cols[h_col] - new_cols[a_col]
+
+    if not new_cols:
+        return games
+    return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
+
+
+# ---------------------------------------------------------------------------
 # Momentum features
 # ---------------------------------------------------------------------------
 
 def _momentum_features(games: pd.DataFrame) -> pd.DataFrame:
-    """Win streaks, run differential trends, rolling std."""
-    new_cols: dict[str, pd.Series] = {}
+    """Win streaks, run differential trends, rolling std.
 
+    Builds a unified per-team timeline (combining home and away rows) so that
+    momentum features reflect the team's overall recent state, not just their
+    performance on one side.
+    """
+    if "home_team_id" not in games.columns or "away_team_id" not in games.columns:
+        return games
+
+    # Build unified timeline: one row per (team, game), with win/loss and run diff.
+    parts = []
     for side in ("home", "away"):
         team_col = f"{side}_team_id"
-        if team_col not in games.columns:
-            continue
-
+        opp_side = "away" if side == "home" else "home"
         win_col = "home_win" if side == "home" else "away_win"
+        runs_col = f"{side}_bat_game_runs"
+        opp_runs_col = f"{opp_side}_bat_game_runs"
 
+        sub = pd.DataFrame({"team_id": games[team_col], "frame_idx": games.index, "side": side})
         if win_col in games.columns:
-            for w in (10, 20):
-                new_cols[f"{side}_roll{w}_winpct"] = (
-                    games.groupby(team_col)[win_col]
-                    .transform(lambda s: s.rolling(w, min_periods=5).mean().shift(1))
-                )
-            new_cols[f"{side}_win_streak"] = (
-                games.groupby(team_col)[win_col]
-                .transform(lambda s: _streak_length(s).shift(1))
+            sub["win"] = games[win_col].values
+        if runs_col in games.columns and opp_runs_col in games.columns:
+            sub["runs_for"] = games[runs_col].values
+            sub["runs_against"] = games[opp_runs_col].values
+            sub["rd"] = sub["runs_for"] - sub["runs_against"]
+        parts.append(sub)
+
+    timeline = pd.concat(parts, ignore_index=True)
+    timeline = timeline.sort_values("frame_idx").reset_index(drop=True)
+
+    new_cols: dict[str, pd.Series] = {}
+
+    # Rolling win% and win streak on unified timeline
+    if "win" in timeline.columns:
+        for w in (10, 20):
+            timeline[f"_roll{w}_winpct"] = (
+                timeline.groupby("team_id")["win"]
+                .transform(lambda s: s.rolling(w, min_periods=5).mean().shift(1))
+            )
+        timeline["_win_streak"] = (
+            timeline.groupby("team_id")["win"]
+            .transform(lambda s: _streak_length(s).shift(1))
+        )
+
+    # Rolling run differential
+    if "rd" in timeline.columns:
+        for w in (5, 10, 20):
+            timeline[f"_roll{w}_rd_mean"] = (
+                timeline.groupby("team_id")["rd"]
+                .transform(lambda s: s.rolling(w, min_periods=3).mean().shift(1))
+            )
+            timeline[f"_roll{w}_rd_std"] = (
+                timeline.groupby("team_id")["rd"]
+                .transform(lambda s: s.rolling(w, min_periods=3).std().shift(1))
             )
 
-        rd_col = f"{side}_bat_game_runs"
-        opp_side = "away" if side == "home" else "home"
-        opp_rd_col = f"{opp_side}_bat_game_runs"
-
-        if rd_col in games.columns and opp_rd_col in games.columns:
-            game_rd = games[rd_col] - games[opp_rd_col]
+    # Map back to game frame by (frame_idx, side)
+    for side in ("home", "away"):
+        side_rows = timeline[timeline["side"] == side].set_index("frame_idx")
+        if "win" in timeline.columns:
+            for w in (10, 20):
+                col = f"_roll{w}_winpct"
+                if col in side_rows.columns:
+                    new_cols[f"{side}_roll{w}_winpct"] = side_rows[col].reindex(games.index)
+            if "_win_streak" in side_rows.columns:
+                new_cols[f"{side}_win_streak"] = side_rows["_win_streak"].reindex(games.index)
+        if "rd" in timeline.columns:
             for w in (5, 10, 20):
-                new_cols[f"{side}_roll{w}_rd_mean"] = (
-                    games.groupby(team_col)[rd_col]
-                    .transform(lambda s: s.rolling(w, min_periods=3).mean().shift(1))
-                ) - (
-                    games.groupby(team_col)[opp_rd_col]
-                    .transform(lambda s: s.rolling(w, min_periods=3).mean().shift(1))
-                )
-                new_cols[f"{side}_roll{w}_rd_std"] = (
-                    game_rd.groupby(games[team_col])
-                    .transform(lambda s: s.rolling(w, min_periods=3).std().shift(1))
-                )
+                for suffix in ("rd_mean", "rd_std"):
+                    col = f"_roll{w}_{suffix}"
+                    if col in side_rows.columns:
+                        new_cols[f"{side}_roll{w}_{suffix}"] = side_rows[col].reindex(games.index)
 
     return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
 
@@ -352,39 +528,59 @@ def _streak_length(series: pd.Series) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 def _rest_and_schedule(games: pd.DataFrame) -> pd.DataFrame:
-    """Days rest, games in last 7 days, doubleheader flag."""
+    """Days rest, games in last 7 days, doubleheader flag.
+
+    Builds a unified per-team timeline (combining home and away rows) so that
+    rest/schedule features see ALL games a team plays, not just same-side games.
+    """
     if "game_date" not in games.columns:
+        return games
+    if "home_team_id" not in games.columns or "away_team_id" not in games.columns:
         return games
 
     new_cols: dict[str, pd.Series] = {}
+
+    # Build unified timeline: one row per (team, game) with game_date.
     gd = pd.to_datetime(games["game_date"], errors="coerce")
-
+    parts = []
     for side in ("home", "away"):
-        team_col = f"{side}_team_id"
-        if team_col not in games.columns:
-            continue
+        sub = pd.DataFrame({
+            "team_id": games[f"{side}_team_id"],
+            "frame_idx": games.index,
+            "game_date": gd.values,
+            "side": side,
+        })
+        parts.append(sub)
 
-        # Days since last game
-        new_cols[f"{side}_days_rest"] = (
-            gd.groupby(games[team_col])
-            .transform(lambda s: s.diff().dt.days)
-        )
+    timeline = pd.concat(parts, ignore_index=True)
+    timeline = timeline.sort_values("frame_idx").reset_index(drop=True)
+    timeline["game_date"] = pd.to_datetime(timeline["game_date"])
 
-        # Games in last 7 days: rolling("7D") requires a DatetimeIndex, so we
-        # temporarily set the index, apply the window, then reset.
-        # fillna(0) because an empty 7-day lookback window means zero games
-        # played — not unknown data. Occurs on long homestands, All-Star break,
-        # or when a team hasn't appeared on a given side for >7 days.
-        def _games_last_7d(s: pd.Series) -> pd.Series:
-            s_dt = s.copy()
-            s_dt.index = s_dt.values  # DatetimeIndex = the dates themselves
-            counts = s_dt.rolling("7D", closed="left").count()
-            counts.index = s.index  # restore original integer index
-            return counts
+    # Days since last game (any side)
+    timeline["_days_rest"] = (
+        timeline.groupby("team_id")["game_date"]
+        .transform(lambda s: s.diff().dt.days)
+    )
 
-        new_cols[f"{side}_games_last_7d"] = (
-            gd.groupby(games[team_col]).transform(_games_last_7d).fillna(0)
-        )
+    # Games in last 7 days (any side)
+    def _games_last_7d(s: pd.Series) -> pd.Series:
+        s_dt = s.copy()
+        s_dt.index = s_dt.values
+        counts = s_dt.rolling("7D", closed="left").count()
+        counts.index = s.index
+        return counts
+
+    timeline["_games_7d"] = (
+        timeline.groupby("team_id")["game_date"]
+        .transform(_games_last_7d)
+        .fillna(0)
+    )
+
+    # Map back to game frame by (frame_idx, side)
+    for side in ("home", "away"):
+        side_rows = timeline[timeline["side"] == side].set_index("frame_idx")
+        new_cols[f"{side}_days_rest"] = side_rows["_days_rest"].reindex(games.index)
+        new_cols[f"{side}_games_last_7d"] = side_rows["_games_7d"].reindex(games.index)
 
     if "double_header" in games.columns:
         new_cols["is_doubleheader"] = (games["double_header"] == "Y").astype("float32")
@@ -402,20 +598,27 @@ def _park_factors(games: pd.DataFrame) -> pd.DataFrame:
     """Compute rolling park factor from prior games only.
 
     Both numerator and denominator use expanding means with shift(1).
-    The previous groupby("season").transform("mean") for league_avg leaked
-    the full season's run scoring into every row, proven via S3: game 1 of
-    2023 had league_avg = 9.55 (full-season mean) on the day it was played.
+    League average is restricted to regular-season games only — spring training
+    run-scoring rates (shorter outings, split-squad, different rosters) would
+    contaminate early regular-season park factors otherwise.
     """
     if "venue_id" not in games.columns or "total_runs" not in games.columns:
         return games
 
-    # Season-to-date league average excluding the current game.
+    is_regular = games.get("game_type_code") == "R"
+    total_runs = games["total_runs"].copy()
+
+    # Mask out non-regular-season games from the league average denominator.
+    # They still get a park_factor (via venue_avg which is all-time), but they
+    # don't contribute to the league scoring baseline.
+    runs_for_league = total_runs.where(is_regular, other=np.nan)
+
     league_avg = (
-        games.groupby("season")["total_runs"]
+        runs_for_league.groupby(games["season"])
         .transform(lambda s: s.expanding(min_periods=5).mean().shift(1))
     )
     venue_avg = (
-        games.groupby("venue_id")["total_runs"]
+        total_runs.groupby(games["venue_id"])
         .transform(lambda s: s.expanding(min_periods=10).mean().shift(1))
     )
     park_factor = venue_avg / league_avg.clip(lower=1.0)
@@ -463,21 +666,22 @@ _VENUE_ELEVATIONS_FT: dict[int, int] = {
 
 
 def _air_density_features(games: pd.DataFrame) -> pd.DataFrame:
-    """Air Density Index from venue elevation via barometric formula.
+    """Air Density Index from venue elevation via ISA lapse-rate formula.
 
     ADI = rho(h) / rho(sea_level) — the fraction of sea-level air density
     at the venue's elevation. Lower ADI → less drag → ball carries farther.
-    Coors (ADI≈0.83) is the extreme; most venues are >0.98.
+    Coors (ADI≈0.85) is the extreme; most venues are >0.98.
     """
     if "venue_id" not in games.columns:
         return games
 
     elevation_ft = games["venue_id"].map(_VENUE_ELEVATIONS_FT).fillna(0)
-    # Barometric formula at T=288K (standard atmosphere):
-    # ADI = exp(-M*g*h / (R*T)) where coefficient = M*g/(R*T) = 0.029*9.81/(8.314*288)
-    # ≈ 1.19e-4 per meter. Convert ft→m: multiply by 0.3048.
-    # Net: ADI = exp(-3.63e-5 * h_ft)
-    adi = np.exp(-3.63e-5 * elevation_ft).astype("float32")
+    # ISA (International Standard Atmosphere) lapse-rate formula:
+    # rho/rho0 = (1 - L*h/T0)^(g*M/(R*L) - 1)
+    # L=0.0065 K/m, T0=288.15K, g=9.80665, M=0.0289644 kg/mol, R=8.31447 J/(mol·K)
+    # Exponent = g*M/(R*L) - 1 = 4.2558
+    # Coefficient per foot: L * 0.3048 / T0 = 6.8756e-6
+    adi = ((1.0 - 6.8756e-6 * elevation_ft) ** 4.2558).astype("float32")
 
     return pd.concat([games, pd.DataFrame({"air_density_index": adi}, index=games.index)], axis=1)
 
@@ -527,7 +731,65 @@ def _starting_pitcher_features(games: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Head-to-head
+# Schedule context flags + interactions
+# ---------------------------------------------------------------------------
+
+def _schedule_context(games: pd.DataFrame) -> pd.DataFrame:
+    """Matchup-type flags and pre-computed interaction terms.
+
+    Flags: is_same_division, is_same_league (binary).
+    Interactions: elo_prob * flag, consensus_prob * flag (for linear models
+    that cannot discover split interactions natively).
+
+    Invariant: is_same_division=1 implies is_same_league=1. Different-league
+    teams cannot be in the same division even if division_id values collide.
+    """
+    new_cols: dict[str, pd.Series] = {}
+
+    has_league = "home_league_id" in games.columns and "away_league_id" in games.columns
+    has_division = "home_division_id" in games.columns and "away_division_id" in games.columns
+
+    if has_league:
+        same_league = (games["home_league_id"] == games["away_league_id"]).astype("float32")
+        # NaN on either side → NaN (pandas == with NaN → False, but we want NaN)
+        either_null = games["home_league_id"].isna() | games["away_league_id"].isna()
+        same_league = same_league.where(~either_null, other=np.nan).astype("float32")
+    else:
+        same_league = pd.Series(np.nan, index=games.index, dtype="float32")
+
+    if has_division and has_league:
+        same_division = (
+            (games["home_division_id"] == games["away_division_id"])
+            & (games["home_league_id"] == games["away_league_id"])
+        ).astype("float32")
+        either_null_div = (
+            games["home_division_id"].isna() | games["away_division_id"].isna()
+            | games["home_league_id"].isna() | games["away_league_id"].isna()
+        )
+        same_division = same_division.where(~either_null_div, other=np.nan).astype("float32")
+    else:
+        same_division = pd.Series(np.nan, index=games.index, dtype="float32")
+
+    new_cols["is_same_league"] = same_league
+    new_cols["is_same_division"] = same_division
+
+    # Interaction terms for linear models
+    elo_prob = games.get("elo_prob")
+    consensus_prob = games.get("consensus_home_win_prob")
+
+    if elo_prob is not None:
+        new_cols["elo_prob_x_same_league"] = (elo_prob * same_league).astype("float32")
+        new_cols["elo_prob_x_same_division"] = (elo_prob * same_division).astype("float32")
+
+    if consensus_prob is not None:
+        new_cols["consensus_prob_x_same_league"] = (consensus_prob * same_league).astype("float32")
+        new_cols["consensus_prob_x_same_division"] = (consensus_prob * same_division).astype("float32")
+
+    return pd.concat([games, pd.DataFrame(new_cols, index=games.index)], axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Head-to-head (DEPRECATED — retained for reference, no longer called)
 # ---------------------------------------------------------------------------
 
 def _head_to_head(games: pd.DataFrame) -> pd.DataFrame:

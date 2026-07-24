@@ -53,6 +53,12 @@ MLB_REGIME_CHANGES = {
     # 2020: Relief pitcher 3-batter minimum (ARP rule)
     # Effect: deeper relief appearances → lower BABIP variance per appearance
     "rule_3batter_minimum": "2020-01-01",
+    # 2021-01-01: Deadened ball specification (reduced COR, seam height change)
+    # Effect: reduced HR/FB rate, lower barrel exit velocity, ~8% HR drop league-wide
+    "rule_deadened_ball": "2021-01-01",
+    # 2021-06-15: Sticky-substance crackdown enforcement began
+    # Effect: league-wide spin rate drop ~100rpm FF, pitcher ERA inflated post-enforcement
+    "rule_sticky_substance_ban": "2021-06-15",
     # 2022: Universal Designated Hitter adopted by both leagues
     # Effect: pitchers no longer bat in NL → structural increase in run totals
     "rule_universal_dh": "2022-01-01",

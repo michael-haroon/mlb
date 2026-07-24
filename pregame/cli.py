@@ -83,6 +83,18 @@ def main() -> None:
     imp_parser.add_argument("--run-residual-mda", action="store_true", default=True)
     imp_parser.add_argument("--no-residual-mda", action="store_false", dest="run_residual_mda")
 
+    # --- Feature Sizing ---
+    sizing_parser = subparsers.add_parser("sizing", help="Feature-count sizing curve (S* determination)")
+    sizing_parser.add_argument("--features", default="pregame/artifacts/features/game_features.parquet",
+                               help="Path to game_features.parquet")
+    sizing_parser.add_argument("--output", default="pregame/artifacts/sizing")
+    sizing_parser.add_argument("--target", default=None, help="Target column (default: all targets)")
+    sizing_parser.add_argument("--data-mode", default="2015+", choices=["2015+", "all"])
+    sizing_parser.add_argument("--fine-grained", action="store_true", default=False,
+                               help="Run single-feature resolution around coarse S*")
+    sizing_parser.add_argument("--importance-dir", default=None,
+                               help="Override importance directory (default: pregame/artifacts/importance)")
+
     # --- Train ---
     train_parser = subparsers.add_parser("train", help="LOYO CV training with Optuna")
     train_parser.add_argument("--features", default="pregame/artifacts/features/game_features.parquet",
@@ -93,6 +105,8 @@ def main() -> None:
     train_parser.add_argument("--families", nargs="*", default=None,
                               help="Model families to train (default: all)")
     train_parser.add_argument("--n-trials", type=int, default=100)
+    train_parser.add_argument("--importance-dir", default=None,
+                              help="Override importance directory (default: pregame/artifacts/importance)")
     train_parser.add_argument("--tier", default="A", choices=["A", "B", "C"])
 
     # --- Ensemble ---
@@ -144,6 +158,8 @@ def main() -> None:
         _run_build_features(args)
     elif args.command == "run-importance":
         _run_importance(args)
+    elif args.command == "sizing":
+        _run_sizing(args)
     elif args.command == "train":
         _run_train(args)
     elif args.command == "ensemble":
@@ -204,6 +220,51 @@ def _run_importance(args):
     print(json.dumps(results, indent=2))
 
 
+def _run_sizing(args):
+    from .strategy.config import ALL_TARGETS
+    from .strategy.feature_sizing import run_sizing_curve
+
+    importance_dir = Path(args.importance_dir) if args.importance_dir else None
+    targets = [args.target] if args.target else ALL_TARGETS
+    all_results = {}
+    for target in targets:
+        result = run_sizing_curve(
+            features_path=Path(args.features),
+            target=target,
+            output_dir=Path(args.output),
+            data_mode=args.data_mode,
+            fine_grained=args.fine_grained,
+            importance_dir=importance_dir,
+        )
+        all_results[target] = result
+
+        # Print table for this target
+        if "cutoffs" in result:
+            print(f"\n{'='*70}")
+            print(f"  {target} — sizing fold: {result['sizing_fold_season']}")
+            print(f"  primary metric: {result['primary_metric']}")
+            print(f"{'='*70}")
+            print(f"  {'n_feat':>6}  {'val_loss':>10}  {'train_loss':>10}  {'gap':>10}")
+            print(f"  {'-'*6}  {'-'*10}  {'-'*10}  {'-'*10}")
+            for row in result["cutoffs"]:
+                marker = " ***" if row["n_features"] == result["optimal_S"] else ""
+                print(
+                    f"  {row['n_features']:>6}  "
+                    f"{row['val_loss']:>10.5f}  "
+                    f"{row['train_loss']:>10.5f}  "
+                    f"{row['gap']:>+10.5f}{marker}"
+                )
+            print(f"\n  S* = {result['optimal_S']} features")
+            print(f"  degradation from using all ({result['total_ranked_features']}): "
+                  f"{result['degradation_from_all']:+.6f}")
+
+    # Save combined summary
+    combined_path = Path(args.output) / "sizing_summary.json"
+    with open(combined_path, "w") as f:
+        json.dump(all_results, f, indent=2)
+    print(f"\nCombined results: {combined_path}")
+
+
 def _run_train(args):
     import gc
 
@@ -211,6 +272,7 @@ def _run_train(args):
     from .strategy.train import train_target
 
     targets = [args.target] if args.target else ALL_TARGETS
+    importance_dir = Path(args.importance_dir) if args.importance_dir else None
     all_results = {}
     for target in targets:
         result = train_target(
@@ -221,6 +283,7 @@ def _run_train(args):
             families=args.families,
             n_trials=args.n_trials,
             tier=args.tier,
+            importance_dir=importance_dir,
         )
         all_results[target] = {k: v.get("status", "unknown") for k, v in result.items()}
         # Release per-target result dict (fold metrics, OOF arrays, etc.) before

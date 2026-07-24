@@ -118,12 +118,21 @@ class FeatureManager:
             return bool(self._teams_pending_rebuild & {home_team, away_team})
 
     def is_stale(self) -> bool:
-        """Check if features need rebuild based on file age."""
+        """Check if features need rebuild based on last successful rebuild time.
+
+        Uses _last_rebuild (in-memory) if available, falling back to file mtime.
+        This prevents the infinite-rebuild loop when mtime is old but no new
+        games exist: the first rebuild sets _last_rebuild, subsequent scans
+        check against that rather than the unchanged file mtime.
+        """
         if not self._features_path.exists():
             return True
 
-        mtime = datetime.fromtimestamp(self._features_path.stat().st_mtime, tz=timezone.utc)
-        age_hours = (datetime.now(timezone.utc) - mtime).total_seconds() / 3600.0
+        if self._last_rebuild is not None:
+            age_hours = (datetime.now(timezone.utc) - self._last_rebuild).total_seconds() / 3600.0
+        else:
+            mtime = datetime.fromtimestamp(self._features_path.stat().st_mtime, tz=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - mtime).total_seconds() / 3600.0
 
         if age_hours > FEATURES_MAX_AGE_HOURS:
             logger.info(f"Features are {age_hours:.1f}h old (max {FEATURES_MAX_AGE_HOURS}h)")

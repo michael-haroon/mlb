@@ -110,11 +110,12 @@ def run_sizing_curve(
     output_dir: Path,
     data_mode: str = "2015+",
     fine_grained: bool = False,
+    importance_dir: Path | None = None,
 ) -> dict:
     """Run per-family sizing curves for one target.
 
     For each model family, sweeps the full feature range ordered by
-    composite_rank and finds the optimal count. Stores per-family S*
+    architectural priority and finds the optimal count. Stores per-family S*
     values so training can cap each family independently.
 
     Parameters
@@ -129,12 +130,14 @@ def run_sizing_curve(
         "2015+" or "all".
     fine_grained : bool
         If True, refine around coarse optimum with single-feature resolution.
+    importance_dir : Path, optional
+        Override importance directory. Defaults to IMPORTANCE_DIR from config.
 
     Returns
     -------
     dict with per-family S* values and the global (hist_gradient_boosting) curve.
     """
-    from ..analysis.feature_routing import get_feature_set
+    from ..analysis.feature_routing import get_feature_set_uncapped
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +149,8 @@ def run_sizing_curve(
     X, y, seasons, game_pks = load_features(features_path, target, data_mode)
 
     # Load feature_report.csv for composite_rank ordering
-    report_path = IMPORTANCE_DIR / target / "filtered" / "feature_report.csv"
+    imp_dir = importance_dir if importance_dir is not None else IMPORTANCE_DIR
+    report_path = imp_dir / target / "filtered" / "feature_report.csv"
     if not report_path.exists():
         log.error(f"[sizing] No feature_report.csv at {report_path}")
         return {"target": target, "error": "no_feature_report"}
@@ -177,21 +181,22 @@ def run_sizing_curve(
     train_seasons = seasons.iloc[sizing_split.train_idx]
     sample_weights = compute_temporal_weights(train_seasons)
 
-    # Determine which families to size
-    # Linear/fragile get very few features from routing — skip sizing for them
-    FAMILIES_TO_SIZE = [
+    # Size ALL 18 families — uncapped ordering lets the curve explore beyond
+    # the routing ceiling so S* can grow OR shrink for every model type.
+    ALL_FAMILIES = [
         "lightgbm", "catboost", "xgboost", "hist_gradient_boosting",
         "random_forest", "extra_trees", "adaboost", "mlp",
+        "logistic_regression", "ridge", "lasso", "elasticnet",
+        "sgd", "bagging_logreg", "knn", "lda", "qda", "gaussian_nb",
     ]
 
     per_family_results = {}
 
-    for family in FAMILIES_TO_SIZE:
-        # Get hierarchically-ordered feature set for this family.
-        # get_feature_set returns features in priority order: accepted first
-        # (by composite_rank), then category-specific ordering (MDI for trees,
-        # SFI for MLP, PCA for linear). This IS the sweep order.
-        family_ranked = get_feature_set(family, report)
+    for family in ALL_FAMILIES:
+        # Get ALL features in architectural priority order for this family.
+        # get_feature_set_uncapped returns every feature exactly once, with
+        # categories the family can exploit first and degradation tail last.
+        family_ranked = get_feature_set_uncapped(family, report)
         # Filter to features actually present in the data matrix
         family_ranked = [f for f in family_ranked if f in available]
         family_max = len(family_ranked)
@@ -302,16 +307,6 @@ def run_sizing_curve(
             f"[sizing:{family}] S*={optimal_S}/{family_max} "
             f"(val={best_point['val_loss']:.5f}, all={curve[-1]['val_loss']:.5f})"
         )
-
-    # Linear/fragile families — use all routed features (no cap)
-    for family in ("logistic_regression", "ridge", "lasso", "elasticnet",
-                   "sgd", "bagging_logreg", "knn", "lda", "qda", "gaussian_nb"):
-        routed = get_feature_set(family, report)
-        per_family_results[family] = {
-            "optimal_S": len(routed),
-            "routed_features": len(routed),
-            "curve": [],
-        }
 
     # Summary uses hist_gradient_boosting as the "headline" S*
     hgb = per_family_results.get("hist_gradient_boosting", {})

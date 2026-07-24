@@ -515,6 +515,35 @@ def _compute_pitchmix_matchup(
         .transform(lambda s: s.rolling(10, min_periods=3).mean().shift(1))
     )
 
+    # Staleness cap: zero out pitch types not thrown in >5 consecutive prior starts.
+    # When a pitcher drops a type, the rolling freq retains a stale non-zero value;
+    # this forces it to zero so post-normalization redistributes mass to active types.
+    def _starts_since_thrown(s: pd.Series) -> pd.Series:
+        """Count consecutive starts with zero usage, per (pitcher, ptype) group."""
+        was_thrown = (s > 0).values
+        result = np.zeros(len(s), dtype="int32")
+        gap = 0
+        for i in range(len(was_thrown)):
+            if was_thrown[i]:
+                gap = 0
+            else:
+                gap += 1
+            result[i] = gap
+        return pd.Series(result, index=s.index)
+
+    type_per_start["_gap"] = (
+        type_per_start.groupby(["pitcher_id", "_ptype"])["_count"]
+        .transform(_starts_since_thrown)
+    )
+    # shift(1) within group: at prediction time we see the gap as of the PRIOR start
+    type_per_start["_gap_shifted"] = (
+        type_per_start.groupby(["pitcher_id", "_ptype"])["_gap"]
+        .shift(1)
+        .fillna(0)
+    )
+    stale_mask = type_per_start["_gap_shifted"] > 5
+    type_per_start.loc[stale_mask, "_freq_roll10"] = 0.0
+
     # Pivot to one row per (pitcher_id, game_pk): columns = each pitch type freq.
     all_types = list(TRACKED_PITCH_TYPES) + ["other"]
     pitcher_profile = (

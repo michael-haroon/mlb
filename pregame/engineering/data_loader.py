@@ -76,11 +76,16 @@ def load_all(
     seasons = season_range(season_start, season_end)
     catalog = ParquetCatalog(source)
 
+    # Logical table names that map to different physical tables in the catalog.
+    # pitches_raw reads the same parquet files as "pitches" but with a different column subset.
+    _LOGICAL_TO_PHYSICAL = {"pitches_raw": "pitches"}
+
     data: dict[str, pd.DataFrame] = {}
     for table, cfg in _TABLE_CONFIG.items():
         log.info(f"Loading {table} for seasons {seasons[0]}–{seasons[-1]}...")
         table_seasons = None if cfg["season_agnostic"] else seasons
-        df = catalog.read_table(table, columns=cfg["columns"], seasons=table_seasons)
+        physical_table = _LOGICAL_TO_PHYSICAL.get(table, table)
+        df = catalog.read_table(physical_table, columns=cfg["columns"], seasons=table_seasons)
         log.info(f"  {table}: {len(df):,} rows, {len(df.columns)} columns")
         data[table] = df
 

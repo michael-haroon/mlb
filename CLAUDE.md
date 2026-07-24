@@ -32,6 +32,7 @@ For every statistical method and test used, clearly state their assumptions and 
 - **Simplicity first.** No unrequested features, abstractions, or flexibility.
 - **Surgical edits.** Touch only what the request requires. Don't improve adjacent code.
 - **Think before coding.** State assumptions, surface ambiguity, ask before guessing.
+- **Plan before implementing.** Understand the problem and expected behavior, consider high-level examples before coding, write adversial stress tests using edge cases.
 
 ## Bug-Fix & Testing Discipline
 - **Failing test first.** Before fixing any bug, write a test that defines expected behavior and demonstrates the failure. No patch without a reproducing test.

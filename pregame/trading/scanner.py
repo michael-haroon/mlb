@@ -33,8 +33,6 @@ from .models import predict_market_prob, predict_derived_team_total, EnsembleSto
 
 logger = logging.getLogger(__name__)
 
-# Tracks which targets have been flagged as sharpness-collapsed this session
-_sharpness_halted: set[str] = set()
 
 
 def kalshi_taker_fee(price: float) -> float:
@@ -107,14 +105,17 @@ def _lookup_game_row(
     return rows.sort_values("game_date").iloc[[-1]]
 
 
-def _check_batch_sharpness(quotes: list[dict]) -> None:
+def _check_batch_sharpness(quotes: list[dict]) -> set[str]:
     """Flag targets whose prediction std across the batch is dangerously low.
 
     A well-functioning model should produce varied probabilities across games.
     If all predictions for a target are within a narrow band around 0.5, the
     model has lost discriminative power (likely feature distribution shift).
+
+    Returns the set of targets halted for THIS scan only — not cumulative.
     """
     from collections import defaultdict
+    halted: set[str] = set()
     target_probs: dict[str, list[float]] = defaultdict(list)
     for q in quotes:
         target_probs[q["target"]].append(q["model_prob"])
@@ -125,12 +126,13 @@ def _check_batch_sharpness(quotes: list[dict]) -> None:
         live_std = np.std(probs)
         expected = EXPECTED_PRED_STD[target]
         if live_std < expected * MIN_SHARPNESS_RATIO:
-            _sharpness_halted.add(target)
+            halted.add(target)
             logger.warning(
                 f"SHARPNESS COLLAPSE: {target} live_std={live_std:.4f} "
                 f"< {MIN_SHARPNESS_RATIO:.0%} of expected {expected:.4f}. "
-                f"Halting {len(probs)} quotes for this target."
+                f"Halting {len(probs)} quotes for this target this scan."
             )
+    return halted
 
 
 def generate_quotes(
@@ -190,10 +192,11 @@ def generate_quotes(
         quote["cluster"] = cluster
         quotes.append(quote)
 
-    # Batch sharpness check: verify prediction std across games per target.
+    # Batch sharpness check: evaluate per-scan (not cumulative across scans).
     # If predictions are all clustered near 0.5, the model has lost signal.
-    _check_batch_sharpness(quotes)
-    quotes = [q for q in quotes if q["target"] not in _sharpness_halted]
+    scan_halted = _check_batch_sharpness(quotes)
+    if scan_halted:
+        quotes = [q for q in quotes if q["target"] not in scan_halted]
 
     new_inferences = len(result_cache) - cache_hits_before
     logger.info(
@@ -318,9 +321,6 @@ def _price_market(
     model_prob = result["prob"]
     ensemble_std = result["ensemble_std"]
     confidence_tier = result["confidence_tier"]
-
-    if target in _sharpness_halted:
-        return None
 
     # Compute conservative fair value
     fair = conservative_fair_value(model_prob, ensemble_std, confidence_tier)

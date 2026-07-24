@@ -535,11 +535,11 @@ def _pitcher_adjustment(
     era_col = f"sp_{side}_season_era"
     if era_col in row.index and pd.notna(row[era_col]):
         era = float(row[era_col])
-        # Track team's average pitcher ERA
         if team_id not in team_avg_pitcher:
             team_avg_pitcher[team_id] = []
+        # Compute team baseline BEFORE appending current pitcher to avoid self-inclusion
+        team_avg = np.mean(team_avg_pitcher[team_id][-20:]) if team_avg_pitcher[team_id] else era
         team_avg_pitcher[team_id].append(era)
-        team_avg = np.mean(team_avg_pitcher[team_id][-20:])  # rolling 20 starts
         # Lower ERA = better pitcher → positive adjustment
         # Scale: 1 ERA unit ≈ coeff Elo points advantage
         return coeff * (team_avg - era)

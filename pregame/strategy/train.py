@@ -58,6 +58,7 @@ def train_target(
     families: list[str] | None = None,
     n_trials: int = OPTUNA_N_TRIALS,
     tier: str = "A",
+    importance_dir: Path | None = None,
 ) -> dict:
     """Train all model families for one target via LOYO CV with Optuna HPO.
 
@@ -77,6 +78,8 @@ def train_target(
         Optuna trials per family.
     tier : str
         Data availability tier ("A", "B", or "C").
+    importance_dir : Path, optional
+        Override importance directory. Defaults to IMPORTANCE_DIR from config.
 
     Returns
     -------
@@ -96,10 +99,11 @@ def train_target(
     # Auto-detect importance filter: use it if feature_report.csv exists
     filter_report = None
     from .config import IMPORTANCE_DIR
-    report_path = IMPORTANCE_DIR / target / "filtered" / "feature_report.csv"
+    imp_dir = importance_dir if importance_dir is not None else IMPORTANCE_DIR
+    report_path = imp_dir / target / "filtered" / "feature_report.csv"
     if report_path.exists():
         filter_report = pd.read_csv(report_path, index_col="feature")
-        log.info(f"  Importance filter loaded: {len(filter_report)} features classified")
+        log.info(f"  Importance filter loaded: {len(filter_report)} features from {report_path}")
     else:
         log.info(f"  No importance filter found at {report_path} — using all features.")
 
@@ -130,25 +134,31 @@ def train_target(
         # Resolve per-family feature set BEFORE HPO so we skip early and HPO
         # runs on the same filtered feature matrix that LOYO evaluation will use.
         importance_features = None
-        if filter_report is not None:
+        if family in per_family_sizing and filter_report is not None:
+            # Empirical S* exists — use uncapped ordering so sizing can expand
+            # beyond the routing ceiling (uncapped includes ALL features).
+            from ..analysis.feature_routing import get_feature_set_uncapped
+            all_ordered = get_feature_set_uncapped(family, filter_report)
+            all_ordered = [f for f in all_ordered if f in set(X.columns)]
+            family_s = per_family_sizing[family]
+            importance_features = all_ordered[:family_s]
+            log.info(f"  [{family}] Empirical S*={family_s}: {len(importance_features)} features (uncapped)")
+        elif filter_report is not None:
+            # No sizing data — fall back to capped routing (only categories
+            # the family can architecturally exploit).
             from ..analysis.feature_routing import get_feature_set
             importance_features = get_feature_set(family, filter_report)
-            log.info(f"  [{family}] importance filter: {len(importance_features)} features")
+            log.info(f"  [{family}] Routing-based: {len(importance_features)} features (capped)")
 
         if importance_features is not None and len(importance_features) == 0:
             log.warning(f"  [{family}] Skipping: importance filter returned 0 features for this target")
+            # Remove stale OOF from prior runs so ensemble won't pick it up
+            stale_oof = output_dir / f"oof_{target}_{family}_{tier}.npy"
+            if stale_oof.exists():
+                stale_oof.unlink()
+                log.info(f"  [{family}] Removed stale OOF: {stale_oof.name}")
             results[family] = {"status": "no_features"}
             continue
-
-        # Apply per-family sizing cap from empirical sizing curve.
-        # importance_features is already in hierarchical priority order from
-        # get_feature_set — simply truncate to S* (cut from tail = lowest priority).
-        if family in per_family_sizing and importance_features is not None:
-            family_s = per_family_sizing[family]
-            if family_s < len(importance_features):
-                pre_cap = len(importance_features)
-                importance_features = importance_features[:family_s]
-                log.info(f"  [{family}] Sizing S*={family_s}: {pre_cap} → {len(importance_features)} features")
 
         X_hpo = X[importance_features] if importance_features is not None else X
 
@@ -244,9 +254,13 @@ def train_target(
             agg_metrics = _aggregate_fold_metrics(fold_metrics)
             elapsed = time.time() - t0
 
+            # Resolve actual feature list for reproducibility tracking
+            feature_columns = importance_features if importance_features is not None else list(X.columns)
+
             results[family] = {
                 "status": "success",
                 "best_params": best_params,
+                "feature_columns": feature_columns,
                 "fold_metrics": fold_metrics,
                 "aggregate_metrics": agg_metrics,
                 "elapsed_secs": round(elapsed, 1),
@@ -259,10 +273,11 @@ def train_target(
             if not gpk_path.exists():
                 np.save(gpk_path, game_pks.values)
 
-            # Save best params
+            # Save best params + feature list so we know exactly what this model used
             params_path = output_dir / f"params_{target}_{family}_{tier}.json"
+            params_payload = {"best_params": best_params, "feature_columns": feature_columns}
             with open(params_path, "w") as f:
-                json.dump(best_params, f, indent=2, default=str)
+                json.dump(params_payload, f, indent=2, default=str)
 
             primary = "log_loss" if task == "classification" else "mae"
             mean_val = agg_metrics.get(primary)
