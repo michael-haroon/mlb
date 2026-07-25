@@ -1,0 +1,811 @@
+{
+  "config": "algo=ward, cut=h=0.297, n_clusters=259",
+  "clusters": {
+    "146": [
+      "venue_latitude"
+    ],
+    "137": [
+      "venue_longitude"
+    ],
+    "147": [
+      "venue_capacity"
+    ],
+    "73": [
+      "rule_3batter_minimum",
+      "rule_deadened_ball",
+      "rule_sticky_substance_ban",
+      "rule_universal_dh"
+    ],
+    "74": [
+      "rule_shift_ban_pitch_clock"
+    ],
+    "133": [
+      "sp_home_season_era",
+      "sp_home_season_whip"
+    ],
+    "121": [
+      "sp_away_season_era",
+      "sp_away_season_whip"
+    ],
+    "116": [
+      "home_bsr_offense"
+    ],
+    "24": [
+      "home_bsr_defense"
+    ],
+    "124": [
+      "away_bsr_offense"
+    ],
+    "113": [
+      "away_bsr_defense"
+    ],
+    "117": [
+      "bsr_offense_diff"
+    ],
+    "25": [
+      "bsr_defense_diff"
+    ],
+    "114": [
+      "home_pythag_1st",
+      "home_pythag_2nd"
+    ],
+    "123": [
+      "away_pythag_1st",
+      "away_pythag_2nd"
+    ],
+    "112": [
+      "pythag_1st_diff",
+      "pythag_2nd_diff"
+    ],
+    "57": [
+      "home_srs"
+    ],
+    "52": [
+      "away_srs"
+    ],
+    "105": [
+      "srs_diff"
+    ],
+    "115": [
+      "home_elo"
+    ],
+    "125": [
+      "away_elo"
+    ],
+    "99": [
+      "home_wolfe"
+    ],
+    "136": [
+      "away_wolfe"
+    ],
+    "101": [
+      "wolfe_prob"
+    ],
+    "100": [
+      "wolfe_diff"
+    ],
+    "108": [
+      "log5_prob_short"
+    ],
+    "103": [
+      "log5_prob_medium"
+    ],
+    "102": [
+      "log5_prob_season"
+    ],
+    "247": [
+      "home_roll5_avg"
+    ],
+    "248": [
+      "home_roll5_obp"
+    ],
+    "245": [
+      "home_roll5_slg"
+    ],
+    "197": [
+      "home_roll5_iso"
+    ],
+    "198": [
+      "home_roll5_hr_rate"
+    ],
+    "83": [
+      "home_roll5_k_rate"
+    ],
+    "96": [
+      "home_roll5_bb_rate"
+    ],
+    "249": [
+      "home_roll5_babip"
+    ],
+    "257": [
+      "home_roll10_avg"
+    ],
+    "259": [
+      "home_roll10_obp"
+    ],
+    "250": [
+      "home_roll10_slg"
+    ],
+    "203": [
+      "home_roll10_iso"
+    ],
+    "204": [
+      "home_roll10_hr_rate"
+    ],
+    "81": [
+      "home_roll10_k_rate"
+    ],
+    "97": [
+      "home_roll10_bb_rate"
+    ],
+    "258": [
+      "home_roll10_babip"
+    ],
+    "239": [
+      "home_roll20_avg"
+    ],
+    "237": [
+      "home_roll20_obp"
+    ],
+    "231": [
+      "home_roll20_slg",
+      "home_roll20_ops"
+    ],
+    "201": [
+      "home_roll20_iso"
+    ],
+    "202": [
+      "home_roll20_hr_rate"
+    ],
+    "82": [
+      "home_roll20_k_rate"
+    ],
+    "98": [
+      "home_roll20_bb_rate"
+    ],
+    "241": [
+      "home_roll20_babip"
+    ],
+    "246": [
+      "home_roll5_ops"
+    ],
+    "251": [
+      "home_roll10_ops"
+    ],
+    "222": [
+      "away_roll5_avg"
+    ],
+    "224": [
+      "away_roll5_obp"
+    ],
+    "211": [
+      "away_roll5_slg"
+    ],
+    "209": [
+      "away_roll5_iso"
+    ],
+    "210": [
+      "away_roll5_hr_rate"
+    ],
+    "77": [
+      "away_roll5_k_rate"
+    ],
+    "92": [
+      "away_roll5_bb_rate"
+    ],
+    "223": [
+      "away_roll5_babip"
+    ],
+    "227": [
+      "away_roll10_avg"
+    ],
+    "229": [
+      "away_roll10_obp"
+    ],
+    "225": [
+      "away_roll10_slg"
+    ],
+    "207": [
+      "away_roll10_iso"
+    ],
+    "208": [
+      "away_roll10_hr_rate"
+    ],
+    "75": [
+      "away_roll10_k_rate"
+    ],
+    "90": [
+      "away_roll10_bb_rate"
+    ],
+    "228": [
+      "away_roll10_babip"
+    ],
+    "219": [
+      "away_roll20_avg"
+    ],
+    "217": [
+      "away_roll20_obp"
+    ],
+    "213": [
+      "away_roll20_slg"
+    ],
+    "205": [
+      "away_roll20_iso"
+    ],
+    "206": [
+      "away_roll20_hr_rate"
+    ],
+    "76": [
+      "away_roll20_k_rate"
+    ],
+    "91": [
+      "away_roll20_bb_rate"
+    ],
+    "221": [
+      "away_roll20_babip"
+    ],
+    "212": [
+      "away_roll5_ops"
+    ],
+    "226": [
+      "away_roll10_ops"
+    ],
+    "214": [
+      "away_roll20_ops"
+    ],
+    "149": [
+      "home_roll5_era"
+    ],
+    "150": [
+      "home_roll5_whip"
+    ],
+    "72": [
+      "home_roll5_k9",
+      "home_roll10_k9"
+    ],
+    "36": [
+      "home_roll5_bb9"
+    ],
+    "165": [
+      "home_roll5_hr9"
+    ],
+    "166": [
+      "home_roll5_fip"
+    ],
+    "151": [
+      "home_roll10_era"
+    ],
+    "152": [
+      "home_roll10_whip"
+    ],
+    "37": [
+      "home_roll10_bb9"
+    ],
+    "159": [
+      "home_roll10_hr9"
+    ],
+    "162": [
+      "home_roll10_fip"
+    ],
+    "155": [
+      "home_roll20_era"
+    ],
+    "157": [
+      "home_roll20_whip"
+    ],
+    "71": [
+      "home_roll20_k9",
+      "home_ewma_k9"
+    ],
+    "38": [
+      "home_roll20_bb9"
+    ],
+    "160": [
+      "home_roll20_hr9"
+    ],
+    "161": [
+      "home_roll20_fip",
+      "home_ewma_fip"
+    ],
+    "192": [
+      "away_roll5_era"
+    ],
+    "193": [
+      "away_roll5_whip"
+    ],
+    "68": [
+      "away_roll5_k9",
+      "away_roll10_k9"
+    ],
+    "181": [
+      "away_roll5_bb9"
+    ],
+    "167": [
+      "away_roll5_hr9"
+    ],
+    "168": [
+      "away_roll5_fip"
+    ],
+    "194": [
+      "away_roll10_era"
+    ],
+    "195": [
+      "away_roll10_whip"
+    ],
+    "182": [
+      "away_roll10_bb9"
+    ],
+    "169": [
+      "away_roll10_hr9"
+    ],
+    "170": [
+      "away_roll10_fip"
+    ],
+    "186": [
+      "away_roll20_era"
+    ],
+    "184": [
+      "away_roll20_whip"
+    ],
+    "67": [
+      "away_roll20_k9",
+      "away_ewma_k9"
+    ],
+    "183": [
+      "away_roll20_bb9"
+    ],
+    "173": [
+      "away_roll20_hr9"
+    ],
+    "171": [
+      "away_roll20_fip"
+    ],
+    "240": [
+      "home_ewma_avg"
+    ],
+    "238": [
+      "home_ewma_obp"
+    ],
+    "232": [
+      "home_ewma_slg"
+    ],
+    "156": [
+      "home_ewma_era"
+    ],
+    "158": [
+      "home_ewma_whip"
+    ],
+    "233": [
+      "home_ewma_ops"
+    ],
+    "220": [
+      "away_ewma_avg"
+    ],
+    "218": [
+      "away_ewma_obp"
+    ],
+    "215": [
+      "away_ewma_slg"
+    ],
+    "187": [
+      "away_ewma_era"
+    ],
+    "185": [
+      "away_ewma_whip"
+    ],
+    "172": [
+      "away_ewma_fip"
+    ],
+    "216": [
+      "away_ewma_ops"
+    ],
+    "33": [
+      "diff_ewma_avg"
+    ],
+    "31": [
+      "diff_ewma_obp"
+    ],
+    "29": [
+      "diff_ewma_slg"
+    ],
+    "30": [
+      "diff_ewma_ops"
+    ],
+    "18": [
+      "diff_ewma_era"
+    ],
+    "16": [
+      "diff_ewma_whip"
+    ],
+    "118": [
+      "diff_ewma_k9",
+      "diff_roll20_k9"
+    ],
+    "3": [
+      "diff_ewma_fip"
+    ],
+    "60": [
+      "home_roll10_winpct"
+    ],
+    "65": [
+      "home_roll20_winpct"
+    ],
+    "61": [
+      "home_win_streak"
+    ],
+    "59": [
+      "home_roll5_rd_mean"
+    ],
+    "88": [
+      "home_roll5_rd_std",
+      "home_roll10_rd_std"
+    ],
+    "58": [
+      "home_roll10_rd_mean"
+    ],
+    "66": [
+      "home_roll20_rd_mean"
+    ],
+    "89": [
+      "home_roll20_rd_std"
+    ],
+    "55": [
+      "away_roll10_winpct"
+    ],
+    "50": [
+      "away_roll20_winpct"
+    ],
+    "56": [
+      "away_win_streak"
+    ],
+    "54": [
+      "away_roll5_rd_mean"
+    ],
+    "84": [
+      "away_roll5_rd_std",
+      "away_roll10_rd_std"
+    ],
+    "53": [
+      "away_roll10_rd_mean"
+    ],
+    "51": [
+      "away_roll20_rd_mean"
+    ],
+    "85": [
+      "away_roll20_rd_std"
+    ],
+    "132": [
+      "home_days_rest",
+      "away_days_rest"
+    ],
+    "144": [
+      "home_games_last_7d"
+    ],
+    "145": [
+      "away_games_last_7d"
+    ],
+    "138": [
+      "is_doubleheader"
+    ],
+    "26": [
+      "park_factor"
+    ],
+    "139": [
+      "temp_f"
+    ],
+    "134": [
+      "is_dome"
+    ],
+    "148": [
+      "is_night_game"
+    ],
+    "135": [
+      "air_density_index"
+    ],
+    "122": [
+      "sp_era_diff",
+      "sp_whip_diff"
+    ],
+    "8": [
+      "diff_roll5_avg"
+    ],
+    "243": [
+      "sum_roll5_avg"
+    ],
+    "10": [
+      "diff_roll5_obp"
+    ],
+    "244": [
+      "sum_roll5_obp"
+    ],
+    "48": [
+      "diff_roll5_slg"
+    ],
+    "242": [
+      "sum_roll5_slg",
+      "sum_roll5_ops"
+    ],
+    "46": [
+      "diff_roll5_iso"
+    ],
+    "196": [
+      "sum_roll5_iso",
+      "sum_roll5_hr_rate"
+    ],
+    "47": [
+      "diff_roll5_hr_rate"
+    ],
+    "128": [
+      "diff_roll5_k_rate"
+    ],
+    "80": [
+      "sum_roll5_k_rate"
+    ],
+    "129": [
+      "diff_roll5_bb_rate"
+    ],
+    "95": [
+      "sum_roll5_bb_rate"
+    ],
+    "9": [
+      "diff_roll5_babip"
+    ],
+    "255": [
+      "sum_roll5_babip"
+    ],
+    "13": [
+      "diff_roll10_avg"
+    ],
+    "253": [
+      "sum_roll10_avg"
+    ],
+    "15": [
+      "diff_roll10_obp"
+    ],
+    "254": [
+      "sum_roll10_obp"
+    ],
+    "11": [
+      "diff_roll10_slg"
+    ],
+    "252": [
+      "sum_roll10_slg",
+      "sum_roll10_ops"
+    ],
+    "44": [
+      "diff_roll10_iso"
+    ],
+    "200": [
+      "sum_roll10_iso",
+      "sum_roll10_hr_rate"
+    ],
+    "45": [
+      "diff_roll10_hr_rate"
+    ],
+    "126": [
+      "diff_roll10_k_rate"
+    ],
+    "78": [
+      "sum_roll10_k_rate"
+    ],
+    "130": [
+      "diff_roll10_bb_rate"
+    ],
+    "93": [
+      "sum_roll10_bb_rate"
+    ],
+    "14": [
+      "diff_roll10_babip"
+    ],
+    "256": [
+      "sum_roll10_babip"
+    ],
+    "34": [
+      "diff_roll20_avg"
+    ],
+    "234": [
+      "sum_roll20_avg"
+    ],
+    "32": [
+      "diff_roll20_obp"
+    ],
+    "235": [
+      "sum_roll20_obp"
+    ],
+    "27": [
+      "diff_roll20_slg"
+    ],
+    "230": [
+      "sum_roll20_slg",
+      "sum_roll20_ops"
+    ],
+    "42": [
+      "diff_roll20_iso"
+    ],
+    "199": [
+      "sum_roll20_iso",
+      "sum_roll20_hr_rate"
+    ],
+    "43": [
+      "diff_roll20_hr_rate"
+    ],
+    "127": [
+      "diff_roll20_k_rate"
+    ],
+    "79": [
+      "sum_roll20_k_rate"
+    ],
+    "131": [
+      "diff_roll20_bb_rate"
+    ],
+    "94": [
+      "sum_roll20_bb_rate"
+    ],
+    "35": [
+      "diff_roll20_babip"
+    ],
+    "236": [
+      "sum_roll20_babip"
+    ],
+    "49": [
+      "diff_roll5_ops"
+    ],
+    "12": [
+      "diff_roll10_ops"
+    ],
+    "28": [
+      "diff_roll20_ops"
+    ],
+    "20": [
+      "diff_roll5_era"
+    ],
+    "188": [
+      "sum_roll5_era"
+    ],
+    "21": [
+      "diff_roll5_whip"
+    ],
+    "189": [
+      "sum_roll5_whip"
+    ],
+    "119": [
+      "diff_roll5_k9"
+    ],
+    "70": [
+      "sum_roll5_k9"
+    ],
+    "39": [
+      "diff_roll5_bb9"
+    ],
+    "178": [
+      "sum_roll5_bb9"
+    ],
+    "1": [
+      "diff_roll5_hr9"
+    ],
+    "163": [
+      "sum_roll5_hr9"
+    ],
+    "2": [
+      "diff_roll5_fip"
+    ],
+    "164": [
+      "sum_roll5_fip"
+    ],
+    "22": [
+      "diff_roll10_era"
+    ],
+    "190": [
+      "sum_roll10_era"
+    ],
+    "23": [
+      "diff_roll10_whip"
+    ],
+    "191": [
+      "sum_roll10_whip"
+    ],
+    "120": [
+      "diff_roll10_k9"
+    ],
+    "69": [
+      "sum_roll10_k9",
+      "sum_roll20_k9"
+    ],
+    "40": [
+      "diff_roll10_bb9"
+    ],
+    "179": [
+      "sum_roll10_bb9"
+    ],
+    "5": [
+      "diff_roll10_hr9"
+    ],
+    "176": [
+      "sum_roll10_hr9"
+    ],
+    "7": [
+      "diff_roll10_fip"
+    ],
+    "177": [
+      "sum_roll10_fip"
+    ],
+    "19": [
+      "diff_roll20_era"
+    ],
+    "153": [
+      "sum_roll20_era"
+    ],
+    "17": [
+      "diff_roll20_whip"
+    ],
+    "154": [
+      "sum_roll20_whip"
+    ],
+    "41": [
+      "diff_roll20_bb9"
+    ],
+    "180": [
+      "sum_roll20_bb9"
+    ],
+    "6": [
+      "diff_roll20_hr9"
+    ],
+    "174": [
+      "sum_roll20_hr9"
+    ],
+    "4": [
+      "diff_roll20_fip"
+    ],
+    "175": [
+      "sum_roll20_fip"
+    ],
+    "110": [
+      "diff_roll10_winpct"
+    ],
+    "62": [
+      "sum_roll10_winpct",
+      "sum_roll10_rd_mean"
+    ],
+    "109": [
+      "diff_roll20_winpct"
+    ],
+    "64": [
+      "sum_roll20_winpct",
+      "sum_roll20_rd_mean"
+    ],
+    "107": [
+      "diff_roll5_rd_mean"
+    ],
+    "63": [
+      "sum_roll5_rd_mean"
+    ],
+    "141": [
+      "diff_roll5_rd_std"
+    ],
+    "86": [
+      "sum_roll5_rd_std",
+      "sum_roll10_rd_std"
+    ],
+    "106": [
+      "diff_roll10_rd_mean"
+    ],
+    "142": [
+      "diff_roll10_rd_std"
+    ],
+    "111": [
+      "diff_roll20_rd_mean"
+    ],
+    "143": [
+      "diff_roll20_rd_std"
+    ],
+    "87": [
+      "sum_roll20_rd_std"
+    ],
+    "104": [
+      "consensus_home_win_prob"
+    ],
+    "140": [
+      "consensus_home_win_std"
+    ]
+  }
+}
