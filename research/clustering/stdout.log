@@ -1,0 +1,95 @@
+2026-07-25 19:24:39,880 INFO Loading feature matrix...
+2026-07-25 19:24:39,968 INFO Loaded 31,123 games × 655 columns
+2026-07-25 19:24:39,992 INFO After season filter (2016+, excl 2020): 28,177 games
+2026-07-25 19:24:40,022 INFO Feature matrix: 288 features × 28177 samples
+2026-07-25 19:24:40,022 INFO 
+======================================================================
+2026-07-25 19:24:40,022 INFO PART A: Generating candidate clusterings
+2026-07-25 19:24:40,022 INFO ======================================================================
+2026-07-25 19:24:44,024 INFO Correlation matrix: 288×288, q=97.84
+2026-07-25 19:24:44,534 INFO MP: lambda+=1.2124, signal=40, noise=248
+2026-07-25 19:24:44,535 INFO ============================================================
+2026-07-25 19:24:44,535 INFO A1: Baseline (detone n_remove=1, silhouette t-stat)
+2026-07-25 19:24:51,094 INFO   → 2 clusters
+2026-07-25 19:24:51,094 INFO 
+A2_detone_0: n_remove=0
+2026-07-25 19:25:05,678 INFO   → 13 clusters
+2026-07-25 19:25:05,679 INFO 
+A2_detone_1: n_remove=1
+2026-07-25 19:25:11,851 INFO   → 2 clusters
+2026-07-25 19:25:11,851 INFO 
+A2_detone_2: n_remove=2
+2026-07-25 19:25:18,006 INFO   → 2 clusters
+2026-07-25 19:25:18,012 INFO 
+A3_calinski_harabasz
+2026-07-25 19:25:25,272 INFO   → 4 clusters
+2026-07-25 19:25:25,272 INFO 
+A3_davies_bouldin_neg
+2026-07-25 19:25:49,525 INFO   → 222 clusters
+2026-07-25 19:25:49,525 INFO 
+A3_gap_statistic
+2026-07-25 19:25:55,257 INFO   Gap best k=2, gap=-0.0073
+2026-07-25 19:25:55,257 INFO   → 2 clusters
+2026-07-25 19:25:55,257 INFO 
+A5: Agglomerative Ward clustering
+2026-07-25 19:25:55,260 INFO   h=0.297: 259 clusters
+2026-07-25 19:25:55,260 INFO   h=0.327: 216 clusters
+2026-07-25 19:25:55,260 INFO   h=0.392: 144 clusters
+2026-07-25 19:25:55,260 INFO   h=0.615: 73 clusters
+2026-07-25 19:25:55,260 INFO   h=1.085: 30 clusters
+2026-07-25 19:25:55,261 INFO 
+A6: Spectral clustering on denoised correlation
+2026-07-25 19:25:56,392 INFO   → 23 clusters (sil=0.1841)
+2026-07-25 19:25:56,393 INFO 
+======================================================================
+2026-07-25 19:25:56,393 INFO PART B: Scoring all candidates
+2026-07-25 19:25:56,393 INFO ======================================================================
+2026-07-25 19:25:56,393 INFO 
+Scoring A1_baseline...
+2026-07-25 19:26:07,727 INFO   cohesion=0.110, separation=-0.001, ratio=127.09, stability=0.331
+2026-07-25 19:26:07,727 INFO 
+Scoring A2_detone_0...
+2026-07-25 19:26:18,810 INFO   cohesion=0.401, separation=0.025, ratio=15.82, stability=0.331
+2026-07-25 19:26:18,811 INFO 
+Scoring A2_detone_1...
+2026-07-25 19:26:29,832 INFO   cohesion=0.110, separation=-0.001, ratio=127.09, stability=0.331
+2026-07-25 19:26:29,832 INFO 
+Scoring A2_detone_2...
+2026-07-25 19:26:40,938 INFO   cohesion=0.108, separation=0.002, ratio=51.91, stability=0.331
+2026-07-25 19:26:40,938 INFO 
+Scoring A3_calinski_harabasz...
+2026-07-25 19:26:52,071 INFO   cohesion=0.162, separation=0.011, ratio=15.27, stability=0.331
+2026-07-25 19:26:52,071 INFO 
+Scoring A3_davies_bouldin_neg...
+2026-07-25 19:27:03,320 INFO   cohesion=0.778, separation=0.054, ratio=14.54, stability=0.331
+2026-07-25 19:27:03,320 INFO 
+Scoring A3_gap_statistic...
+2026-07-25 19:27:14,374 INFO   cohesion=0.086, separation=0.014, ratio=6.26, stability=0.331
+2026-07-25 19:27:14,374 INFO 
+Scoring A5_ward_h=0.297_k259...
+2026-07-25 19:27:25,644 INFO   cohesion=0.885, separation=0.054, ratio=16.32, stability=0.331
+2026-07-25 19:27:25,644 INFO 
+Scoring A5_ward_h=0.327_k216...
+2026-07-25 19:27:36,858 INFO   cohesion=0.853, separation=0.053, ratio=16.04, stability=0.331
+2026-07-25 19:27:36,859 INFO 
+Scoring A5_ward_h=0.392_k144...
+2026-07-25 19:27:48,067 INFO   cohesion=0.817, separation=0.051, ratio=15.94, stability=0.331
+2026-07-25 19:27:48,068 INFO 
+Scoring A5_ward_h=0.615_k73...
+2026-07-25 19:27:59,186 INFO   cohesion=0.731, separation=0.046, ratio=15.76, stability=0.331
+2026-07-25 19:27:59,186 INFO 
+Scoring A5_ward_h=1.085_k30...
+2026-07-25 19:28:10,276 INFO   cohesion=0.492, separation=0.037, ratio=13.48, stability=0.331
+2026-07-25 19:28:10,276 INFO 
+Scoring A6_spectral...
+2026-07-25 19:28:21,395 INFO   cohesion=0.517, separation=0.027, ratio=18.92, stability=0.331
+2026-07-25 19:28:21,395 INFO 
+B5: Downstream validity (synthetic importance routing)...
+2026-07-25 19:28:46,899 INFO 
+======================================================================
+2026-07-25 19:28:46,899 INFO PART C: Generating report
+2026-07-25 19:28:46,899 INFO ======================================================================
+2026-07-25 19:28:46,900 INFO Report written to research/clustering/clustering_eval.md
+2026-07-25 19:28:46,900 INFO 
+Total elapsed: 247.0s
+2026-07-25 19:28:46,900 INFO Artifacts: research/clustering
