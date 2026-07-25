@@ -207,19 +207,19 @@ def _compute_kbb_splits(
     game_frame: pd.DataFrame,
 ) -> pd.DataFrame:
     """K%, BB%, K-BB% per pitcher vs L/R batters, rolling 5 and 10 games."""
-    # PA terminals: last pitch of each at-bat (non-null at_bat_event on is_pitch rows).
+    # PA terminals: last pitch of each at-bat (non-null event_type on is_pitch rows).
     pa = pitches[
         pitches["is_pitch"] == True  # noqa: E712
-    ].dropna(subset=["at_bat_event"]).copy()
+    ].dropna(subset=["event_type"]).copy()
 
     # Keep only events that count as a PA (avoid defensive indifference, etc.)
-    pa = pa[pa["at_bat_event"].isin(_PA_EVENTS)]
+    pa = pa[pa["event_type"].isin(_PA_EVENTS)]
 
     # Collapse multiple pitch rows within a single PA to one row.
     pa = pa.drop_duplicates(subset=["pitcher_id", "bat_side_code", "game_pk", "at_bat_index"], keep="first")
 
-    pa["_is_k"]  = pa["at_bat_event"].isin(_K_EVENTS).astype("int8")
-    pa["_is_bb"] = pa["at_bat_event"].isin(_BB_EVENTS).astype("int8")
+    pa["_is_k"]  = pa["event_type"].isin(_K_EVENTS).astype("int8")
+    pa["_is_bb"] = pa["event_type"].isin(_BB_EVENTS).astype("int8")
 
     # Per pitcher × batter handedness × game: count K, BB, PA.
     game_splits = (
@@ -296,18 +296,18 @@ def _compute_fip_splits(
     """FIP vs L/R batters per pitcher, rolling 5 and 10 games."""
     pa = pitches[
         pitches["is_pitch"] == True  # noqa: E712
-    ].dropna(subset=["at_bat_event"]).copy()
+    ].dropna(subset=["event_type"]).copy()
 
     # Collapse multiple pitch rows within a single PA to one row.
     pa = pa.drop_duplicates(subset=["pitcher_id", "bat_side_code", "game_pk", "at_bat_index"], keep="first")
 
-    pa["_hr"]  = pa["at_bat_event"].isin(_FIP_HR_EVENTS).astype("int8")
-    pa["_bb"]  = pa["at_bat_event"].isin(_FIP_BB_EVENTS).astype("int8")
-    pa["_hbp"] = pa["at_bat_event"].isin(_FIP_HBP_EVENTS).astype("int8")
-    pa["_k"]   = pa["at_bat_event"].isin(_FIP_K_EVENTS).astype("int8")
+    pa["_hr"]  = pa["event_type"].isin(_FIP_HR_EVENTS).astype("int8")
+    pa["_bb"]  = pa["event_type"].isin(_FIP_BB_EVENTS).astype("int8")
+    pa["_hbp"] = pa["event_type"].isin(_FIP_HBP_EVENTS).astype("int8")
+    pa["_k"]   = pa["event_type"].isin(_FIP_K_EVENTS).astype("int8")
     # Count outs: double-play events = 2 outs, single-out events = 1.
-    pa["_out"] = pa["at_bat_event"].isin(_OUT_EVENTS).astype("int8")
-    pa.loc[pa["at_bat_event"].isin(_DP_EVENTS), "_out"] = 2
+    pa["_out"] = pa["event_type"].isin(_OUT_EVENTS).astype("int8")
+    pa.loc[pa["event_type"].isin(_DP_EVENTS), "_out"] = 2
 
     game_splits = (
         pa.groupby(["pitcher_id", "bat_side_code", "game_pk"])
@@ -364,7 +364,7 @@ def _compute_fip_splits(
 # Feature 4: Platoon wOBA splits (batter vs L/R pitcher, team-aggregated)
 # ---------------------------------------------------------------------------
 
-# Map at_bat_event strings to wOBA weight keys.
+# Map event_type strings to wOBA weight keys.
 _EVENT_TO_WOBA_KEY: dict[str, str] = {
     "walk":          "walk",
     "intent_walk":   "walk",
@@ -383,18 +383,18 @@ def _compute_woba_splits(
     """Batter platoon wOBA vs L/R pitcher, rolled over 100/200 PA, aggregated to team."""
     pa = pitches[
         pitches["is_pitch"] == True  # noqa: E712
-    ].dropna(subset=["at_bat_event"]).copy()
+    ].dropna(subset=["event_type"]).copy()
 
     # Keep only countable PA events.
-    pa = pa[pa["at_bat_event"].isin(WOBA_PA_DENOM_EVENTS)]
+    pa = pa[pa["event_type"].isin(WOBA_PA_DENOM_EVENTS)]
 
-    pa["_woba_num"] = pa["at_bat_event"].map(_EVENT_TO_WOBA_KEY).map(WOBA_WEIGHTS).fillna(0.0)
+    pa["_woba_num"] = pa["event_type"].map(_EVENT_TO_WOBA_KEY).map(WOBA_WEIGHTS).fillna(0.0)
 
     # game_date is already a column in the pitches table (PITCH_LEVEL_COLUMNS).
     # No merge needed — sorting directly avoids a game_date_x/game_date_y conflict.
     pa = pa.sort_values(["batter_id", "pitch_hand_code", "game_date", "game_pk", "at_bat_index"])
 
-    # Collapse multiple pitch rows within a single PA to one row (at_bat_event is
+    # Collapse multiple pitch rows within a single PA to one row (event_type is
     # duplicated across all pitches in the same PA). Preserves all distinct PAs so
     # rolling(100) operates on 100 actual plate appearances, not 100 games.
     pa = pa.drop_duplicates(subset=["batter_id", "pitch_hand_code", "game_pk", "at_bat_index"], keep="first")
@@ -420,11 +420,11 @@ def _compute_woba_splits(
                 .apply(_roll_woba, include_groups=False)
             )
 
-        # home batters bat in the bottom half (inning_half == "bottom").
-        # away batters bat in the top half (inning_half == "top").
-        sub_home = sub[sub["inning_half"] == "bottom"].copy()
+        # home batters bat in the bottom half (half_inning == "bottom").
+        # away batters bat in the top half (half_inning == "top").
+        sub_home = sub[sub["half_inning"] == "bottom"].copy()
         sub_home["_team_id"] = sub_home["home_team_id"]
-        sub_away = sub[sub["inning_half"] == "top"].copy()
+        sub_away = sub[sub["half_inning"] == "top"].copy()
         sub_away["_team_id"] = sub_away["away_team_id"]
 
         batter_woba = pd.concat([sub_home, sub_away], ignore_index=False)
@@ -566,9 +566,9 @@ def _compute_pitchmix_matchup(
     # -----------------------------------------------------------------------
     # Step B: batter wOBA against each pitch type, rolling 200 PA per type.
     # -----------------------------------------------------------------------
-    pa = p.dropna(subset=["at_bat_event"]).copy()
-    pa = pa[pa["at_bat_event"].isin(WOBA_PA_DENOM_EVENTS)]
-    pa["_woba_num"] = pa["at_bat_event"].map(_EVENT_TO_WOBA_KEY).map(WOBA_WEIGHTS).fillna(0.0)
+    pa = p.dropna(subset=["event_type"]).copy()
+    pa = pa[pa["event_type"].isin(WOBA_PA_DENOM_EVENTS)]
+    pa["_woba_num"] = pa["event_type"].map(_EVENT_TO_WOBA_KEY).map(WOBA_WEIGHTS).fillna(0.0)
 
     # game_date already in pa (from pitches table); sort directly.
     pa = pa.sort_values(["batter_id", "_ptype", "game_date", "game_pk", "at_bat_index"])
@@ -588,7 +588,7 @@ def _compute_pitchmix_matchup(
             sub.groupby("batter_id", group_keys=False)
             .apply(_roll_woba_200, include_groups=False)
         )
-        key_cols = ["batter_id", "game_pk", "inning_half", "home_team_id", "away_team_id"]
+        key_cols = ["batter_id", "game_pk", "half_inning", "home_team_id", "away_team_id"]
         # Drop duplicates before appending — a batter can have multiple pitches per PA of
         # type `pt` in one game, so the same (batter_id, game_pk) appears multiple times.
         # An outer merge across all pitch types without deduplication produces a cartesian
@@ -604,7 +604,7 @@ def _compute_pitchmix_matchup(
         return pd.DataFrame({"game_pk": game_frame["game_pk"]})
 
     batter_woba_df = batter_type_woba_parts[0]
-    key_cols = ["batter_id", "game_pk", "inning_half", "home_team_id", "away_team_id"]
+    key_cols = ["batter_id", "game_pk", "half_inning", "home_team_id", "away_team_id"]
     for df in batter_type_woba_parts[1:]:
         batter_woba_df = batter_woba_df.merge(df, on=key_cols, how="outer")
 
@@ -644,7 +644,7 @@ def _compute_pitchmix_matchup(
         if def_pid_col not in game_frame.columns:
             continue
 
-        batter_side = batter_woba_df[batter_woba_df["inning_half"] == half].copy()
+        batter_side = batter_woba_df[batter_woba_df["half_inning"] == half].copy()
         if offense_side == "home":
             batter_side["_team_id"] = batter_side["home_team_id"]
         else:

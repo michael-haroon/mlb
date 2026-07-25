@@ -45,11 +45,11 @@ _TABLE_CONFIG: dict[str, dict] = {
     "boxscore_pitching": {"columns": BOXSCORE_PITCHING_COLUMNS, "season_agnostic": False},
     "linescore": {"columns": LINESCORE_COLUMNS, "season_agnostic": False},
     "pitches": {"columns": PITCH_META_COLUMNS, "season_agnostic": False},
-    # pitches_raw loads per-pitch columns (one row per pitch, millions of rows).
-    # Separate from "pitches" which loads only game-meta columns for the game frame.
-    "pitches_raw": {"columns": PITCH_LEVEL_COLUMNS, "season_agnostic": False},
     "players": {"columns": PLAYERS_COLUMNS, "season_agnostic": True},
 }
+# pitches_raw is intentionally excluded from _TABLE_CONFIG. At 10M+ rows it
+# pushes peak RSS over 16 GB when co-loaded with the other tables. build.py
+# calls load_pitches_raw() after freeing the raw dict to avoid co-residence.
 
 
 def load_all(
@@ -90,3 +90,22 @@ def load_all(
         data[table] = df
 
     return data
+
+
+def load_pitches_raw(
+    source: str,
+    season_start: int,
+    season_end: Optional[int] = None,
+) -> pd.DataFrame:
+    """Load per-pitch feature columns in isolation.
+
+    Called by build.py only after the game-frame raw dict has been freed,
+    so the 10M-row pitches_raw DataFrame never coexists in memory with
+    boxscore/linescore/pitches tables.
+    """
+    seasons = season_range(season_start, season_end)
+    catalog = ParquetCatalog(source)
+    log.info(f"Loading pitches_raw for seasons {seasons[0]}–{seasons[-1]}...")
+    df = catalog.read_table("pitches", columns=PITCH_LEVEL_COLUMNS, seasons=seasons)
+    log.info(f"  pitches_raw: {len(df):,} rows, {len(df.columns)} columns")
+    return df

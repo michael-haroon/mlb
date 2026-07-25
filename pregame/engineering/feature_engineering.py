@@ -564,11 +564,17 @@ def _rest_and_schedule(games: pd.DataFrame) -> pd.DataFrame:
 
     # Games in last 7 days (any side)
     def _games_last_7d(s: pd.Series) -> pd.Series:
-        s_dt = s.copy()
-        s_dt.index = s_dt.values
+        # pandas >=3.0.5 requires a strictly monotonic datetime index for
+        # time-based rolling. Sort by date first, roll, then unsort back to
+        # original row order. Sorting positionally (argsort) avoids reindex
+        # failures caused by duplicate dates (doubleheaders).
+        sort_order = s.argsort(kind="stable")
+        unsort_order = sort_order.argsort(kind="stable")
+        s_sorted = s.iloc[sort_order]
+        s_dt = s_sorted.copy()
+        s_dt.index = s_dt.values  # monotonic datetime index
         counts = s_dt.rolling("7D", closed="left").count()
-        counts.index = s.index
-        return counts
+        return pd.Series(counts.values[unsort_order], index=s.index)
 
     timeline["_games_7d"] = (
         timeline.groupby("team_id")["game_date"]

@@ -64,9 +64,9 @@ def _pitch_row(
     pitch_type: str = "FF",
     bat_side_code: str = "R",
     pitch_hand_code: str = "R",
-    at_bat_event: str | None = None,
+    event_type: str | None = None,
     inning: int = 1,
-    inning_half: str = "top",
+    half_inning: str = "top",
     home_team_id: int = _HOME_TEAM,
     away_team_id: int = _AWAY_TEAM,
     game_type_code: str = "R",
@@ -87,12 +87,11 @@ def _pitch_row(
         "pitch_type": pitch_type,
         "bat_side_code": bat_side_code,
         "pitch_hand_code": pitch_hand_code,
-        "at_bat_event": at_bat_event,
-        "event_type": at_bat_event,
+        "event_type": event_type,
         "at_bat_index": at_bat_index,
         "pitch_number": pitch_number,
         "inning": inning,
-        "inning_half": inning_half,
+        "half_inning": half_inning,
         "cum_outs": 0,
         "pre_on_first_id": np.nan,
         "pre_on_second_id": np.nan,
@@ -113,13 +112,13 @@ def _pa_pitches(
     bat_side_code: str = "R",
     pitch_hand_code: str = "R",
     pitch_type: str = "FF",
-    inning_half: str = "top",
+    half_inning: str = "top",
     release_speed: float = 93.0,
     home_team_id: int = _HOME_TEAM,
     away_team_id: int = _AWAY_TEAM,
     game_type_code: str = "R",
 ) -> list[dict]:
-    """Build pitch rows for one PA. Only last pitch has at_bat_event."""
+    """Build pitch rows for one PA."""
     rows = []
     for pn in range(1, num_pitches + 1):
         event = outcome if pn == num_pitches else None
@@ -129,8 +128,8 @@ def _pa_pitches(
             at_bat_index=at_bat_index, pitch_number=pn,
             is_pitch=True, release_speed=release_speed,
             bat_side_code=bat_side_code, pitch_hand_code=pitch_hand_code,
-            at_bat_event=event, pitch_type=pitch_type,
-            inning_half=inning_half,
+            event_type=event, pitch_type=pitch_type,
+            half_inning=half_inning,
             home_team_id=home_team_id, away_team_id=away_team_id,
             game_type_code=game_type_code,
         ))
@@ -149,7 +148,7 @@ def _start_pitches(
     coord_x0: float = -1.5,
     coord_z0: float = 5.8,
     pitch_hand_code: str = "R",
-    inning_half: str = "top",
+    half_inning: str = "top",
     home_team_id: int = _HOME_TEAM,
     away_team_id: int = _AWAY_TEAM,
 ) -> list[dict]:
@@ -166,7 +165,7 @@ def _start_pitches(
             pitcher_id=pitcher_id, batter_id=300 + (ab_idx % 9),
             at_bat_index=ab_idx, pitch_number=pn,
             release_speed=velo, coord_x0=coord_x0, coord_z0=coord_z0,
-            pitch_hand_code=pitch_hand_code, inning_half=inning_half,
+            pitch_hand_code=pitch_hand_code, half_inning=half_inning,
             home_team_id=home_team_id, away_team_id=away_team_id,
         ))
     return rows
@@ -185,14 +184,14 @@ def _filler_pitches(game_pks_dates: list[tuple[int, str]], season: int = 2025) -
                 game_pk=game_pk, season=season, game_date=game_date,
                 pitcher_id=_SP_HOME_LHP, batter_id=950 + i,
                 at_bat_index=900 + i, outcome="field_out",
-                bat_side_code="R", pitch_hand_code="L", inning_half="top",
+                bat_side_code="R", pitch_hand_code="L", half_inning="top",
                 num_pitches=2,
             ))
             rows.extend(_pa_pitches(
                 game_pk=game_pk, season=season, game_date=game_date,
                 pitcher_id=_SP_AWAY, batter_id=960 + i,
                 at_bat_index=910 + i, outcome="field_out",
-                bat_side_code="L", pitch_hand_code="R", inning_half="bottom",
+                bat_side_code="L", pitch_hand_code="R", half_inning="bottom",
                 num_pitches=2,
             ))
     return rows
@@ -217,7 +216,7 @@ class TestLeakage:
                     game_pk=game_pk, season=2025, game_date=game_date,
                     pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="L", pitch_hand_code="R", half_inning="top",
                 ))
 
         for ab_idx in range(5):
@@ -225,7 +224,7 @@ class TestLeakage:
                 game_pk=1003, season=2025, game_date="2025-04-11",
                 pitcher_id=_SP_HOME, batter_id=550 + ab_idx,
                 at_bat_index=ab_idx + 20, outcome="walk",
-                bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                bat_side_code="L", pitch_hand_code="R", half_inning="top",
             ))
 
         rows += _filler_pitches(games)
@@ -257,7 +256,7 @@ class TestLeakage:
                     game_pk=game_pk, season=2025, game_date=game_date,
                     pitcher_id=_SP_HOME, batter_id=700 + ab_idx,
                     at_bat_index=ab_idx, outcome=ev,
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
 
         # Game 3: terrible (4 HR, 0 K, 0 BB, 0 outs)
@@ -266,7 +265,7 @@ class TestLeakage:
                 game_pk=1003, season=2025, game_date="2025-04-11",
                 pitcher_id=_SP_HOME, batter_id=800 + ab_idx,
                 at_bat_index=ab_idx + 30, outcome="home_run",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         rows += _filler_pitches(games)
@@ -312,7 +311,7 @@ class TestLeakage:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="L", pitch_hand_code="R", half_inning="top",
                 ))
 
         # DH Game 1: all walks vs LHH (different from prior)
@@ -321,7 +320,7 @@ class TestLeakage:
                 game_pk=dh_game1[0], season=2025, game_date=dh_game1[1],
                 pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx + 50, outcome="walk",
-                bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                bat_side_code="L", pitch_hand_code="R", half_inning="top",
             ))
 
         # DH Game 2: also walks (shouldn't matter; we check game 2's feature)
@@ -330,7 +329,7 @@ class TestLeakage:
                 game_pk=dh_game2[0], season=2025, game_date=dh_game2[1],
                 pitcher_id=_SP_HOME, batter_id=600 + ab_idx,
                 at_bat_index=ab_idx + 80, outcome="walk",
-                bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                bat_side_code="L", pitch_hand_code="R", half_inning="top",
             ))
 
         all_games = prior_games + [dh_game1, dh_game2]
@@ -395,7 +394,7 @@ class TestLeakage:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
 
         # DH game 1 (4004): pitcher appears in relief, walks 3 RHH
@@ -404,7 +403,7 @@ class TestLeakage:
                 game_pk=4004, season=2025, game_date="2025-05-04",
                 pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx + 50, outcome="walk",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         # DH game 2 (4005): pitcher starts, Ks 5 RHH
@@ -413,7 +412,7 @@ class TestLeakage:
                 game_pk=4005, season=2025, game_date="2025-05-04",
                 pitcher_id=_SP_HOME, batter_id=600 + ab_idx,
                 at_bat_index=ab_idx + 70, outcome="strikeout",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         rows += _filler_pitches(games)
@@ -454,7 +453,7 @@ class TestLeakage:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                     home_team_id=_HOME_TEAM, away_team_id=_AWAY_TEAM,
                 ))
 
@@ -465,7 +464,7 @@ class TestLeakage:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx + 50, outcome="walk",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                     home_team_id=_AWAY_TEAM, away_team_id=_HOME_TEAM,
                 ))
 
@@ -570,8 +569,8 @@ class TestDedupCorrectness:
                         pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                         at_bat_index=ab_idx, pitch_number=pn,
                         bat_side_code="L", pitch_hand_code="R",
-                        at_bat_event="strikeout",  # event on EVERY pitch
-                        inning_half="top",
+                        event_type="strikeout",  # event on EVERY pitch
+                        half_inning="top",
                     ))
 
         # Game 3: target game
@@ -582,8 +581,8 @@ class TestDedupCorrectness:
                     pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx + 20, pitch_number=pn,
                     bat_side_code="L", pitch_hand_code="R",
-                    at_bat_event="walk",  # different outcome
-                    inning_half="top",
+                    event_type="walk",  # different outcome
+                    half_inning="top",
                 ))
 
         rows += _filler_pitches(games)
@@ -608,7 +607,7 @@ class TestDedupCorrectness:
         """When at_bat_event differs from pitch-level classification.
 
         Real scenario: a batter sees 4 pitches (foul, ball, ball, strikeout).
-        In some data formats, at_bat_event="strikeout" is on all pitches.
+        In some data formats, event_type="strikeout" is on all pitches.
         Without dedup on at_bat_index, this counts as 4 strikeouts instead of 1.
 
         This test verifies the dedup produces correct PA counts.
@@ -625,8 +624,8 @@ class TestDedupCorrectness:
                     pitcher_id=_SP_HOME, batter_id=400,
                     at_bat_index=0, pitch_number=pn,
                     bat_side_code="R", pitch_hand_code="R",
-                    at_bat_event="strikeout",
-                    inning_half="top",
+                    event_type="strikeout",
+                    half_inning="top",
                 ))
             for pn in range(1, 5):
                 rows.append(_pitch_row(
@@ -634,8 +633,8 @@ class TestDedupCorrectness:
                     pitcher_id=_SP_HOME, batter_id=401,
                     at_bat_index=1, pitch_number=pn,
                     bat_side_code="R", pitch_hand_code="R",
-                    at_bat_event="walk",
-                    inning_half="top",
+                    event_type="walk",
+                    half_inning="top",
                 ))
 
         # Game 3: target
@@ -643,7 +642,7 @@ class TestDedupCorrectness:
             game_pk=8003, season=2025, game_date="2025-04-11",
             pitcher_id=_SP_HOME, batter_id=402,
             at_bat_index=10, outcome="field_out",
-            bat_side_code="R", pitch_hand_code="R", inning_half="top",
+            bat_side_code="R", pitch_hand_code="R", half_inning="top",
         ))
 
         rows += _filler_pitches(games)
@@ -675,15 +674,15 @@ class TestDedupCorrectness:
         rows = []
 
         for gp, gd in games[:2]:
-            # 1 HR PA with 4 pitches (all with at_bat_event="home_run")
+            # 1 HR PA with 4 pitches (all with event_type="home_run")
             for pn in range(1, 5):
                 rows.append(_pitch_row(
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400,
                     at_bat_index=0, pitch_number=pn,
                     bat_side_code="R", pitch_hand_code="R",
-                    at_bat_event="home_run",
-                    inning_half="top",
+                    event_type="home_run",
+                    half_inning="top",
                 ))
             # 3 field_out PAs with 3 pitches each
             for ab_idx in range(1, 4):
@@ -693,8 +692,8 @@ class TestDedupCorrectness:
                         pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                         at_bat_index=ab_idx, pitch_number=pn,
                         bat_side_code="R", pitch_hand_code="R",
-                        at_bat_event="field_out",
-                        inning_half="top",
+                        event_type="field_out",
+                        half_inning="top",
                     ))
 
         # Game 3
@@ -702,7 +701,7 @@ class TestDedupCorrectness:
             game_pk=9003, season=2025, game_date="2025-04-11",
             pitcher_id=_SP_HOME, batter_id=500,
             at_bat_index=20, outcome="field_out",
-            bat_side_code="R", pitch_hand_code="R", inning_half="top",
+            bat_side_code="R", pitch_hand_code="R", half_inning="top",
         ))
 
         rows += _filler_pitches(games)
@@ -746,7 +745,7 @@ class TestMissingness:
                 game_pk=gp, season=2025, game_date=gd,
                 pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                 at_bat_index=ab_idx, outcome="strikeout",
-                bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                bat_side_code="L", pitch_hand_code="R", half_inning="top",
             ))
         rows += _start_pitches(game_pk=gp, season=2025, game_date=gd, pitcher_id=_SP_HOME)
         rows += _filler_pitches([(gp, gd)])
@@ -779,7 +778,7 @@ class TestMissingness:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
 
         rows += _filler_pitches(games)
@@ -818,7 +817,7 @@ class TestMissingness:
                 game_pk=gp, season=2025, game_date=gd,
                 pitcher_id=_SP_HOME, batter_id=400,
                 at_bat_index=0, outcome="strikeout",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         # 4th game: first start (target)
@@ -827,7 +826,7 @@ class TestMissingness:
                 game_pk=games[3][0], season=2025, game_date=games[3][1],
                 pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx + 20, outcome="field_out",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         rows += _filler_pitches(games)
@@ -910,7 +909,7 @@ class TestDistributionSanity:
                     pitcher_id=_SP_HOME, batter_id=batter,
                     at_bat_index=ab_idx, outcome=ev,
                     bat_side_code=hand, pitch_hand_code="R",
-                    inning_half="top", num_pitches=rng.integers(2, 6),
+                    half_inning="top", num_pitches=rng.integers(2, 6),
                 ))
 
             # Also add TTO pitches
@@ -1030,14 +1029,14 @@ class TestBias:
                 game_pk=gp, season=2025, game_date=gd,
                 pitcher_id=_SP_HOME, batter_id=switch_hitter,
                 at_bat_index=0, outcome="strikeout",
-                bat_side_code="L", pitch_hand_code="R", inning_half="top",
+                bat_side_code="L", pitch_hand_code="R", half_inning="top",
             ))
             # PA 2: switch hitter bats RIGHT vs LHP (walk)
             rows.extend(_pa_pitches(
                 game_pk=gp, season=2025, game_date=gd,
                 pitcher_id=_SP_HOME_LHP, batter_id=switch_hitter,
                 at_bat_index=1, outcome="walk",
-                bat_side_code="R", pitch_hand_code="L", inning_half="top",
+                bat_side_code="R", pitch_hand_code="L", half_inning="top",
             ))
             # Regular batters to fill out
             for ab_idx in range(2, 7):
@@ -1045,7 +1044,7 @@ class TestBias:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="field_out",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
 
         # Game 3: target
@@ -1053,7 +1052,7 @@ class TestBias:
             game_pk=15003, season=2025, game_date="2025-04-11",
             pitcher_id=_SP_HOME, batter_id=400,
             at_bat_index=20, outcome="field_out",
-            bat_side_code="R", pitch_hand_code="R", inning_half="top",
+            bat_side_code="R", pitch_hand_code="R", half_inning="top",
         ))
 
         rows += _filler_pitches(games)
@@ -1096,7 +1095,7 @@ class TestBias:
                     game_pk=gp, season=2019, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
 
         # 2020 game: all walks (should be excluded)
@@ -1105,7 +1104,7 @@ class TestBias:
                 game_pk=16003, season=2020, game_date="2020-07-25",
                 pitcher_id=_SP_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx, outcome="walk",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         # 2021 game 1: all field_outs (shouldn't affect game 2 features since shift(1))
@@ -1114,7 +1113,7 @@ class TestBias:
                 game_pk=16004, season=2021, game_date="2021-04-05",
                 pitcher_id=_SP_HOME, batter_id=600 + ab_idx,
                 at_bat_index=ab_idx + 20, outcome="field_out",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         # 2021 game 2: target
@@ -1123,7 +1122,7 @@ class TestBias:
                 game_pk=16005, season=2021, game_date="2021-04-10",
                 pitcher_id=_SP_HOME, batter_id=700 + ab_idx,
                 at_bat_index=ab_idx + 40, outcome="home_run",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         rows += _filler_pitches(games, season=2019)
@@ -1174,7 +1173,7 @@ class TestBias:
                     pitcher_id=_SP_HOME, batter_id=300 + (ab_idx % 9),
                     at_bat_index=ab_idx, pitch_number=pn,
                     release_speed=95.0,
-                    inning_half="top",
+                    half_inning="top",
                 ))
 
         # Game 4: target
@@ -1186,7 +1185,7 @@ class TestBias:
                 pitcher_id=_SP_HOME, batter_id=300 + (ab_idx % 9),
                 at_bat_index=ab_idx + 20, pitch_number=pn,
                 release_speed=95.0,
-                inning_half="top",
+                half_inning="top",
             ))
 
         rows += _filler_pitches(games)
@@ -1292,7 +1291,7 @@ class TestStaleness:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
             rows += _start_pitches(
                 game_pk=gp, season=2025, game_date=gd,
@@ -1341,7 +1340,7 @@ class TestStaleness:
                     pitcher_id=_SP_AWAY, batter_id=300 + (ab_idx % 9),
                     at_bat_index=ab_idx, pitch_number=pn,
                     pitch_type=pt, pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                     home_team_id=_HOME_TEAM, away_team_id=_AWAY_TEAM,
                 ))
 
@@ -1354,7 +1353,7 @@ class TestStaleness:
                     pitcher_id=_SP_AWAY, batter_id=400 + (ab_idx % 9),
                     at_bat_index=ab_idx, outcome=outcome,
                     bat_side_code="R", pitch_hand_code="R",
-                    pitch_type=pt, inning_half="bottom",
+                    pitch_type=pt, half_inning="bottom",
                     home_team_id=_HOME_TEAM, away_team_id=_AWAY_TEAM,
                 ))
 
@@ -1403,7 +1402,7 @@ class TestWOBASpecific:
                     pitcher_id=_SP_AWAY, batter_id=batter,
                     at_bat_index=idx, outcome="single",
                     bat_side_code="L", pitch_hand_code="R",
-                    inning_half="bottom",
+                    half_inning="bottom",
                     home_team_id=_HOME_TEAM, away_team_id=_AWAY_TEAM,
                 ))
 
@@ -1450,7 +1449,7 @@ class TestWOBASpecific:
                     pitcher_id=_SP_AWAY, batter_id=batter,
                     at_bat_index=idx, outcome="intent_walk",
                     bat_side_code="R", pitch_hand_code="R",
-                    inning_half="bottom",
+                    half_inning="bottom",
                     home_team_id=_HOME_TEAM, away_team_id=_AWAY_TEAM,
                 ))
 
@@ -1461,7 +1460,7 @@ class TestWOBASpecific:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME_LHP, batter_id=950 + i,
                     at_bat_index=900 + i, outcome="field_out",
-                    bat_side_code="R", pitch_hand_code="L", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="L", half_inning="top",
                     num_pitches=2,
                 ))
 
@@ -1515,7 +1514,7 @@ class TestPitchmixMatchup:
                     pitcher_id=_SP_AWAY, batter_id=300 + (ab_idx % 9),
                     at_bat_index=ab_idx, pitch_number=pn,
                     pitch_type=pt, pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                 ))
 
         rows += _filler_pitches(games)
@@ -1583,7 +1582,7 @@ class TestPitchmixMatchup:
                     pitcher_id=_SP_AWAY, batter_id=300 + (ab_idx % 9),
                     at_bat_index=ab_idx, pitch_number=pn,
                     pitch_type="FF", pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                 ))
 
         # Home batters: brand new (no prior history) batting in bottom inning
@@ -1594,7 +1593,7 @@ class TestPitchmixMatchup:
                     pitcher_id=_SP_AWAY, batter_id=900 + ab_idx,  # unique batter each PA
                     at_bat_index=ab_idx, outcome="single",
                     pitch_type="FF", bat_side_code="R", pitch_hand_code="R",
-                    inning_half="bottom",
+                    half_inning="bottom",
                 ))
 
         rows += _filler_pitches(games)
@@ -1637,7 +1636,7 @@ class TestOutputIntegrity:
                 game_pk=24001, season=2025, game_date="2025-04-01",
                 pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                 at_bat_index=ab_idx, outcome="strikeout",
-                bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                bat_side_code="R", pitch_hand_code="R", half_inning="top",
             ))
 
         rows += _filler_pitches([(24001, "2025-04-01")])
@@ -1662,7 +1661,7 @@ class TestOutputIntegrity:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="strikeout",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
             rows += _start_pitches(game_pk=gp, season=2025, game_date=gd, pitcher_id=_SP_HOME)
 
@@ -1694,7 +1693,7 @@ class TestOutputIntegrity:
                     game_pk=gp, season=2025, game_date=gd,
                     pitcher_id=_SP_HOME, batter_id=400 + ab_idx,
                     at_bat_index=ab_idx, outcome="field_out",
-                    bat_side_code="R", pitch_hand_code="R", inning_half="top",
+                    bat_side_code="R", pitch_hand_code="R", half_inning="top",
                 ))
 
         rows += _filler_pitches(games)

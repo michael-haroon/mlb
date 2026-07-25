@@ -108,7 +108,9 @@ def _extract_game_metadata(pitches: pd.DataFrame) -> pd.DataFrame:
         "venue_id", "venue_name", "venue_latitude", "venue_longitude",
         "venue_capacity", "venue_roof_type", "weather_condition", "weather_temp",
         "weather_wind", "day_night", "attendance", "home_team_id", "home_team_name",
-        "home_team_abbr", "away_team_id", "away_team_name", "away_team_abbr",
+        "home_team_abbr", "home_league_id", "home_division_id",
+        "away_team_id", "away_team_name", "away_team_abbr",
+        "away_league_id", "away_division_id",
         # home_wins/win_pct are intentionally excluded: the MLB boxscore API
         # returns the post-game standing. Pre-game win% is computed in
         # feature_engineering.py via rolling win% with shift(1).

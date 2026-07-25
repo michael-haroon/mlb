@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from .constants import MLB_FRANCHISE_IDS, VALID_GAME_TYPE_CODES
-from .data_loader import load_all
+from .data_loader import load_all, load_pitches_raw
 from .feature_engineering import engineer_features
 from .ratings import attach_all_ratings
 from .ratings_tuning import tune_all_ratings
@@ -91,14 +91,17 @@ def build_features(
             log.info(f"Dropped {n_dropped} non-MLB rows (exhibitions, all-star, non-franchise teams)")
 
         # --- Step 2c: Pitch-level features ---
-        # pitches_raw is only in memory here (not in any checkpoint), so we must
-        # compute pitch-level features before writing ckpt_games_raw. The columns
-        # are baked into the checkpoint so downstream steps (ratings, engineer_features)
-        # see them without re-loading millions of pitch rows.
-        if "pitches_raw" in raw:
-            from .pitch_level_features import compute_pitch_level_features
-            log.info("Computing pitch-level features...")
-            games = compute_pitch_level_features(raw["pitches_raw"], games)
+        # Free raw tables before loading pitches_raw. Both pitches (game-meta,
+        # loaded inside raw) and pitches_raw (per-pitch features) read from the
+        # same parquet files, so they are never in _TABLE_CONFIG together.
+        # Freeing raw first keeps peak RSS within 16 GB on an r8g.large.
+        del raw
+
+        from .pitch_level_features import compute_pitch_level_features
+        log.info("Computing pitch-level features (loading pitches_raw in isolation)...")
+        pitches_raw_df = load_pitches_raw(source, season_start, season_end)
+        games = compute_pitch_level_features(pitches_raw_df, games)
+        del pitches_raw_df
 
         games.to_parquet(ckpt_games_raw, index=False, engine="pyarrow")
         log.info(f"Checkpoint written: {ckpt_games_raw} ({len(games):,} rows)")

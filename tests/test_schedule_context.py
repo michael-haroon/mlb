@@ -439,3 +439,65 @@ class TestScheduleContextAdversarial:
         # Should either not produce consensus interaction, or produce NaN
         if "consensus_prob_x_same_league" in result.columns:
             assert pd.isna(result["consensus_prob_x_same_league"].iloc[0])
+
+
+# ---------------------------------------------------------------------------
+# Rest and schedule density — non-monotonic date crash (pandas 3.0.5 regression)
+# ---------------------------------------------------------------------------
+
+class TestRestAndScheduleMonotonic:
+    """_rest_and_schedule must handle duplicate dates (doubleheaders) without crashing.
+
+    pandas 3.0.5 enforces strict monotonicity for time-based rolling windows.
+    Two games on the same date for the same team produce a non-strictly-monotonic
+    datetime index in _games_last_7d, which raises ValueError on pandas >=3.0.5.
+    """
+
+    _T1, _T2 = 147, 111
+
+    def _make_games(self, rows):
+        from pregame.engineering.feature_engineering import _rest_and_schedule
+        import pandas as pd
+        return pd.DataFrame(rows).reset_index(drop=True), _rest_and_schedule
+
+    def test_doubleheader_same_date_does_not_crash(self):
+        """Two games same date for same team (doubleheader) must not raise ValueError."""
+        import pandas as pd
+        from pregame.engineering.feature_engineering import _rest_and_schedule
+
+        games = pd.DataFrame([
+            {"game_pk": 1, "game_date": "2015-03-07", "season": 2015,
+             "home_team_id": self._T1, "away_team_id": self._T2, "game_type_code": "S",
+             "game_number": 1},
+            {"game_pk": 2, "game_date": "2015-03-07", "season": 2015,
+             "home_team_id": self._T1, "away_team_id": self._T2, "game_type_code": "S",
+             "game_number": 2},
+            {"game_pk": 3, "game_date": "2015-03-08", "season": 2015,
+             "home_team_id": self._T1, "away_team_id": self._T2, "game_type_code": "S",
+             "game_number": 1},
+        ]).reset_index(drop=True)
+
+        result = _rest_and_schedule(games)
+        assert "home_days_rest" in result.columns
+        assert "home_games_last_7d" in result.columns
+
+    def test_games_last_7d_counts_doubleheader_correctly(self):
+        """After the fix, games_last_7d for game 3 must count both DH games from Mar 7."""
+        import pandas as pd
+        from pregame.engineering.feature_engineering import _rest_and_schedule
+
+        games = pd.DataFrame([
+            {"game_pk": 1, "game_date": "2015-03-07", "season": 2015,
+             "home_team_id": self._T1, "away_team_id": self._T2, "game_type_code": "S",
+             "game_number": 1},
+            {"game_pk": 2, "game_date": "2015-03-07", "season": 2015,
+             "home_team_id": self._T1, "away_team_id": self._T2, "game_type_code": "S",
+             "game_number": 2},
+            {"game_pk": 3, "game_date": "2015-03-10", "season": 2015,
+             "home_team_id": self._T1, "away_team_id": self._T2, "game_type_code": "S",
+             "game_number": 1},
+        ]).reset_index(drop=True)
+
+        result = _rest_and_schedule(games)
+        # game 3 (Mar 10): 2 prior games in last 7d (both DH games on Mar 7)
+        assert result.loc[2, "home_games_last_7d"] == 2.0

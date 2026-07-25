@@ -59,9 +59,9 @@ def _make_pitch_row(
     pitch_type: str = "FF",
     bat_side_code: str = "R",
     pitch_hand_code: str = "R",
-    at_bat_event: str | None = None,
+    event_type: str | None = None,
     inning: int = 1,
-    inning_half: str = "top",
+    half_inning: str = "top",
     cum_outs: int = 0,
     home_team_id: int = _HOME_TEAM,
     away_team_id: int = _AWAY_TEAM,
@@ -84,12 +84,11 @@ def _make_pitch_row(
         "pitch_type": pitch_type,
         "bat_side_code": bat_side_code,
         "pitch_hand_code": pitch_hand_code,
-        "at_bat_event": at_bat_event,
-        "event_type": at_bat_event,
+        "event_type": event_type,
         "at_bat_index": at_bat_index,
         "pitch_number": pitch_number,
         "inning": inning,
-        "inning_half": inning_half,
+        "half_inning": half_inning,
         "cum_outs": cum_outs,
         "pre_on_first_id": np.nan,
         "pre_on_second_id": np.nan,
@@ -115,7 +114,7 @@ def _make_pa_pitches(
     bat_side_code: str = "R",
     pitch_hand_code: str = "R",
     inning: int = 1,
-    inning_half: str = "top",
+    half_inning: str = "top",
     pitch_type: str = "FF",
     release_speed: float = 92.0,
     home_team_id: int = _HOME_TEAM,
@@ -141,9 +140,9 @@ def _make_pa_pitches(
             release_speed=release_speed,
             bat_side_code=bat_side_code,
             pitch_hand_code=pitch_hand_code,
-            at_bat_event=event,
+            event_type=event,
             inning=inning,
-            inning_half=inning_half,
+            half_inning=half_inning,
             pitch_type=pitch_type,
             home_team_id=home_team_id,
             away_team_id=away_team_id,
@@ -166,7 +165,7 @@ def _generate_start_pitches(
     coord_z0: float = 5.8,
     pitch_type: str = "FF",
     pitch_hand_code: str = "R",
-    inning_half: str = "top",
+    half_inning: str = "top",
     home_team_id: int = _HOME_TEAM,
     away_team_id: int = _AWAY_TEAM,
 ) -> list[dict]:
@@ -205,9 +204,9 @@ def _generate_start_pitches(
             pitch_type=pitch_type,
             bat_side_code="R",
             pitch_hand_code=pitch_hand_code,
-            at_bat_event=None,
+            event_type=None,
             inning=1 + at_bat_idx // 3,
-            inning_half=inning_half,
+            half_inning=half_inning,
             home_team_id=home_team_id,
             away_team_id=away_team_id,
         ))
@@ -239,7 +238,7 @@ def _add_both_hand_filler_pitches(
                 outcome_event="field_out",
                 bat_side_code="R",
                 pitch_hand_code="L",
-                inning_half="top",
+                half_inning="top",
                 num_pitches=2,
             ))
         # RHP filler (3 PAs per game)
@@ -254,7 +253,7 @@ def _add_both_hand_filler_pitches(
                 outcome_event="field_out",
                 bat_side_code="L",
                 pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
                 num_pitches=2,
             ))
 
@@ -312,7 +311,7 @@ def kbb_pitches_strikeout_lhh_walk_rhh() -> pd.DataFrame:
                 pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx, outcome_event="strikeout",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
             ))
             ab_idx += 1
         # 5 RHH walks per game
@@ -322,7 +321,7 @@ def kbb_pitches_strikeout_lhh_walk_rhh() -> pd.DataFrame:
                 pitcher_id=_PITCHER_HOME, batter_id=600 + ab_idx,
                 at_bat_index=ab_idx, outcome_event="walk",
                 bat_side_code="R", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
             ))
             ab_idx += 1
 
@@ -354,7 +353,7 @@ def fip_pitches_known_stats() -> pd.DataFrame:
             pitcher_id=_PITCHER_HOME, batter_id=700 + ab_idx,
             at_bat_index=ab_idx, outcome_event=event,
             bat_side_code="R", pitch_hand_code="R",
-            inning_half="top",
+            half_inning="top",
         ))
 
     # Game 2: 3K + 1BB + 0HR + 5 field_out = 9 PAs vs RHH
@@ -367,7 +366,7 @@ def fip_pitches_known_stats() -> pd.DataFrame:
             pitcher_id=_PITCHER_HOME, batter_id=800 + ab_idx,
             at_bat_index=ab_idx + 20, outcome_event=event,
             bat_side_code="R", pitch_hand_code="R",
-            inning_half="top",
+            half_inning="top",
         ))
 
     # Game 3: 2K + 2HR (dramatically different — should NOT leak)
@@ -378,7 +377,7 @@ def fip_pitches_known_stats() -> pd.DataFrame:
             pitcher_id=_PITCHER_HOME, batter_id=900 + ab_idx,
             at_bat_index=ab_idx + 40, outcome_event=event,
             bat_side_code="R", pitch_hand_code="R",
-            inning_half="top",
+            half_inning="top",
         ))
 
     _add_both_hand_filler_pitches(rows, _GAME_DATES)
@@ -406,7 +405,7 @@ class TestNoLeakage:
                     pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx, outcome_event="strikeout",
                     bat_side_code="L", pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                 ))
 
         # Game 3: all LHH walks (opposite behavior)
@@ -416,7 +415,7 @@ class TestNoLeakage:
                 pitcher_id=_PITCHER_HOME, batter_id=550 + ab_idx,
                 at_bat_index=ab_idx + 20, outcome_event="walk",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
             ))
 
         _add_both_hand_filler_pitches(rows, _GAME_DATES)
@@ -629,7 +628,7 @@ class TestPlatoonWOBATeamAssignment:
                     pitcher_id=_PITCHER_AWAY, batter_id=batter,
                     at_bat_index=ab_idx_home, outcome_event="single",
                     bat_side_code="L", pitch_hand_code="R",
-                    inning_half="bottom",
+                    half_inning="bottom",
                     num_pitches=2,
                 ))
                 ab_idx_home += 1
@@ -640,7 +639,7 @@ class TestPlatoonWOBATeamAssignment:
                     pitcher_id=_PITCHER_HOME, batter_id=batter,
                     at_bat_index=ab_idx_away, outcome_event="strikeout",
                     bat_side_code="R", pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                     num_pitches=3,
                 ))
                 ab_idx_away += 1
@@ -698,7 +697,7 @@ class TestFirstGameNaN:
                 pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx, outcome_event="strikeout",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
             ))
 
         # Also add TTO-relevant pitches (100 pitches for the start)
@@ -752,7 +751,7 @@ class TestGameTypeFilter:
                 pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx, outcome_event="strikeout",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
                 game_type_code="S",  # Spring training
             ))
 
@@ -763,7 +762,7 @@ class TestGameTypeFilter:
                 pitcher_id=_PITCHER_HOME, batter_id=600 + ab_idx,
                 at_bat_index=ab_idx + 20, outcome_event="walk",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
                 game_type_code="R",
             ))
 
@@ -774,7 +773,7 @@ class TestGameTypeFilter:
                 pitcher_id=_PITCHER_HOME, batter_id=700 + ab_idx,
                 at_bat_index=ab_idx + 40, outcome_event="walk",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
                 game_type_code="R",
             ))
 
@@ -785,7 +784,7 @@ class TestGameTypeFilter:
                 pitcher_id=_PITCHER_HOME, batter_id=800 + ab_idx,
                 at_bat_index=ab_idx + 60, outcome_event="field_out",
                 bat_side_code="L", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
                 game_type_code="R",
             ))
 
@@ -843,7 +842,7 @@ class TestOutputShape:
                     pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx, outcome_event="strikeout",
                     bat_side_code="R", pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                 ))
         _add_both_hand_filler_pitches(rows, _GAME_DATES)
         pitches = pd.DataFrame(rows)
@@ -867,7 +866,7 @@ class TestOutputShape:
                     pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx + 30, outcome_event="strikeout",
                     bat_side_code="R", pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                 ))
         _add_both_hand_filler_pitches(rows, _GAME_DATES)
         pitches = pd.DataFrame(rows)
@@ -934,7 +933,7 @@ class TestFloat32Dtype:
                     pitcher_id=_PITCHER_HOME, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx + 30, outcome_event="strikeout",
                     bat_side_code="R", pitch_hand_code="R",
-                    inning_half="top",
+                    half_inning="top",
                 ))
         _add_both_hand_filler_pitches(rows, _GAME_DATES)
         pitches = pd.DataFrame(rows)
@@ -971,7 +970,7 @@ class TestMissingPitcher:
                 pitcher_id=_PITCHER_AWAY, batter_id=500 + ab_idx,
                 at_bat_index=ab_idx, outcome_event="field_out",
                 bat_side_code="R", pitch_hand_code="R",
-                inning_half="top",
+                half_inning="top",
             ))
         _add_both_hand_filler_pitches(rows, [(1001, "2025-04-01")])
         pitches = pd.DataFrame(rows)
@@ -1008,7 +1007,7 @@ class TestMissingPitcher:
                     pitcher_id=_PITCHER_AWAY, batter_id=500 + ab_idx,
                     at_bat_index=ab_idx, outcome_event="strikeout",
                     bat_side_code="R", pitch_hand_code="R",
-                    inning_half="bottom",
+                    half_inning="bottom",
                 ))
         _add_both_hand_filler_pitches(rows, _GAME_DATES)
         pitches = pd.DataFrame(rows)
