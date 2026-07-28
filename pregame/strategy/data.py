@@ -145,6 +145,8 @@ def load_features(
 _PREGAME_FEATURE_PREFIXES = (
     # Rolling stats from prior games (all use shift(1) internally)
     "home_roll", "away_roll",
+    # Unified rolling stats (home+away merged timeline, shift(1) internally)
+    "home_all_", "away_all_", "diff_all_",
     # Differentials and sums of rolling features
     "diff_roll", "sum_roll",
     # EWMA features (game-index halflife decay, shift(1) internally)
@@ -155,7 +157,7 @@ _PREGAME_FEATURE_PREFIXES = (
     # Win/loss streaks (computed from prior games via shift(1))
     "home_win_streak", "away_win_streak",
     # Rating systems (Elo, Wolfe, Pythagorean, SRS, BaseRuns) — all from prior games
-    "home_elo", "away_elo",
+    "home_elo", "away_elo", "elo_diff", "elo_prob",
     "home_wolfe", "away_wolfe", "wolfe_diff", "wolfe_prob",
     "home_pythag_1st", "home_pythag_2nd", "away_pythag_1st", "away_pythag_2nd",
     "pythag_1st_diff", "pythag_2nd_diff",
@@ -173,11 +175,23 @@ _PREGAME_FEATURE_PREFIXES = (
     "park_factor", "temp_f", "is_dome", "is_night_game", "is_doubleheader",
     "venue_capacity", "venue_latitude", "venue_longitude",
     "air_density_index",
+    # Schedule context flags (known before game)
+    "is_same_league", "is_same_division",
+    "home_league_id", "away_league_id",
+    "home_division_id", "away_division_id",
     # Starting pitcher season-level stats (from prior starts, not this game)
     "sp_home_season_era", "sp_home_season_whip",
     "sp_away_season_era", "sp_away_season_whip",
     "sp_era_diff", "sp_whip_diff",
     "sp_home_is_lefty", "sp_away_is_lefty",
+    # Pitch-level features (all use shift(1) at game/PA level)
+    "home_sp_tto_", "away_sp_tto_",
+    "home_sp_kpct_", "away_sp_kpct_",
+    "home_sp_bbpct_", "away_sp_bbpct_",
+    "home_sp_kbb_", "away_sp_kbb_",
+    "home_sp_fip_", "away_sp_fip_",
+    "home_team_woba_", "away_team_woba_",
+    "home_team_pitchmix_", "away_team_pitchmix_",
     # Structural regime flags
     "rule_",
 )
