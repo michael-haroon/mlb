@@ -127,7 +127,7 @@ def _order_by_rank(features: list[str], report: pd.DataFrame, rank_col: str) -> 
 #   NOTE: actual trial values not yet verified — search space includes 1.0.
 #   Routing absorbed here is architecturally coherent but remains a hypothesis
 #   pending ablation (with vs without absorbed on holdout).
-COLUMN_SUBSAMPLE_CONFIRMED = {"random_forest", "extra_trees", "lightgbm", "xgboost"}
+COLUMN_SUBSAMPLE_CONFIRMED = {"random_forest", "extra_trees", "lightgbm", "xgboost", "ydf_oblique_gbt"}
 
 # CatBoost (rsm) and HistGB (max_features) are NOT activated yet.
 # Decision: defer adding rsm/max_features to Optuna until the ablation on
@@ -366,7 +366,7 @@ def route_features(filter_report: pd.DataFrame) -> dict:
 
     all_families = [
         "lightgbm", "xgboost", "catboost", "random_forest", "extra_trees",
-        "hist_gradient_boosting", "adaboost", "mlp",
+        "hist_gradient_boosting", "ydf_oblique_gbt", "adaboost", "mlp",
         "logistic_regression", "ridge", "lasso", "elasticnet", "sgd",
         "bagging_logreg", "knn", "lda", "qda", "gaussian_nb",
     ]

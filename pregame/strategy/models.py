@@ -360,6 +360,257 @@ def _build_bagging_logreg(task: str, params: dict):
 
 
 # ---------------------------------------------------------------------------
+# YDF Oblique GBT — sklearn-compatible wrappers
+# ---------------------------------------------------------------------------
+
+class YDFObliqueClassifier:
+    """sklearn-compatible wrapper for YDF GBT with sparse oblique splits."""
+
+    def __init__(self, num_trees=300, max_depth=6, shrinkage=0.1,
+                 sparse_oblique_normalization="STANDARD_DEVIATION",
+                 sparse_oblique_projection_density_factor=2.0,
+                 sparse_oblique_max_num_features=None,
+                 sparse_oblique_weights="BINARY",
+                 subsample=1.0, l2_regularization=0.0,
+                 num_candidate_attributes_ratio=1.0,
+                 random_seed=42):
+        self.num_trees = num_trees
+        self.max_depth = max_depth
+        self.shrinkage = shrinkage
+        self.sparse_oblique_normalization = sparse_oblique_normalization
+        self.sparse_oblique_projection_density_factor = sparse_oblique_projection_density_factor
+        self.sparse_oblique_max_num_features = sparse_oblique_max_num_features
+        self.sparse_oblique_weights = sparse_oblique_weights
+        self.subsample = subsample
+        self.l2_regularization = l2_regularization
+        self.num_candidate_attributes_ratio = num_candidate_attributes_ratio
+        self.random_seed = random_seed
+
+    def fit(self, X, y, sample_weight=None):
+        import ydf
+        import pandas as pd
+        import numpy as np
+
+        if isinstance(X, pd.DataFrame):
+            df = X.copy()
+            self.feature_names_ = list(X.columns)
+        else:
+            self.feature_names_ = [f"f{i}" for i in range(X.shape[1])]
+            df = pd.DataFrame(np.asarray(X), columns=self.feature_names_)
+
+        df["__target__"] = np.asarray(y).astype(np.int32)
+        weights_col = None
+        if sample_weight is not None:
+            df["__weight__"] = np.asarray(sample_weight).astype(np.float32)
+            weights_col = "__weight__"
+
+        self.classes_ = np.unique(y)
+        self.n_features_in_ = len(self.feature_names_)
+
+        learner_kwargs = dict(
+            label="__target__",
+            task=ydf.Task.CLASSIFICATION,
+            split_axis="SPARSE_OBLIQUE",
+            weights=weights_col,
+            num_trees=self.num_trees,
+            max_depth=self.max_depth,
+            shrinkage=self.shrinkage,
+            sparse_oblique_normalization=self.sparse_oblique_normalization,
+            sparse_oblique_projection_density_factor=self.sparse_oblique_projection_density_factor,
+            sparse_oblique_weights=self.sparse_oblique_weights,
+            subsample=self.subsample,
+            l2_regularization=self.l2_regularization,
+            num_candidate_attributes_ratio=self.num_candidate_attributes_ratio,
+            random_seed=self.random_seed,
+        )
+        if self.sparse_oblique_max_num_features is not None:
+            learner_kwargs["sparse_oblique_max_num_features"] = self.sparse_oblique_max_num_features
+
+        self.model_ = ydf.GradientBoostedTreesLearner(**learner_kwargs).train(df)
+        return self
+
+    def predict_proba(self, X):
+        import pandas as pd
+        import numpy as np
+
+        if isinstance(X, pd.DataFrame):
+            df = X
+        else:
+            df = pd.DataFrame(np.asarray(X), columns=self.feature_names_)
+        p1 = self.model_.predict(df)
+        return np.column_stack([1.0 - p1, p1])
+
+    def predict(self, X):
+        import numpy as np
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+    @property
+    def feature_importances_(self):
+        import numpy as np
+        vi = self.model_.variable_importances()
+        imp = np.zeros(self.n_features_in_)
+        if "SUM_SCORE" in vi:
+            for score, name in vi["SUM_SCORE"]:
+                if name in self.feature_names_:
+                    imp[self.feature_names_.index(name)] = score
+        total = imp.sum()
+        if total > 0:
+            imp /= total
+        return imp
+
+    def get_params(self, deep=True):
+        return {
+            "num_trees": self.num_trees,
+            "max_depth": self.max_depth,
+            "shrinkage": self.shrinkage,
+            "sparse_oblique_normalization": self.sparse_oblique_normalization,
+            "sparse_oblique_projection_density_factor": self.sparse_oblique_projection_density_factor,
+            "sparse_oblique_max_num_features": self.sparse_oblique_max_num_features,
+            "sparse_oblique_weights": self.sparse_oblique_weights,
+            "subsample": self.subsample,
+            "l2_regularization": self.l2_regularization,
+            "num_candidate_attributes_ratio": self.num_candidate_attributes_ratio,
+            "random_seed": self.random_seed,
+        }
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
+class YDFObliqueRegressor:
+    """sklearn-compatible wrapper for YDF GBT regression with sparse oblique splits."""
+
+    def __init__(self, num_trees=300, max_depth=6, shrinkage=0.1,
+                 sparse_oblique_normalization="STANDARD_DEVIATION",
+                 sparse_oblique_projection_density_factor=2.0,
+                 sparse_oblique_max_num_features=None,
+                 sparse_oblique_weights="BINARY",
+                 subsample=1.0, l2_regularization=0.0,
+                 num_candidate_attributes_ratio=1.0,
+                 random_seed=42):
+        self.num_trees = num_trees
+        self.max_depth = max_depth
+        self.shrinkage = shrinkage
+        self.sparse_oblique_normalization = sparse_oblique_normalization
+        self.sparse_oblique_projection_density_factor = sparse_oblique_projection_density_factor
+        self.sparse_oblique_max_num_features = sparse_oblique_max_num_features
+        self.sparse_oblique_weights = sparse_oblique_weights
+        self.subsample = subsample
+        self.l2_regularization = l2_regularization
+        self.num_candidate_attributes_ratio = num_candidate_attributes_ratio
+        self.random_seed = random_seed
+
+    def fit(self, X, y, sample_weight=None):
+        import ydf
+        import pandas as pd
+        import numpy as np
+
+        if isinstance(X, pd.DataFrame):
+            df = X.copy()
+            self.feature_names_ = list(X.columns)
+        else:
+            self.feature_names_ = [f"f{i}" for i in range(X.shape[1])]
+            df = pd.DataFrame(np.asarray(X), columns=self.feature_names_)
+
+        df["__target__"] = np.asarray(y).astype(np.float32)
+        weights_col = None
+        if sample_weight is not None:
+            df["__weight__"] = np.asarray(sample_weight).astype(np.float32)
+            weights_col = "__weight__"
+
+        self.n_features_in_ = len(self.feature_names_)
+
+        learner_kwargs = dict(
+            label="__target__",
+            task=ydf.Task.REGRESSION,
+            split_axis="SPARSE_OBLIQUE",
+            weights=weights_col,
+            num_trees=self.num_trees,
+            max_depth=self.max_depth,
+            shrinkage=self.shrinkage,
+            sparse_oblique_normalization=self.sparse_oblique_normalization,
+            sparse_oblique_projection_density_factor=self.sparse_oblique_projection_density_factor,
+            sparse_oblique_weights=self.sparse_oblique_weights,
+            subsample=self.subsample,
+            l2_regularization=self.l2_regularization,
+            num_candidate_attributes_ratio=self.num_candidate_attributes_ratio,
+            random_seed=self.random_seed,
+        )
+        if self.sparse_oblique_max_num_features is not None:
+            learner_kwargs["sparse_oblique_max_num_features"] = self.sparse_oblique_max_num_features
+
+        self.model_ = ydf.GradientBoostedTreesLearner(**learner_kwargs).train(df)
+        return self
+
+    def predict(self, X):
+        import pandas as pd
+        import numpy as np
+
+        if isinstance(X, pd.DataFrame):
+            df = X
+        else:
+            df = pd.DataFrame(np.asarray(X), columns=self.feature_names_)
+        return self.model_.predict(df).astype(np.float64)
+
+    @property
+    def feature_importances_(self):
+        import numpy as np
+        vi = self.model_.variable_importances()
+        imp = np.zeros(self.n_features_in_)
+        if "SUM_SCORE" in vi:
+            for score, name in vi["SUM_SCORE"]:
+                if name in self.feature_names_:
+                    imp[self.feature_names_.index(name)] = score
+        total = imp.sum()
+        if total > 0:
+            imp /= total
+        return imp
+
+    def get_params(self, deep=True):
+        return {
+            "num_trees": self.num_trees,
+            "max_depth": self.max_depth,
+            "shrinkage": self.shrinkage,
+            "sparse_oblique_normalization": self.sparse_oblique_normalization,
+            "sparse_oblique_projection_density_factor": self.sparse_oblique_projection_density_factor,
+            "sparse_oblique_max_num_features": self.sparse_oblique_max_num_features,
+            "sparse_oblique_weights": self.sparse_oblique_weights,
+            "subsample": self.subsample,
+            "l2_regularization": self.l2_regularization,
+            "num_candidate_attributes_ratio": self.num_candidate_attributes_ratio,
+            "random_seed": self.random_seed,
+        }
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
+def _build_ydf_oblique_gbt(task: str, params: dict):
+    common = {
+        "num_trees": params.get("num_trees", 300),
+        "max_depth": params.get("max_depth", 6),
+        "shrinkage": params.get("shrinkage", 0.1),
+        "sparse_oblique_normalization": params.get("sparse_oblique_normalization", "STANDARD_DEVIATION"),
+        "sparse_oblique_projection_density_factor": params.get("sparse_oblique_projection_density_factor", 2.0),
+        "sparse_oblique_max_num_features": params.get("sparse_oblique_max_num_features", None),
+        "sparse_oblique_weights": params.get("sparse_oblique_weights", "BINARY"),
+        "subsample": params.get("subsample", 1.0),
+        "l2_regularization": params.get("l2_regularization", 0.0),
+        "num_candidate_attributes_ratio": params.get("num_candidate_attributes_ratio", 1.0),
+        "random_seed": 42,
+    }
+
+    if task == "classification":
+        return YDFObliqueClassifier(**common)
+    else:
+        return YDFObliqueRegressor(**common)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -382,6 +633,7 @@ MODEL_BUILDERS = {
     "gaussian_nb": _build_gaussian_nb,
     "mlp": _build_mlp,
     "bagging_logreg": _build_bagging_logreg,
+    "ydf_oblique_gbt": _build_ydf_oblique_gbt,
 }
 
 

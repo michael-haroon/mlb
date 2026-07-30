@@ -36,7 +36,7 @@ from sklearn.ensemble import BaggingClassifier, BaggingRegressor
 from sklearn.metrics import log_loss, roc_auc_score, r2_score
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_samples
-from scipy.stats import wilcoxon as scipy_wilcoxon, weightedtau
+from scipy.stats import wilcoxon as scipy_wilcoxon, weightedtau, spearmanr
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 
@@ -110,6 +110,9 @@ def detone_corr(corr: pd.DataFrame, n_remove: int = 1) -> pd.DataFrame:
     eigenvectors (the 'market mode') (AFML Ch.2). Exposes cluster structure
     that would otherwise be masked by the common factor. Renormalises diagonal to 1.
     """
+    if n_remove <= 0:
+        return corr.copy()
+
     evals, evecs = np.linalg.eigh(corr.values)  # ascending order
     evals_detoned = evals.copy()
     evals_detoned[-n_remove:] = 0.0
@@ -1171,7 +1174,8 @@ def compute_pvalues(raw: pd.DataFrame,
         vals = raw[col].dropna().values
         diffs = vals - null_mean
         diffs = diffs[diffs != 0]
-        if len(diffs) < 4:
+        # n≥5: one-sided Wilcoxon minimum p at n=4 is 1/16=0.0625, unreachable at α=0.05
+        if len(diffs) < 5:
             pvals[col] = np.nan
         else:
             _, p = scipy_wilcoxon(diffs, alternative=alternative)
@@ -1279,25 +1283,32 @@ def filter_features(mdi_raw: pd.DataFrame,
                     resid_mda_raw: pd.DataFrame = None,
                     p_threshold: float = 0.10,
                     recency_n_folds: int = 3) -> pd.DataFrame:
-    """Three-tier feature classification with recency rescue.
+    """Three-tier feature classification with trend analysis.
 
       ACCEPTED          — passes ALL available tests. Proven signal.
       NEEDS SPECIFICATION — passes SOME tests. Signal exists but partial/conditional.
-      REJECTED          — fails ALL tests. No signal detected.
+      REJECTED          — fails ALL tests OR decaying into noise.
 
-    Recency rescue: A feature that would be REJECTED but shows positive
-    importance in the most recent `recency_n_folds` folds (mean > 0 for
-    any OOS method) is promoted to NEEDS SPECIFICATION. This prevents
-    newly-important features (e.g., from rule changes) from being discarded
-    because older folds dilute their signal.
+    Gate logic (per method):
+      Pass requires BOTH: (1) CI upper > threshold (entire CI not below threshold)
+                          (2) mean > threshold (positive folds aren't just noise blips)
+      This means CI spanning zero with positive mean passes (likely signal), but
+      CI spanning zero with negative mean fails (noise blips pulled CI up).
+
+    Temporal trend demotion: Features passing the gate but with Spearman rho < -0.6
+    (strong monotonic decay in fold-ordered importance) AND recent folds mean <= null
+    are demoted to REJECTED. Historical mean was positive but signal is dying.
+
+    Recency rescue: REJECTED features with positive recent folds are promoted to
+    NEEDS SPECIFICATION (newly-important features from regime changes).
 
     Tests:
-      MDI pass:      mean > 1/F AND (bootstrap CI lower > 1/F OR Wilcoxon p < threshold)
-      SFI pass:      mean > sfi_null AND bootstrap CI lower > sfi_null
-      Desub MDA pass: bootstrap CI lower > 0 OR Wilcoxon p < threshold
-      PCA-MDA pass:  bootstrap CI lower > 0 OR Wilcoxon p < threshold
-      Resid MDA pass: bootstrap CI lower > 0 OR Wilcoxon p < threshold
-      CFI-MDA:       cluster-level, reported but not used for individual pass/fail
+      MDI pass:       mean > 1/F AND CI upper > 1/F
+      SFI pass:       mean > sfi_null AND CI upper > sfi_null
+      Desub MDA pass: mean > 0 AND CI upper > 0
+      PCA-MDA pass:   mean > 0 AND CI upper > 0
+      Resid MDA pass: mean > 0 AND CI upper > 0
+      CFI-MDA:        cluster-level, reported but not used for individual pass/fail
     """
     feat_to_cluster = {}
     if clusters:
@@ -1321,33 +1332,31 @@ def filter_features(mdi_raw: pd.DataFrame,
         # ── MDI ──────────────────────────────────────────────────────────
         if mdi_raw is not None and feat in mdi_raw.columns:
             vals = mdi_raw[feat].dropna().values.astype(float)
-            if len(vals) >= 4:
+            if len(vals) >= 5:
                 mdi_mean, mdi_ci_lo, mdi_ci_hi = bootstrap_ci(vals)
-                diffs = vals - threshold_1F
-                diffs = diffs[diffs != 0]
-                p_mdi = scipy_wilcoxon(diffs, alternative='greater')[1] if len(diffs) >= 4 else np.nan
                 row.update({
                     "mdi_mean": mdi_mean, "mdi_ci_lo": mdi_ci_lo,
-                    "mdi_ci_hi": mdi_ci_hi, "mdi_p": p_mdi,
-                    "mdi_passes": (
-                        mdi_mean > threshold_1F and
-                        (mdi_ci_lo > threshold_1F or (not np.isnan(p_mdi) and p_mdi < p_threshold))
-                    ),
+                    "mdi_ci_hi": mdi_ci_hi,
+                    # Two-part gate: (1) CI not entirely below noise floor,
+                    # (2) mean above noise floor — prevents noise blips
+                    # from granting pass when bulk of evidence is negative.
+                    "mdi_passes": (mdi_ci_hi > threshold_1F and mdi_mean > threshold_1F),
                 })
             else:
                 row.update({"mdi_mean": np.nan, "mdi_passes": False})
         else:
             row.update({"mdi_mean": np.nan, "mdi_passes": np.nan})
 
-        # ── SFI ──────────────────────────────────────────────────────────
+        # ── SFI (already CI-only, no Wilcoxon leg) ───────────────────────
         if sfi_raw is not None and feat in sfi_raw.columns and sfi_null is not None:
             vals = sfi_raw[feat].dropna().values.astype(float)
-            if len(vals) >= 4:
+            if len(vals) >= 5:
                 sfi_mean, sfi_ci_lo, sfi_ci_hi = bootstrap_ci(vals)
                 row.update({
                     "sfi_mean": sfi_mean, "sfi_ci_lo": sfi_ci_lo,
                     "sfi_ci_hi": sfi_ci_hi,
-                    "sfi_passes": (sfi_mean > sfi_null and sfi_ci_lo > sfi_null),
+                    # Two-part gate: CI not entirely below null AND mean above null.
+                    "sfi_passes": (sfi_ci_hi > sfi_null and sfi_mean > sfi_null),
                 })
             else:
                 row.update({"sfi_mean": np.nan, "sfi_passes": False})
@@ -1357,17 +1366,13 @@ def filter_features(mdi_raw: pd.DataFrame,
         # ── De-substituted MDA ────────────────────────────────────────────
         if desub_mda_raw is not None and feat in desub_mda_raw.columns:
             vals = desub_mda_raw[feat].dropna().values.astype(float)
-            if len(vals) >= 4:
+            if len(vals) >= 5:
                 desub_mean, desub_ci_lo, desub_ci_hi = bootstrap_ci(vals)
-                diffs = vals - 0.0
-                diffs = diffs[diffs != 0]
-                p_desub = scipy_wilcoxon(diffs, alternative='greater')[1] if len(diffs) >= 4 else np.nan
                 row.update({
                     "desub_mda_mean": desub_mean, "desub_mda_ci_lo": desub_ci_lo,
-                    "desub_mda_ci_hi": desub_ci_hi, "desub_mda_p": p_desub,
-                    "desub_mda_passes": (
-                        desub_ci_lo > 0 or (not np.isnan(p_desub) and p_desub < p_threshold)
-                    ),
+                    "desub_mda_ci_hi": desub_ci_hi,
+                    # Two-part gate: CI not entirely negative AND mean positive.
+                    "desub_mda_passes": (desub_ci_hi > 0 and desub_mean > 0),
                 })
             else:
                 row.update({"desub_mda_mean": np.nan, "desub_mda_passes": False})
@@ -1377,17 +1382,13 @@ def filter_features(mdi_raw: pd.DataFrame,
         # ── PCA-MDA ──────────────────────────────────────────────────────
         if pca_mda_raw is not None and feat in pca_mda_raw.columns:
             vals = pca_mda_raw[feat].dropna().values.astype(float)
-            if len(vals) >= 4:
+            if len(vals) >= 5:
                 pca_mda_mean, pca_mda_ci_lo, pca_mda_ci_hi = bootstrap_ci(vals)
-                diffs = vals - 0.0
-                diffs = diffs[diffs != 0]
-                p_pca = scipy_wilcoxon(diffs, alternative='greater')[1] if len(diffs) >= 4 else np.nan
                 row.update({
                     "pca_mda_mean": pca_mda_mean, "pca_mda_ci_lo": pca_mda_ci_lo,
-                    "pca_mda_ci_hi": pca_mda_ci_hi, "pca_mda_p": p_pca,
-                    "pca_mda_passes": (
-                        pca_mda_ci_lo > 0 or (not np.isnan(p_pca) and p_pca < p_threshold)
-                    ),
+                    "pca_mda_ci_hi": pca_mda_ci_hi,
+                    # Two-part gate: CI not entirely negative AND mean positive.
+                    "pca_mda_passes": (pca_mda_ci_hi > 0 and pca_mda_mean > 0),
                 })
             else:
                 row.update({"pca_mda_mean": np.nan, "pca_mda_passes": False})
@@ -1397,50 +1398,37 @@ def filter_features(mdi_raw: pd.DataFrame,
         # ── Residualized MDA ─────────────────────────────────────────────
         if resid_mda_raw is not None and feat in resid_mda_raw.columns:
             vals = resid_mda_raw[feat].dropna().values.astype(float)
-            if len(vals) >= 4:
+            if len(vals) >= 5:
                 resid_mean, resid_ci_lo, resid_ci_hi = bootstrap_ci(vals)
-                diffs = vals - 0.0
-                diffs = diffs[diffs != 0]
-                p_resid = scipy_wilcoxon(diffs, alternative='greater')[1] if len(diffs) >= 4 else np.nan
                 row.update({
                     "resid_mda_mean": resid_mean, "resid_mda_ci_lo": resid_ci_lo,
-                    "resid_mda_ci_hi": resid_ci_hi, "resid_mda_p": p_resid,
-                    "resid_mda_passes": (
-                        resid_ci_lo > 0 or (not np.isnan(p_resid) and p_resid < p_threshold)
-                    ),
+                    "resid_mda_ci_hi": resid_ci_hi,
+                    # Two-part gate: CI not entirely negative AND mean positive.
+                    "resid_mda_passes": (resid_ci_hi > 0 and resid_mean > 0),
                 })
             else:
                 row.update({"resid_mda_mean": np.nan, "resid_mda_passes": False})
         else:
             row.update({"resid_mda_mean": np.nan, "resid_mda_passes": np.nan})
 
-        # ── CFI-MDA (cluster-level, Wilcoxon signed-rank gate) ────────────
-        # Same non-parametric test as desub/PCA/resid MDA — no normality
-        # assumption on fold-level importance drops.
-        # n≥5 required: Wilcoxon's smallest one-sided p at n=4 is 1/16=0.0625,
-        # which can never clear alpha=0.05 regardless of effect size.
+        # ── CFI-MDA (cluster-level, bootstrap CI gate) ───────────────────
         cid = feat_to_cluster.get(feat)
         if cfi_mda_raw is not None and cid is not None and cid in cfi_mda_raw.columns:
             vals = cfi_mda_raw[cid].dropna().values.astype(float)
             if len(vals) >= 5:
                 cfi_mean, cfi_ci_lo, cfi_ci_hi = bootstrap_ci(vals)
-                diffs = vals[vals != 0]
-                p_cfi = scipy_wilcoxon(diffs, alternative='greater')[1] if len(diffs) >= 5 else np.nan
                 row.update({
                     "cfi_mda_cluster_mean": cfi_mean,
                     "cfi_mda_ci_lo": cfi_ci_lo,
                     "cfi_mda_ci_hi": cfi_ci_hi,
-                    "cfi_mda_p": p_cfi,
-                    "cfi_mda_cluster_passes": (
-                        cfi_ci_lo > 0 or (not np.isnan(p_cfi) and p_cfi < p_threshold)
-                    ),
+                    "cfi_mda_cluster_passes": (cfi_ci_lo > 0),
                 })
             else:
                 row.update({"cfi_mda_cluster_mean": np.nan, "cfi_mda_ci_lo": np.nan,
-                            "cfi_mda_ci_hi": np.nan, "cfi_mda_p": np.nan, "cfi_mda_cluster_passes": False})
+                            "cfi_mda_ci_hi": np.nan, "cfi_mda_cluster_passes": False})
         else:
             row.update({"cfi_mda_cluster_mean": np.nan, "cfi_mda_ci_lo": np.nan,
-                        "cfi_mda_ci_hi": np.nan, "cfi_mda_p": np.nan, "cfi_mda_cluster_passes": np.nan})
+                        "cfi_mda_ci_hi": np.nan, "cfi_mda_cluster_passes": np.nan})
 
         rows.append(row)
 
@@ -1491,27 +1479,29 @@ def filter_features(mdi_raw: pd.DataFrame,
         report.loc[valid_mask, f"{p_col}_bh"] = p_adjusted
 
         # Recalculate pass/fail using BH-adjusted p-values.
-        # For MDI: mean > 1/F AND (CI lower > 1/F OR adjusted_p < threshold)
-        # For desub/pca/resid: CI lower > 0 OR adjusted_p < threshold
+        # New semantics: mean > threshold AND (CI upper > threshold OR adjusted_p < alpha).
+        # The CI-upper gate prevents rejection when CI entirely below threshold;
+        # BH-adjusted p provides an alternative significance path.
         if p_col == "mdi_p":
             report.loc[valid_mask, pass_col] = (
                 (report.loc[valid_mask, "mdi_mean"] > threshold_1F) &
-                ((report.loc[valid_mask, "mdi_ci_lo"] > threshold_1F) |
+                ((report.loc[valid_mask, "mdi_ci_hi"] > threshold_1F) |
                  (p_adjusted < p_threshold))
             )
         elif p_col == "cfi_mda_p":
-            # CFI-MDA: cluster-level, CI lower > 0 OR adjusted p < threshold
             report.loc[valid_mask, pass_col] = (
-                (report.loc[valid_mask, "cfi_mda_ci_lo"] > 0) |
+                (report.loc[valid_mask, "cfi_mda_ci_hi"] > 0) |
                 (p_adjusted < p_threshold)
             )
         else:
-            # desub/pca/resid: CI lower > 0 OR adjusted p < threshold
-            ci_col = p_col.replace("_p", "_ci_lo")
-            if ci_col in report.columns:
+            # desub/pca/resid: mean > 0 AND (CI upper > 0 OR adjusted_p < threshold)
+            ci_hi_col = p_col.replace("_p", "_ci_hi")
+            mean_col = p_col.replace("_p", "_mean")
+            if ci_hi_col in report.columns and mean_col in report.columns:
                 report.loc[valid_mask, pass_col] = (
-                    (report.loc[valid_mask, ci_col] > 0) |
-                    (p_adjusted < p_threshold)
+                    (report.loc[valid_mask, mean_col] > 0) &
+                    ((report.loc[valid_mask, ci_hi_col] > 0) |
+                     (p_adjusted < p_threshold))
                 )
 
     n_corrected = sum(1 for p in p_col_to_pass_col if p in report.columns)
@@ -1582,17 +1572,53 @@ def filter_features(mdi_raw: pd.DataFrame,
 
     report["tier"] = report.apply(assign_tier, axis=1)
 
+    # ── Temporal trend demotion: demote ACCEPTED/NEEDS SPECIFICATION features
+    # with decaying importance into recent noise. A feature whose historical
+    # mean was positive (passing the gate) but is monotonically declining and
+    # recently negative is no longer useful for forward deployment.
+    # Criterion: Spearman ρ < -0.6 (strong monotonic decline) AND mean of last
+    # recency_n_folds < null_val. Both conditions required to avoid demoting
+    # features with noisy-but-stable trajectories.
+    oos_raws_for_trend = [
+        (sfi_raw, sfi_null or 0.0), (desub_mda_raw, 0.0),
+        (pca_mda_raw, 0.0), (resid_mda_raw, 0.0),
+    ]
+    demoted = set()
+    for raw_df, null_val in oos_raws_for_trend:
+        if raw_df is None or raw_df.empty:
+            continue
+        recent = raw_df.tail(recency_n_folds)
+        for feat in report.index[report["tier"].isin(["ACCEPTED", "NEEDS SPECIFICATION"])]:
+            if feat in demoted:
+                continue
+            if feat not in raw_df.columns:
+                continue
+            vals = raw_df[feat].dropna().values
+            if len(vals) < 5:
+                continue
+            rho, _ = spearmanr(np.arange(len(vals)), vals)
+            if rho >= -0.6:
+                continue
+            recent_vals = recent[feat].dropna().values if feat in recent.columns else np.array([])
+            if len(recent_vals) >= 2 and recent_vals.mean() <= null_val:
+                demoted.add(feat)
+
+    if demoted:
+        report.loc[list(demoted), "tier"] = "REJECTED"
+        log.info(f"    Trend demotion: {len(demoted)} features demoted to REJECTED "
+                 f"(Spearman rho < -0.6 AND recent mean <= null)")
+
     # ── Recency rescue: promote REJECTED → NEEDS SPECIFICATION if the feature
-    # shows positive importance in the most recent folds. This prevents newly-
-    # important features (rule changes, regime shifts) from being discarded
-    # because older seasons dilute their full-sample signal.
+    # shows credible emerging signal. Requires BOTH:
+    #   (a) Recent folds positive (mean > null)
+    #   (b) Overall upward trend (Spearman ρ > 0 across all folds)
+    # Without (b), noise blips in recent folds trigger false rescues.
     oos_raws = [(sfi_raw, sfi_null or 0.0), (desub_mda_raw, 0.0),
                 (pca_mda_raw, 0.0), (resid_mda_raw, 0.0)]
     rescued = set()
     for raw_df, null_val in oos_raws:
         if raw_df is None or raw_df.empty:
             continue
-        # Last N rows = most recent folds (folds are chronologically ordered)
         recent = raw_df.tail(recency_n_folds)
         for feat in report.index[report["tier"] == "REJECTED"]:
             if feat in rescued:
@@ -1600,13 +1626,21 @@ def filter_features(mdi_raw: pd.DataFrame,
             if feat not in recent.columns:
                 continue
             recent_vals = recent[feat].dropna().values
-            if len(recent_vals) >= 2 and recent_vals.mean() > null_val:
+            if len(recent_vals) < 2 or recent_vals.mean() <= null_val:
+                continue
+            # Require strong upward trend (ρ > 0.5) to confirm emergence vs blip.
+            # Weak positive ρ (e.g. 0.2) with n=8 is indistinguishable from noise.
+            all_vals = raw_df[feat].dropna().values
+            if len(all_vals) < 5:
+                continue
+            rho, _ = spearmanr(np.arange(len(all_vals)), all_vals)
+            if rho > 0.5:
                 rescued.add(feat)
 
     if rescued:
         report.loc[list(rescued), "tier"] = "NEEDS SPECIFICATION"
         log.info(f"    Recency rescue: {len(rescued)} features promoted from "
-                 f"REJECTED → NEEDS SPECIFICATION (positive in last {recency_n_folds} folds)")
+                 f"REJECTED → NEEDS SPECIFICATION (positive recent + upward trend)")
 
     # Composite rank (lower = better)
     for method, col in [("mdi", "mdi_mean"), ("sfi", "sfi_mean"), ("desub_mda", "desub_mda_mean"),
@@ -1730,7 +1764,7 @@ def compute_shared_clustering(X: pd.DataFrame) -> dict:
             "top_eigenvalue": float(evals_raw.max()),
         }
         corr_denoised = denoise_corr(corr_raw, q=q)
-        corr_cluster = detone_corr(corr_denoised, n_remove=1)
+        corr_cluster = detone_corr(corr_denoised, n_remove=0)
 
     log.info(f"    lambda+ = {lambda_plus:.4f}, signal eigenvalues: {n_signal}, "
              f"noise: {n_noise}, signal variance: {denoising_info['signal_variance_pct']}%")
@@ -1815,7 +1849,7 @@ def run_all_importance(X: pd.DataFrame,
                 "top_eigenvalue": float(evals_raw.max()),
             }
             corr_denoised = denoise_corr(corr_raw, q=q)
-            corr_cluster = detone_corr(corr_denoised, n_remove=1)
+            corr_cluster = detone_corr(corr_denoised, n_remove=0)
 
         log.info(f"    lambda+ = {lambda_plus:.4f}, signal: {n_signal}, noise: {n_noise}, "
                  f"signal var: {denoising_info['signal_variance_pct']}%")

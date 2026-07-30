@@ -56,6 +56,18 @@ def _build_fixed_model(family: str, task: str):
             return cls(n_estimators=200, max_depth=8, min_samples_leaf=20, random_state=42, n_jobs=-1)
         return reg(n_estimators=200, max_depth=8, min_samples_leaf=20, random_state=42, n_jobs=-1)
 
+    if family == "ydf_oblique_gbt":
+        from .models import YDFObliqueClassifier, YDFObliqueRegressor
+        if task == "classification":
+            return YDFObliqueClassifier(
+                num_trees=200, max_depth=6, shrinkage=0.1,
+                sparse_oblique_projection_density_factor=2.0,
+            )
+        return YDFObliqueRegressor(
+            num_trees=200, max_depth=6, shrinkage=0.1,
+            sparse_oblique_projection_density_factor=2.0,
+        )
+
     if family == "adaboost":
         if task == "classification":
             return AdaBoostClassifier(n_estimators=100, learning_rate=0.1, random_state=42)
@@ -185,7 +197,7 @@ def run_sizing_curve(
     # the routing ceiling so S* can grow OR shrink for every model type.
     ALL_FAMILIES = [
         "lightgbm", "catboost", "xgboost", "hist_gradient_boosting",
-        "random_forest", "extra_trees", "adaboost", "mlp",
+        "random_forest", "extra_trees", "ydf_oblique_gbt", "adaboost", "mlp",
         "logistic_regression", "ridge", "lasso", "elasticnet",
         "sgd", "bagging_logreg", "knn", "lda", "qda", "gaussian_nb",
     ]

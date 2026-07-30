@@ -143,10 +143,12 @@ def compute_baseruns(games: pd.DataFrame) -> pd.DataFrame:
         games[f"{side}_bsr_offense"] = side_rows["_bsr_offense"].reindex(games.index)
         games[f"{side}_bsr_defense"] = side_rows["_bsr_defense"].reindex(games.index)
 
-    # Differentials
+    # Differentials and sums
     if "home_bsr_offense" in games.columns and "away_bsr_offense" in games.columns:
         games["bsr_offense_diff"] = games["home_bsr_offense"] - games["away_bsr_offense"]
+        games["bsr_offense_sum"] = games["home_bsr_offense"] + games["away_bsr_offense"]
         games["bsr_defense_diff"] = games["home_bsr_defense"] - games["away_bsr_defense"]
+        games["bsr_defense_sum"] = games["home_bsr_defense"] + games["away_bsr_defense"]
 
     return games
 
@@ -264,12 +266,13 @@ def compute_pythagenpat(games: pd.DataFrame, z: float = 0.287) -> pd.DataFrame:
         if col in games.columns:
             games = games.drop(columns=[col])
 
-    # Differentials
+    # Differentials and sums
     for tier in ("1st", "2nd"):
         h = f"home_pythag_{tier}"
         a = f"away_pythag_{tier}"
         if h in games.columns and a in games.columns:
             games[f"pythag_{tier}_diff"] = games[h] - games[a]
+            games[f"pythag_{tier}_sum"] = games[h] + games[a]
 
     return games
 
@@ -392,6 +395,7 @@ def compute_srs(
     games["home_srs"] = srs_home
     games["away_srs"] = srs_away
     games["srs_diff"] = srs_home - srs_away
+    games["srs_sum"] = srs_home + srs_away
     return games
 
 
@@ -520,6 +524,7 @@ def compute_elo(games: pd.DataFrame, params: dict) -> pd.DataFrame:
     games["away_elo"] = elo_away_arr
     games["elo_prob"] = elo_prob_arr
     games["elo_diff"] = elo_home_arr - elo_away_arr
+    games["elo_sum"] = elo_home_arr + elo_away_arr
     return games
 
 
@@ -618,6 +623,7 @@ def compute_wolfe(
     games["away_wolfe"] = wolfe_away
     games["wolfe_prob"] = wolfe_prob
     games["wolfe_diff"] = wolfe_home - wolfe_away
+    games["wolfe_sum"] = wolfe_home + wolfe_away
     return games
 
 

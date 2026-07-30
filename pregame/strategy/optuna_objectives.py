@@ -307,6 +307,22 @@ def _suggest_bagging_logreg(trial: optuna.Trial, task: str) -> dict:
     }
 
 
+def _suggest_ydf_oblique_gbt(trial: optuna.Trial, task: str) -> dict:
+    return {
+        "num_trees": trial.suggest_int("num_trees", 100, 600),
+        "max_depth": trial.suggest_int("max_depth", 4, 10),
+        "shrinkage": trial.suggest_float("shrinkage", 0.01, 0.2, log=True),
+        "sparse_oblique_normalization": trial.suggest_categorical(
+            "sparse_oblique_normalization", ["STANDARD_DEVIATION", "NONE"]),
+        "sparse_oblique_projection_density_factor": trial.suggest_float(
+            "sparse_oblique_projection_density_factor", 1.0, 5.0),
+        "sparse_oblique_weights": trial.suggest_categorical(
+            "sparse_oblique_weights", ["BINARY", "CONTINUOUS"]),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "l2_regularization": trial.suggest_float("l2_regularization", 1e-3, 10.0, log=True),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -330,4 +346,5 @@ SUGGEST_FUNCTIONS = {
     "gaussian_nb": _suggest_gaussian_nb,
     "mlp": _suggest_mlp,
     "bagging_logreg": _suggest_bagging_logreg,
+    "ydf_oblique_gbt": _suggest_ydf_oblique_gbt,
 }

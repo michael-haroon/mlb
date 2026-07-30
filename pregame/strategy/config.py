@@ -49,7 +49,7 @@ ECE_N_BINS = 15
 # ---------------------------------------------------------------------------
 TREE_MODELS = {
     "lightgbm", "xgboost", "catboost", "random_forest",
-    "extra_trees", "hist_gradient_boosting",
+    "extra_trees", "hist_gradient_boosting", "ydf_oblique_gbt",
 }
 LINEAR_MODELS = {
     "logistic_regression", "ridge", "lasso", "elasticnet",

@@ -146,23 +146,23 @@ _PREGAME_FEATURE_PREFIXES = (
     # Rolling stats from prior games (all use shift(1) internally)
     "home_roll", "away_roll",
     # Unified rolling stats (home+away merged timeline, shift(1) internally)
-    "home_all_", "away_all_", "diff_all_",
+    "home_all_", "away_all_", "diff_all_", "sum_all_",
     # Differentials and sums of rolling features
     "diff_roll", "sum_roll",
     # EWMA features (game-index halflife decay, shift(1) internally)
-    "home_ewma_", "away_ewma_", "diff_ewma_",
+    "home_ewma_", "away_ewma_", "diff_ewma_", "sum_ewma_",
     # Schedule context
     "home_days_rest", "away_days_rest",
     "home_games_last_7d", "away_games_last_7d",
     # Win/loss streaks (computed from prior games via shift(1))
     "home_win_streak", "away_win_streak",
     # Rating systems (Elo, Wolfe, Pythagorean, SRS, BaseRuns) — all from prior games
-    "home_elo", "away_elo", "elo_diff", "elo_prob",
-    "home_wolfe", "away_wolfe", "wolfe_diff", "wolfe_prob",
+    "home_elo", "away_elo", "elo_diff", "elo_sum", "elo_prob",
+    "home_wolfe", "away_wolfe", "wolfe_diff", "wolfe_sum", "wolfe_prob",
     "home_pythag_1st", "home_pythag_2nd", "away_pythag_1st", "away_pythag_2nd",
-    "pythag_1st_diff", "pythag_2nd_diff",
-    "home_srs", "away_srs", "srs_diff",
-    "bsr_offense_diff", "bsr_defense_diff",
+    "pythag_1st_diff", "pythag_1st_sum", "pythag_2nd_diff", "pythag_2nd_sum",
+    "home_srs", "away_srs", "srs_diff", "srs_sum",
+    "bsr_offense_diff", "bsr_offense_sum", "bsr_defense_diff", "bsr_defense_sum",
     # BSR rolling ratings — exact names only, NOT the *_game variants which
     # are computed from this game's box score
     "home_bsr_offense", "home_bsr_defense",
@@ -182,7 +182,7 @@ _PREGAME_FEATURE_PREFIXES = (
     # Starting pitcher season-level stats (from prior starts, not this game)
     "sp_home_season_era", "sp_home_season_whip",
     "sp_away_season_era", "sp_away_season_whip",
-    "sp_era_diff", "sp_whip_diff",
+    "sp_era_diff", "sp_era_sum", "sp_whip_diff", "sp_whip_sum",
     "sp_home_is_lefty", "sp_away_is_lefty",
     # Pitch-level features (all use shift(1) at game/PA level)
     "home_sp_tto_", "away_sp_tto_",
@@ -331,7 +331,7 @@ def prepare_fold(
     # --- Binary observation masks (for tree models with MNAR features) ---
     observation_masks = None
     if model_family in ("lightgbm", "xgboost", "catboost", "random_forest",
-                        "extra_trees", "hist_gradient_boosting"):
+                        "extra_trees", "hist_gradient_boosting", "ydf_oblique_gbt"):
         # Add _observed binary indicators for columns with >5% NaN in training
         nan_pct = X_train.isna().mean()
         mnar_cols = nan_pct[nan_pct > 0.05].index.tolist()
@@ -431,6 +431,9 @@ _IMPUTATION_RULES: list[tuple[callable, float]] = [
     # where sp_era_diff disagrees with its components by up to 5.5 raw units).
     # Must appear BEFORE the level-feature rules (first match wins).
     (lambda c: c in ("sp_era_diff", "sp_whip_diff"), 0.0),
+    # SP ERA/WHIP sums → 2× replacement-level (two unknown pitchers)
+    (lambda c: c == "sp_era_sum", 9.0),
+    (lambda c: c == "sp_whip_sum", 2.60),
     # SP season ERA → 4.50 (replacement-level prior, 2015-2024 MLB average ~4.2-4.5)
     (lambda c: "season_era" in c, 4.50),
     # SP season WHIP → 1.30 (replacement-level prior)

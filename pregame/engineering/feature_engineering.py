@@ -328,12 +328,13 @@ def _ewma_features(games: pd.DataFrame) -> pd.DataFrame:
         if obp_key in new_cols and slg_key in new_cols:
             new_cols[f"{side}_ewma_ops"] = (new_cols[obp_key] + new_cols[slg_key]).astype("float32")
 
-    # Home - Away differentials for all EWMA stats
+    # Home - Away differentials and sums for all EWMA stats
     for stat in ("avg", "obp", "slg", "ops", "era", "whip", "k9", "fip"):
         h_col = f"home_ewma_{stat}"
         a_col = f"away_ewma_{stat}"
         if h_col in new_cols and a_col in new_cols:
             new_cols[f"diff_ewma_{stat}"] = (new_cols[h_col] - new_cols[a_col]).astype("float32")
+            new_cols[f"sum_ewma_{stat}"] = (new_cols[h_col] + new_cols[a_col]).astype("float32")
 
     if not new_cols:
         return games
@@ -412,12 +413,13 @@ def _unified_rolling_stats(games: pd.DataFrame) -> pd.DataFrame:
             if col in side_rows.columns:
                 new_cols[feat_name] = side_rows[col].reindex(games.index)
 
-    # Differentials on unified stats
+    # Differentials and sums on unified stats
     for col in unified_stats:
         h_col = f"home_all{col}"
         a_col = f"away_all{col}"
         if h_col in new_cols and a_col in new_cols:
             new_cols[f"diff_all{col}"] = new_cols[h_col] - new_cols[a_col]
+            new_cols[f"sum_all{col}"] = new_cols[h_col] + new_cols[a_col]
 
     if not new_cols:
         return games
@@ -727,9 +729,11 @@ def _starting_pitcher_features(games: pd.DataFrame) -> pd.DataFrame:
     a_whip = games.get("sp_away_season_whip")
 
     if h_era is not None and a_era is not None:
-        new_cols["sp_era_diff"]  = (a_era  - h_era).astype("float32")
+        new_cols["sp_era_diff"] = (a_era - h_era).astype("float32")
+        new_cols["sp_era_sum"] = (a_era + h_era).astype("float32")
     if h_whip is not None and a_whip is not None:
         new_cols["sp_whip_diff"] = (a_whip - h_whip).astype("float32")
+        new_cols["sp_whip_sum"] = (a_whip + h_whip).astype("float32")
 
     if not new_cols:
         return games
