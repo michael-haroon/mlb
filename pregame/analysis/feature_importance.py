@@ -691,7 +691,7 @@ def feat_imp_pca_mda(X: pd.DataFrame,
     }, index=X.columns).sort_values("mean", ascending=False)
 
     raw_df = pd.DataFrame(feat_raw_dict)
-    return summary_df, raw_df, pc_summary
+    return summary_df, raw_df, pc_summary, pca.explained_variance_ratio_
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1721,7 +1721,7 @@ def resid_mda_dispatch(fold_values: np.ndarray,
 #  PCA-validated gate: filter_features_v2
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PCA_ELIGIBLE_METHODS = {"SFI", "DESUB_MDA", "PCA_MDA", "RESID_MDA", "MDI"}
+_PCA_ELIGIBLE_METHODS = {"SFI", "MDA", "DESUB_MDA", "PCA_MDA", "RESID_MDA", "MDI"}
 
 _METHOD_TO_EB_KEY = {
     "SFI": "sfi",
@@ -2523,72 +2523,131 @@ def filter_features(mdi_raw: pd.DataFrame,
 #  PCA cross-check + weighted Kendall's tau  (de Prado structural validation)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def pca_cross_check(X: pd.DataFrame,
-                    importance_summary: pd.DataFrame) -> tuple:
-    """De Prado's PCA cross-check:
-    1. Run PCA on the feature matrix
-    2. Rank features by variance-weighted absolute loading
-    3. Compute weighted Kendall's tau between PCA ranks and importance ranks
+def _compute_tau(eigenvalue_ranks: np.ndarray,
+                 importance_ranks: np.ndarray) -> tuple[float | None, float]:
+    """Weighted Kendall's tau with permutation p-value (1000 permutations)."""
+    tau, _ = weightedtau(eigenvalue_ranks, importance_ranks)
+    rng = np.random.default_rng(42)
+    perm_taus = np.array([
+        weightedtau(eigenvalue_ranks, rng.permutation(importance_ranks))[0]
+        for _ in range(1000)
+    ])
+    p = float((np.abs(perm_taus) >= np.abs(tau)).mean())
+    return (float(tau) if not np.isnan(tau) else None), p
 
-    A tau near 1 means supervised importance aligns with unsupervised structure.
+
+def pca_cross_check(X: pd.DataFrame,
+                    y: pd.Series,
+                    years: pd.Series,
+                    sample_weight: pd.Series,
+                    regression: bool = False,
+                    variance_threshold: float = 0.95) -> tuple:
+    """De Prado's PCA cross-check (AFML Ch.8 / MLAM Ch.6).
+
+    Procedure:
+      1. PCA the standardized feature matrix → k PCs (variance_threshold)
+      2. Run MDI, MDA, SFI independently on the PCs
+      3. Compare eigenvalue rank of PC_k to importance rank of PC_k
+
+    This validates whether supervised importance aligns with unsupervised
+    variance structure. If tau is significantly positive for a method, that
+    method's importance is structurally grounded.
 
     Returns:
-        (pca_info, tau_results)
+        pca_info: DataFrame(index=PC_k) with per-method importance and ranks
+        tau_results: dict keyed by method name, e.g.
+            {"MDI": {"tau": 0.38, "p_value": 0.001}, "MDA": {...}, "SFI": {...}}
     """
-    X_clean = X.dropna(axis=1, how="all")
-    X_filled = X_clean.fillna(X_clean.median())
-    X_filled = X_filled.dropna(axis=1)
+    from sklearn.metrics import log_loss, mean_squared_error
 
-    # Standardize so PCA decomposes the correlation matrix, not covariance.
-    # Without this, features with large raw variance (e.g. venue_capacity ~40k)
-    # dominate all PCs and the tau becomes a unit-of-measurement test.
-    X_mean = X_filled.mean()
-    X_std = X_filled.std().replace(0, 1)
-    X_scaled = (X_filled - X_mean) / X_std
+    n_jobs = get_n_jobs()
+    scoring = "log_loss" if not regression else "r2"
 
-    pca = PCA()
-    pca.fit(X_scaled)
+    # Step 1: PCA on correlation matrix (standardized features)
+    with blas_full():
+        X_std = (X - X.mean()) / X.std().replace(0, 1)
+        X_filled = X_std.fillna(0)
+        pca = PCA()
+        pca.fit(X_filled.values)
 
-    loadings = np.abs(pca.components_)
     var_ratios = pca.explained_variance_ratio_
-    weighted_loadings = (loadings.T * var_ratios).sum(axis=1)
+    cum_var = np.cumsum(var_ratios)
+    k = int(np.searchsorted(cum_var, variance_threshold)) + 1
+    k = min(k, X_filled.shape[1])
 
-    pca_info = pd.DataFrame({
-        "pca_weighted_loading": weighted_loadings,
-        "pca_rank": pd.Series(weighted_loadings).rank(ascending=False).values,
-    }, index=X_filled.columns)
+    W = pca.components_[:k].T
+    P_vals = X_filled.values @ W
+    pc_names = [f"PC_{i}" for i in range(k)]
+    X_pc = pd.DataFrame(P_vals, index=X.index, columns=pc_names)
+
+    # Eigenvalue ranks: PC_0 = most variance = rank 1
+    eigenvalue_ranks = np.arange(1, k + 1, dtype=float)
+
+    log.info(f"PCA cross-check: {k} PCs, {cum_var[k-1]:.1%} variance explained")
 
     tau_results = {}
-    for method in ["MDI", "CFI_MDI", "SFI", "CFI_MDA", "DESUB_MDA", "PCA_MDA", "RESID_MDA"]:
-        rank_col = f"rank_{method}"
-        if rank_col not in importance_summary.columns:
-            continue
-        ranks = importance_summary[rank_col].dropna()
-        common = pca_info.index.intersection(ranks.index)
-        if len(common) < 3:
-            tau_results[method] = {"tau": np.nan, "p_value": np.nan}
-            continue
-        pca_ranks = pca_info.loc[common, "pca_rank"].values
-        imp_ranks = ranks[common].values
-        tau, _ = weightedtau(pca_ranks, imp_ranks)
-        rng_perm = np.random.default_rng(42)
-        n_perm = 1000
-        perm_taus = np.array([
-            weightedtau(pca_ranks, rng_perm.permutation(imp_ranks))[0]
-            for _ in range(n_perm)
-        ])
-        p = float((np.abs(perm_taus) >= np.abs(tau)).mean())
-        tau_results[method] = {
-            "tau": float(tau) if not np.isnan(tau) else None,
-            "p_value": p,
-        }
+    pca_info_data = {
+        "explained_variance_ratio": var_ratios[:k],
+        "eigenvalue_rank": eigenvalue_ranks,
+    }
 
-    n_components_90 = np.searchsorted(np.cumsum(var_ratios), 0.90) + 1
-    log.info(f"PCA: {n_components_90} components explain 90%% variance "
-             f"(of {len(var_ratios)} total)")
-    for method, res in tau_results.items():
-        tau_str = f"{res['tau']:.3f}" if res['tau'] is not None else "N/A"
-        log.info(f"Kendall's tau (PCA vs {method}): {tau_str} (p={res['p_value']:.3f})")
+    # Step 2a: MDI on PCs
+    log.info("  PCA cross-check: MDI on PCs...")
+    clf_mdi = build_rf(n_estimators=1000, n_jobs=n_jobs, regression=regression)
+    clf_mdi.fit(X_pc, y, sample_weight=sample_weight.values)
+    mdi_summary, _ = feat_imp_mdi(clf_mdi, pc_names)
+    pc_mdi = mdi_summary.loc[pc_names, "mean"].values
+    mdi_ranks = pd.Series(pc_mdi).rank(ascending=False).values
+    tau, p = _compute_tau(eigenvalue_ranks, mdi_ranks)
+    tau_results["MDI"] = {"tau": tau, "p_value": p}
+    pca_info_data["mdi"] = pc_mdi
+    pca_info_data["mdi_rank"] = mdi_ranks
+    log.info(f"    MDI: tau={tau:+.4f}, p={p:.4f}")
+
+    # Step 2b: MDA on PCs (permutation importance via expanding-window CV)
+    log.info("  PCA cross-check: MDA on PCs...")
+    clf_mda = build_rf(n_estimators=300, n_jobs=1, regression=regression)
+    mda_summary, _ = feat_imp_mda(
+        clf_mda, X_pc, y, years,
+        sample_weight=sample_weight,
+        scoring=scoring,
+    )
+    mda_vals = mda_summary.loc[pc_names, "mean"].values
+    mda_ranks = pd.Series(mda_vals).rank(ascending=False).values
+    tau, p = _compute_tau(eigenvalue_ranks, mda_ranks)
+    tau_results["MDA"] = {"tau": tau, "p_value": p}
+    pca_info_data["mda"] = mda_vals
+    pca_info_data["mda_rank"] = mda_ranks
+    log.info(f"    MDA: tau={tau:+.4f}, p={p:.4f}")
+
+    # Step 2c: SFI on PCs (single-feature importance per PC)
+    log.info("  PCA cross-check: SFI on PCs...")
+    cv = ExpandingWindowYearCV(years)
+    folds = list(cv.split(X_pc, y, groups=years.values))
+    sfi_scores = np.zeros(k)
+    for i in range(k):
+        fold_scores = []
+        for tr_idx, te_idx in folds:
+            clf_sfi = build_rf(n_estimators=100, n_jobs=n_jobs, regression=regression)
+            Xi_tr = X_pc.iloc[tr_idx, [i]]
+            Xi_te = X_pc.iloc[te_idx, [i]]
+            w_tr = sample_weight.iloc[tr_idx].values
+            clf_sfi.fit(Xi_tr, y.iloc[tr_idx], sample_weight=w_tr)
+            if regression:
+                pred = clf_sfi.predict(Xi_te)
+                fold_scores.append(-mean_squared_error(y.iloc[te_idx], pred))
+            else:
+                pred = clf_sfi.predict_proba(Xi_te)
+                fold_scores.append(-log_loss(y.iloc[te_idx], pred))
+        sfi_scores[i] = np.mean(fold_scores)
+    sfi_ranks = pd.Series(sfi_scores).rank(ascending=False).values
+    tau, p = _compute_tau(eigenvalue_ranks, sfi_ranks)
+    tau_results["SFI"] = {"tau": tau, "p_value": p}
+    pca_info_data["sfi"] = sfi_scores
+    pca_info_data["sfi_rank"] = sfi_ranks
+    log.info(f"    SFI: tau={tau:+.4f}, p={p:.4f}")
+
+    pca_info = pd.DataFrame(pca_info_data, index=pc_names)
 
     return pca_info, tau_results
 
@@ -2795,9 +2854,10 @@ def run_all_importance(X: pd.DataFrame,
     pca_mda = None
     pca_mda_raw = None
     pca_mda_pc_summary = None
+    pca_explained_variance_ratio = None
     if run_pca_mda:
         log.info("7/10  PCA-MDA (orthogonal basis)...")
-        pca_mda, pca_mda_raw, pca_mda_pc_summary = feat_imp_pca_mda(
+        pca_mda, pca_mda_raw, pca_mda_pc_summary, pca_explained_variance_ratio = feat_imp_pca_mda(
             X, y, years,
             sample_weight=sample_weight,
             scoring=mda_scoring,
@@ -2865,10 +2925,10 @@ def run_all_importance(X: pd.DataFrame,
 
     log.info(f"Feature Importance Summary (top 10): {summary.head(10).index.tolist()}")
 
-    # ── Step 9: PCA cross-check ──────────────────────────────────────────
-    log.info("9/10  PCA cross-check + weighted Kendall's tau...")
-    with blas_full():
-        pca_info, tau_results = pca_cross_check(X, summary)
+    # ── Step 9: PCA cross-check (MDI + MDA + SFI on PCs) ────────────────
+    log.info("9/10  PCA cross-check (eigenvalue rank vs PC importance rank)...")
+    pca_info, tau_results = pca_cross_check(
+        X, y, years, sample_weight, regression=regression)
 
     # ── Step 10: Algorithmic filtering (PCA-validated gate) ─────────────
     log.info("10/10  Algorithmic filtering (PCA-validated, conservative union)...")
@@ -2898,6 +2958,7 @@ def run_all_importance(X: pd.DataFrame,
         "pca_mda": pca_mda,
         "pca_mda_raw": pca_mda_raw,
         "pca_mda_pc_summary": pca_mda_pc_summary,
+        "pca_explained_variance_ratio": pca_explained_variance_ratio,
         "resid_mda": resid_mda,
         "resid_mda_raw": resid_mda_raw,
         "cfi_mdi": cfi_mdi,
