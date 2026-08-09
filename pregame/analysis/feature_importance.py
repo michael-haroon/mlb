@@ -10,7 +10,7 @@ Implements the full de Prado pipeline (AFML Ch.7-8, MLAM Ch.4/6):
   Residualized MDA — cross-cluster orthogonalization
 
 Plus:
-  - Purged LOYO cross-validation (no temporal leakage)
+  - Forward-only expanding-window cross-validation (no temporal leakage)
   - Cluster detection via ONC (Optimal Number of Clusters)
   - Marcenko-Pastur denoising + detoning
   - Bootstrap CI + Wilcoxon significance testing
@@ -18,7 +18,7 @@ Plus:
   - PCA cross-check with weighted Kendall's tau
   - Synthetic data validation
 
-All importance methods use LOYO CV for temporal safety.
+All importance methods use forward-only expanding-window CV for temporal safety.
 
 References:
   AFML   Ch.7 (purged CV), Ch.8 (feature importance)
@@ -40,6 +40,7 @@ from scipy.stats import wilcoxon as scipy_wilcoxon, weightedtau, spearmanr
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 
+from ..strategy.config import SKIP_SEASONS, LOYO_MIN_TRAIN_SEASONS
 from .compute import get_n_jobs, get_parallel_split, blas_limit, blas_full
 
 log = logging.getLogger(__name__)
@@ -180,6 +181,59 @@ class PurgedYearKFold:
         if self.n_splits is not None:
             return min(self.n_splits, len(self.unique_years))
         return len(self.unique_years)
+
+
+class ExpandingWindowYearCV:
+    """Forward-only expanding-window cross-validation.
+
+    Matches the training pipeline's temporal constraint: for each test year,
+    training uses ONLY prior years. This is what the model sees at deployment.
+
+    Symmetric LOYO (PurgedYearKFold) trains on future data to predict past,
+    which inflates importance for noise features and penalizes features that
+    became informative after structural breaks (2020 rules, 2023 pitch clock).
+    """
+
+    def __init__(self, years: pd.Series,
+                 skip_seasons: list[int] | None = None,
+                 min_train_seasons: int | None = None):
+        self.unique_years = sorted(years.unique())
+        self.skip_seasons = skip_seasons if skip_seasons is not None else SKIP_SEASONS
+        self.min_train_seasons = min_train_seasons if min_train_seasons is not None else LOYO_MIN_TRAIN_SEASONS
+
+    def split(self, X, y=None, groups=None):
+        years = groups
+        if years is None:
+            raise ValueError("Pass df['season'] as the groups argument.")
+
+        for test_year in self.unique_years:
+            if test_year in self.skip_seasons:
+                continue
+
+            train_years = [s for s in self.unique_years
+                          if s < test_year and s not in self.skip_seasons]
+
+            if len(train_years) < self.min_train_seasons:
+                continue
+
+            train_idx = np.where(np.isin(years, train_years))[0]
+            test_idx = np.where(years == test_year)[0]
+
+            if len(train_idx) == 0 or len(test_idx) == 0:
+                continue
+
+            yield train_idx, test_idx
+
+    def get_n_splits(self):
+        valid = 0
+        for test_year in self.unique_years:
+            if test_year in self.skip_seasons:
+                continue
+            train_years = [s for s in self.unique_years
+                          if s < test_year and s not in self.skip_seasons]
+            if len(train_years) >= self.min_train_seasons:
+                valid += 1
+        return valid
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,9 +400,8 @@ def feat_imp_mda(clf,
                  y: pd.Series,
                  years: pd.Series,
                  sample_weight: pd.Series = None,
-                 scoring: str = "log_loss",
-                 cv_splits: int = None) -> tuple:
-    """Mean Decrease Accuracy via purged year-CV.
+                 scoring: str = "log_loss") -> tuple:
+    """Mean Decrease Accuracy via forward-only expanding-window CV.
 
     Shuffles one feature at a time and measures accuracy drop.
     Parallelised over folds via joblib with multiprocessing backend.
@@ -357,7 +410,7 @@ def feat_imp_mda(clf,
         summary: DataFrame(index=feature, columns=[mean, std])
         raw:     DataFrame(index=fold, columns=features) — per-fold importance
     """
-    cv = PurgedYearKFold(years, n_splits=cv_splits)
+    cv = ExpandingWindowYearCV(years)
     n_folds = cv.get_n_splits()
     n_outer, n_inner = get_parallel_split(n_folds)
 
@@ -489,7 +542,6 @@ def feat_imp_desub_mda(X: pd.DataFrame,
                        clusters: dict,
                        sample_weight: pd.Series = None,
                        scoring: str = "log_loss",
-                       cv_splits: int = None,
                        n_estimators: int = 300,
                        regression: bool = False) -> tuple:
     """De-substituted MDA (Approach B): for each feature f in cluster C_i,
@@ -501,7 +553,7 @@ def feat_imp_desub_mda(X: pd.DataFrame,
         summary: DataFrame(index=feature, columns=[mean, std])
         raw:     DataFrame(index=fold, columns=features)
     """
-    cv = PurgedYearKFold(years, n_splits=cv_splits)
+    cv = ExpandingWindowYearCV(years)
     folds = list(cv.split(X, y, groups=years.values))
     n_folds = len(folds)
 
@@ -574,7 +626,6 @@ def feat_imp_pca_mda(X: pd.DataFrame,
                      years: pd.Series,
                      sample_weight: pd.Series = None,
                      scoring: str = "log_loss",
-                     cv_splits: int = None,
                      n_estimators: int = 1000,
                      regression: bool = False,
                      variance_threshold: float = 0.95) -> tuple:
@@ -612,7 +663,6 @@ def feat_imp_pca_mda(X: pd.DataFrame,
         clf, X_pc, y, years,
         sample_weight=sample_weight,
         scoring=scoring,
-        cv_splits=cv_splits,
     )
 
     # Map back: importance_i = sum_j |W[i,j]| * mean_importance_PC_j
@@ -654,7 +704,6 @@ def feat_imp_residual_mda(X: pd.DataFrame,
                           clusters: dict,
                           sample_weight: pd.Series = None,
                           scoring: str = "log_loss",
-                          cv_splits: int = None,
                           n_estimators: int = 1000,
                           regression: bool = False) -> tuple:
     """Residualized MDA (de Prado MLAM Ch.6).
@@ -712,7 +761,6 @@ def feat_imp_residual_mda(X: pd.DataFrame,
         clf, X_resid, y, years,
         sample_weight=sample_weight,
         scoring=scoring,
-        cv_splits=cv_splits,
     )
 
 
@@ -779,8 +827,7 @@ def feat_imp_sfi(clf,
                  y: pd.Series,
                  years: pd.Series,
                  sample_weight: pd.Series = None,
-                 regression: bool = False,
-                 cv_splits: int = None) -> tuple:
+                 regression: bool = False) -> tuple:
     """Single Feature Importance: train the model on ONE feature at a time.
 
     Immune to substitution effects between correlated features.
@@ -790,7 +837,7 @@ def feat_imp_sfi(clf,
         summary: DataFrame(index=feature, columns=[mean, std, null_score])
         raw:     DataFrame(index=fold, columns=features)
     """
-    cv = PurgedYearKFold(years, n_splits=cv_splits)
+    cv = ExpandingWindowYearCV(years)
     folds = list(cv.split(X, y, groups=years.values))
     n_folds = len(folds)
 
@@ -1014,21 +1061,78 @@ def feat_imp_cfi_mdi(fit, feat_names: list, clusters: dict) -> pd.DataFrame:
     return result.sort_values("mean", ascending=False)
 
 
+def feat_imp_cfi_mdi_deprado(
+    fit,
+    feat_names: list,
+    clusters: dict,
+) -> tuple:
+    """Clustered MDI via per-tree aggregation (MLAM Ch.6).
+
+    Sums MDI across cluster members FOR EACH TREE first, then computes
+    mean and std across trees. This captures within-cluster covariance
+    that quadrature (the naive approach) misses.
+
+    Returns:
+        cluster_summary: DataFrame(index=cluster_label, columns=[mean, std])
+        per_feature:     DataFrame(index=feature, columns=[mean, std, cluster_id])
+        raw_cluster:     DataFrame(index=tree_id, columns=cluster_label)
+    """
+    _, mdi_raw = feat_imp_mdi(fit, feat_names)
+
+    cluster_records = {}
+    cluster_id_for_label = {}
+    for cluster_id, members in clusters.items():
+        present = [m for m in members if m in mdi_raw.columns]
+        if not present:
+            continue
+        label = f"Cluster_{cluster_id} ({', '.join(present[:3])}{'...' if len(present) > 3 else ''})"
+        cluster_records[label] = mdi_raw[present].fillna(0).sum(axis=1)
+        cluster_id_for_label[label] = cluster_id
+
+    raw_cluster = pd.DataFrame(cluster_records)
+
+    n_trees = raw_cluster.shape[0]
+    cluster_summary = pd.DataFrame({
+        "mean": raw_cluster.mean(),
+        "std": raw_cluster.std() * n_trees ** -0.5,
+    }).sort_values("mean", ascending=False)
+
+    feat_to_cluster = {m: cid for cid, members in clusters.items() for m in members}
+    cluster_label_for_id = {v: k for k, v in cluster_id_for_label.items()}
+    per_feature_rows = []
+    for feat in feat_names:
+        cid = feat_to_cluster.get(feat)
+        if cid is None or cid not in cluster_label_for_id:
+            per_feature_rows.append({
+                "feature": feat, "mean": np.nan, "std": np.nan, "cluster_id": np.nan,
+            })
+            continue
+        label = cluster_label_for_id[cid]
+        per_feature_rows.append({
+            "feature": feat,
+            "mean": cluster_summary.loc[label, "mean"],
+            "std": cluster_summary.loc[label, "std"],
+            "cluster_id": cid,
+        })
+    per_feature = pd.DataFrame(per_feature_rows).set_index("feature")
+
+    return cluster_summary, per_feature, raw_cluster
+
+
 def feat_imp_cfi_mda(clf,
                      X: pd.DataFrame,
                      y: pd.Series,
                      years: pd.Series,
                      clusters: dict,
                      sample_weight: pd.Series = None,
-                     scoring: str = "log_loss",
-                     cv_splits: int = None) -> tuple:
+                     scoring: str = "log_loss") -> tuple:
     """Clustered MDA: shuffle all features in a cluster simultaneously.
 
     Returns:
         summary: DataFrame(index=cluster_label, columns=[mean, std])
         raw:     DataFrame(index=fold, columns=cluster_id)
     """
-    cv = PurgedYearKFold(years, n_splits=cv_splits)
+    cv = ExpandingWindowYearCV(years)
     base_scores = []
     cluster_perms = {cid: [] for cid in clusters}
     is_regression = (scoring == "r2")
@@ -1204,6 +1308,765 @@ def bootstrap_ci(values: np.ndarray,
     return (values.mean(),
             np.percentile(boot_means, 100 * alpha / 2),
             np.percentile(boot_means, 100 * (1 - alpha / 2)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-feature scoring with EB variance moderation
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Validated EB priors per test (home_win target, 8-fold expanding-window CV,
+# 2026-07-30 S3 data). Each passed random-split homogeneity at 1000 splits.
+EB_PRIORS = {
+    "sfi":       {"d0": 14.1, "s0_sq": 3.92e-06},
+    "desub_mda": {"d0": 5.69, "s0_sq": 6.94e-06},
+    "pca_mda":   {"d0": 10.9, "s0_sq": 7.17e-07},
+    "resid_mda_112": {"d0": 4.30, "s0_sq": 3.84e-11},
+}
+
+# Null values per test (value expected under H0: feature has no signal)
+NULL_VALUES = {
+    "sfi": np.log(0.5),  # -0.6931: mean log-probability of a coin-flip classifier
+    "desub_mda": 0.0,
+    "pca_mda": 0.0,
+    "resid_mda": 0.0,
+    "mdi": None,  # 1/n_features, computed at runtime
+    "cfi_mda": 0.0,
+}
+
+
+def feature_score(fold_values: np.ndarray,
+                  test: str,
+                  null: float = 0.0,
+                  d0: float | None = None,
+                  s0_sq: float | None = None,
+                  trend_alpha: float = 0.05,
+                  ci_alpha: float = 0.10) -> dict:
+    """Score a single feature on a single EB-moderated importance test.
+
+    For tree-level tests (MDI, CFI_MDA), use feature_score_clt() instead.
+
+    Parameters
+    ----------
+    fold_values : array of shape (n_folds,), ordered chronologically.
+    test : one of 'sfi', 'desub_mda', 'pca_mda', 'resid_mda_112'.
+    null : null hypothesis value (feature has no signal).
+    d0, s0_sq : EB prior parameters (required — raises ValueError if None).
+    trend_alpha : significance level for Mann-Kendall trend test (governs the
+        hard REJECT/ACCEPT branches that fire on significant trend + consistent
+        level). Set separately from ci_alpha because trend decisions are
+        irreversible (hard gate) while CI decisions are softer (flagged).
+    ci_alpha : significance level for the moderated-t confidence interval
+        (governs the CI-based fallback when trend is not significant).
+
+    Returns
+    -------
+    dict with keys: level, trend_tau, trend_p, mod_t, mod_df, ci_lo, ci_hi,
+                    decision, flag
+    """
+    from scipy.stats import kendalltau, t as t_dist
+
+    vals = np.asarray(fold_values, dtype=np.float64)
+    n = len(vals)
+    result = {}
+
+    # ── Level: sample mean (coherent with SE = sqrt(mod_var / n)) ──
+    level = float(np.mean(vals))
+    result["level"] = level
+
+    # ── Trend: Kendall's tau (exact when no ties, asymptotic otherwise) ──
+    ranks = np.arange(n)
+    try:
+        tau, p_trend = kendalltau(ranks, vals, method='exact')
+    except ValueError:
+        tau, p_trend = kendalltau(ranks, vals, method='asymptotic')
+    result["trend_tau"] = float(tau)
+    result["trend_p"] = float(p_trend)
+
+    # ── EB-moderated t-statistic ──
+    # feature_score() is exclusively for fold-structured tests with validated
+    # EB priors. MDI/CFI_MDA use feature_score_clt() instead.
+    if d0 is None or s0_sq is None:
+        raise ValueError(
+            f"feature_score() requires d0 and s0_sq for EB-moderated tests. "
+            f"For tree-level tests (MDI, CFI_MDA), use feature_score_clt()."
+        )
+
+    d_i = n - 1
+    s2_i = float(np.var(vals, ddof=1))
+    mod_var = (d_i * s2_i + d0 * s0_sq) / (d_i + d0)
+    mod_df = d_i + d0
+    se = np.sqrt(mod_var / n)
+    mod_t = (level - null) / se if se > 0 else 0.0
+    result["mod_t"] = float(mod_t)
+    result["mod_df"] = float(mod_df)
+    result["mod_var"] = float(mod_var)
+
+    # CI uses ci_alpha (wider than trend_alpha → more conservative gate)
+    t_crit = t_dist.ppf(1 - ci_alpha / 2, df=mod_df)
+    result["ci_lo"] = level - t_crit * se
+    result["ci_hi"] = level + t_crit * se
+
+    ci_lo = result["ci_lo"]
+    ci_hi = result["ci_hi"]
+    trend_significant = p_trend < trend_alpha
+    flag = None
+
+    # Variance regime shift detection (checked first — overrides other logic)
+    instability = False
+    if n >= 6:
+        mid = n // 2
+        mad_first = np.median(np.abs(vals[:mid] - np.median(vals[:mid])))
+        mad_second = np.median(np.abs(vals[mid:] - np.median(vals[mid:])))
+        if mad_second > 5 * max(mad_first, 1e-15):
+            instability = True
+
+    if instability:
+        flag = "INSTABILITY"
+        decision = "NEEDS_SPECIFICATION"
+    elif trend_significant and tau < 0 and ci_lo <= null:
+        decision = "REJECT"
+    elif trend_significant and tau > 0 and level > null:
+        decision = "ACCEPT"
+    elif not trend_significant:
+        # No significant trend at trend_alpha: fall through to CI at ci_alpha
+        if ci_lo > null:
+            decision = "ACCEPT"
+            flag = "NEEDS_SPECIFICATION"
+        elif ci_hi < null:
+            decision = "REJECT"
+        else:
+            decision = "NEEDS_SPECIFICATION"
+            flag = "NEEDS_SPECIFICATION"
+    else:
+        # Significant trend but contradicts level/CI
+        # (e.g. tau>0 but level<=null, or tau<0 but ci_lo>null)
+        flag = "NEEDS_SPECIFICATION"
+        if ci_lo > null:
+            decision = "ACCEPT"
+        elif ci_hi < null:
+            decision = "REJECT"
+        else:
+            decision = "NEEDS_SPECIFICATION"
+
+    result["decision"] = decision
+    result["flag"] = flag
+    return result
+
+
+def feature_score_clt(tree_values: np.ndarray,
+                      null: float,
+                      alpha: float = 0.05) -> dict:
+    """Score a feature via CLT-based significance test on tree-level importances.
+
+    Implements de Prado's MDI significance framework with an empirical null:
+    z = (mean - null) / SE, where null is derived from a permuted-target forest
+    (not the theoretical 1/F, which is 15x too low due to row-normalization and
+    max_features=1 sparsity inflating all features above 1/F uniformly).
+
+    Parameters
+    ----------
+    tree_values : array of per-tree importance values (NaN = tree didn't use feature).
+    null : empirical null for this feature — its mean MDI under permuted target
+        with the same tree construction. Each feature gets its own null because
+        high-cardinality or high-variance features attract more splits even
+        under noise.
+    alpha : two-sided significance level for the z-test. Default 0.05 chosen to
+        match trend_alpha in the EB-moderated tests — both control the hard
+        ACCEPT/REJECT gate at the same Type-I error rate.
+
+    Returns
+    -------
+    dict with keys: mean, std, n, se, z_stat, p_value, null, ci_lo, ci_hi,
+                    decision, flag
+    """
+    from scipy.stats import norm
+
+    vals = np.asarray(tree_values, dtype=np.float64)
+    valid = vals[~np.isnan(vals)]
+    n = len(valid)
+
+    result = {"null": float(null), "n": n, "alpha": alpha}
+
+    if n < 10:
+        result.update({"mean": float(np.mean(valid)) if n > 0 else 0.0,
+                       "std": 0.0, "se": 0.0, "z_stat": 0.0, "p_value": 1.0,
+                       "ci_lo": null, "ci_hi": null,
+                       "decision": "NEEDS_SPECIFICATION",
+                       "flag": "NEEDS_SPECIFICATION"})
+        return result
+
+    mean = float(np.mean(valid))
+    std = float(np.std(valid, ddof=1))
+    se = std / np.sqrt(n)
+
+    result["mean"] = mean
+    result["std"] = std
+    result["se"] = se
+
+    if se < 1e-15:
+        result.update({"z_stat": 0.0, "p_value": 1.0,
+                       "ci_lo": mean, "ci_hi": mean,
+                       "decision": "NEEDS_SPECIFICATION",
+                       "flag": "NEEDS_SPECIFICATION"})
+        return result
+
+    z_stat = (mean - null) / se
+    p_value = 2 * norm.sf(abs(z_stat))
+    z_crit = norm.ppf(1 - alpha / 2)
+    ci_lo = mean - z_crit * se
+    ci_hi = mean + z_crit * se
+
+    result["z_stat"] = float(z_stat)
+    result["p_value"] = float(p_value)
+    result["ci_lo"] = float(ci_lo)
+    result["ci_hi"] = float(ci_hi)
+
+    # Decision logic: mirrors EB path's CI-based branch
+    if p_value < alpha and z_stat > 0:
+        decision = "ACCEPT"
+        flag = None
+    elif p_value < alpha and z_stat < 0:
+        # Feature is significantly BELOW average — weaker than random
+        decision = "REJECT"
+        flag = None
+    else:
+        # Not significant: CI straddles null
+        decision = "NEEDS_SPECIFICATION"
+        flag = "NEEDS_SPECIFICATION"
+
+    result["decision"] = decision
+    result["flag"] = flag
+    return result
+
+
+def feature_score_resid_sometimes_zero(fold_values: np.ndarray,
+                                       null: float = 0.0) -> dict:
+    """Score a resid_MDA feature that is sometimes-zero (nonzero in 1-7 of 8 folds).
+
+    No EB moderation (d0=1.09 too weak). Instead reports:
+    - level: median of NONZERO folds only
+    - fold_nonzero_frac: reliability weight
+    """
+    vals = np.asarray(fold_values, dtype=np.float64)
+    n = len(vals)
+    nonzero_mask = vals != 0
+    n_nonzero = int(nonzero_mask.sum())
+    fold_nonzero_frac = n_nonzero / n
+
+    if n_nonzero > 0:
+        level = float(np.median(vals[nonzero_mask]))
+    else:
+        level = 0.0
+
+    return {
+        "level": level,
+        "fold_nonzero_frac": fold_nonzero_frac,
+        "n_nonzero_folds": n_nonzero,
+        "decision": "NO_UNIQUE_SIGNAL" if n_nonzero == 0 else None,
+        "flag": None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  6-test weighted-vote combiner
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Base weights per test type. EB-moderated tests (fold-structured, validated
+# priors) carry full weight. CLT-based tests (MDI, CFI_MDA) carry half weight
+# despite having a calibrated z-test — their selectivity is near-zero (MDI
+# accepts 99.2% of features with max_features=1 because every drawn feature
+# gets inflated above 1/F). Low information content for discriminating useful
+# vs useless features means reduced voting power in the combiner.
+_BASE_WEIGHTS = {
+    "sfi": 1.0,
+    "desub_mda": 1.0,
+    "pca_mda": 1.0,
+    "resid_mda": 1.0,
+    "mdi": 0.5,
+    "cfi_mda": 0.5,
+}
+
+# Flag multipliers applied on top of base weight
+_FLAG_MULTIPLIERS = {
+    None: 1.0,
+    "NEEDS_SPECIFICATION": 0.5,
+    "INSTABILITY": 0.0,
+}
+
+
+def combine_test_scores(scores: dict[str, dict],
+                        accept_threshold: float = 0.5) -> dict:
+    """Combine per-test feature_score() results into a final gate decision.
+
+    Parameters
+    ----------
+    scores : dict mapping test name -> feature_score() result dict.
+        Each value must have 'decision' and 'flag' keys.
+        For resid_MDA sometimes-zero features, pass a dict with
+        'decision': None and 'fold_nonzero_frac' — these abstain from voting.
+    accept_threshold : fraction of available weighted votes needed for ACCEPT.
+        Default 0.5 = simple weighted majority.
+
+    Returns
+    -------
+    dict with keys: tier, accept_votes, reject_votes, abstain_votes,
+                    total_available, accept_frac, details
+    """
+    accept_votes = 0.0
+    reject_votes = 0.0
+    abstain_votes = 0.0
+    total_available = 0.0
+    details = {}
+
+    for test_name, result in scores.items():
+        base_w = _BASE_WEIGHTS.get(test_name, 0.5)
+        decision = result.get("decision")
+        flag = result.get("flag")
+        flag_mult = _FLAG_MULTIPLIERS.get(flag, 0.5)
+        effective_w = base_w * flag_mult
+
+        # Features that abstain: INSTABILITY, NO_UNIQUE_SIGNAL, or None decision
+        if decision is None or decision == "NO_UNIQUE_SIGNAL" or flag == "INSTABILITY":
+            abstain_votes += base_w
+            details[test_name] = {"vote": "ABSTAIN", "weight": 0.0, "base": base_w}
+            continue
+
+        total_available += effective_w
+
+        if decision == "ACCEPT":
+            accept_votes += effective_w
+            details[test_name] = {"vote": "ACCEPT", "weight": effective_w, "base": base_w}
+        elif decision == "REJECT":
+            reject_votes += effective_w
+            details[test_name] = {"vote": "REJECT", "weight": effective_w, "base": base_w}
+        else:  # NEEDS_SPECIFICATION
+            # Neither accept nor reject — counts toward available but not toward either
+            details[test_name] = {"vote": "NEEDS_SPEC", "weight": effective_w, "base": base_w}
+
+    # Final tier decision
+    if total_available == 0:
+        tier = "UNKNOWN"
+        accept_frac = 0.0
+    else:
+        accept_frac = accept_votes / total_available
+        reject_frac = reject_votes / total_available
+
+        # Unopposed rule requires minimum weight to avoid a single
+        # low-trust vote (e.g. MDI alone at 0.5) driving the outcome
+        # when multiple better-calibrated tests abstain or say NEEDS_SPEC.
+        min_unopposed_weight = 1.0
+
+        if accept_votes >= min_unopposed_weight and reject_votes == 0:
+            tier = "ACCEPTED"
+        elif reject_votes >= min_unopposed_weight and accept_votes == 0:
+            tier = "REJECTED"
+        elif accept_frac >= accept_threshold:
+            tier = "ACCEPTED"
+        elif reject_frac >= accept_threshold:
+            tier = "REJECTED"
+        else:
+            tier = "NEEDS SPECIFICATION"
+
+    return {
+        "tier": tier,
+        "accept_votes": accept_votes,
+        "reject_votes": reject_votes,
+        "abstain_votes": abstain_votes,
+        "total_available": total_available,
+        "accept_frac": accept_frac,
+        "details": details,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Resid-MDA dispatch (routes to correct path based on fold zero-structure)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resid_mda_dispatch(fold_values: np.ndarray,
+                       null: float = 0.0,
+                       trend_alpha: float = 0.05,
+                       ci_alpha: float = 0.10) -> dict:
+    """Route a single feature's resid_MDA fold values to the correct scoring path.
+
+    Three validated populations:
+      - Always-nonzero (nonzero in all 8 folds): EB-moderated via resid_mda_112 priors
+      - Sometimes-zero (nonzero in 1-7 folds): level + fold_nonzero_frac, no EB
+      - Always-zero (zero in all 8 folds): NO_UNIQUE_SIGNAL categorical
+    """
+    vals = np.asarray(fold_values, dtype=np.float64)
+    n_nonzero = int(np.count_nonzero(vals))
+    n = len(vals)
+
+    if n_nonzero == 0:
+        return {
+            "path": "always_zero",
+            "decision": "NO_UNIQUE_SIGNAL",
+            "flag": None,
+            "level": 0.0,
+        }
+    elif n_nonzero == n:
+        d0 = EB_PRIORS["resid_mda_112"]["d0"]
+        s0_sq = EB_PRIORS["resid_mda_112"]["s0_sq"]
+        result = feature_score(vals, "resid_mda_112", null=null, d0=d0, s0_sq=s0_sq,
+                               trend_alpha=trend_alpha, ci_alpha=ci_alpha)
+        result["path"] = "always_nonzero"
+        return result
+    else:
+        result = feature_score_resid_sometimes_zero(vals, null=null)
+        result["path"] = "sometimes_zero"
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PCA-validated gate: filter_features_v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PCA_ELIGIBLE_METHODS = {"SFI", "DESUB_MDA", "PCA_MDA", "RESID_MDA", "MDI"}
+
+_METHOD_TO_EB_KEY = {
+    "SFI": "sfi",
+    "DESUB_MDA": "desub_mda",
+    "PCA_MDA": "pca_mda",
+    "RESID_MDA": "resid_mda_112",
+}
+
+
+def _determine_eligible_methods(pca_crosscheck: dict) -> set:
+    """Return set of method names that are PCA-eligible (p<=0.05, tau>0)."""
+    eligible = set()
+    for method in _PCA_ELIGIBLE_METHODS:
+        entry = pca_crosscheck.get(method)
+        if entry and entry.get("p_value", 1.0) <= 0.05 and entry.get("tau", 0.0) > 0:
+            eligible.add(method)
+    return eligible
+
+
+def _cluster_veto(
+    cfi_mda_raw: pd.DataFrame,
+    cfi_mdi_raw: pd.DataFrame,
+    alpha: float = 0.05,
+) -> tuple[dict, dict]:
+    """Compute dual cluster veto from CFI_MDI (CLT) + CFI_MDA (fold-count).
+
+    Returns (cluster_vetoed, cluster_suspect) dicts mapping cluster_id → bool.
+    """
+    import re
+    from scipy.stats import norm
+
+    # CFI_MDI columns may be verbose ("Cluster_N (feat1, feat2, ...)")
+    mdi_col_map = {}
+    for col in cfi_mdi_raw.columns:
+        match = re.match(r"Cluster_(\d+)", col)
+        if match:
+            mdi_col_map[match.group(1)] = col
+        else:
+            mdi_col_map[col] = col
+
+    cluster_vetoed = {}
+    cluster_suspect = {}
+
+    for cid in cfi_mda_raw.columns:
+        mda_vals = cfi_mda_raw[cid].dropna().values
+        n_positive_mda = int((mda_vals > 0).sum())
+        mda_condemns = n_positive_mda <= 2
+
+        mdi_condemns = False
+        mdi_col = mdi_col_map.get(str(cid))
+        if mdi_col is not None and mdi_col in cfi_mdi_raw.columns:
+            mdi_vals = cfi_mdi_raw[mdi_col].dropna().values
+            n_mdi = len(mdi_vals)
+            if n_mdi >= 10:
+                mean_mdi = float(np.mean(mdi_vals))
+                se_mdi = float(np.std(mdi_vals, ddof=1) / np.sqrt(n_mdi))
+                if se_mdi > 1e-15:
+                    z = mean_mdi / se_mdi
+                    p = norm.sf(-z)
+                    mdi_condemns = (mean_mdi < 0) and (p < alpha)
+
+        # CFI_MDA fold-count is the authority; CFI_MDI tree-level alone
+        # cannot validate a cluster (same principle as per-feature MDI)
+        cluster_vetoed[cid] = mda_condemns
+        cluster_suspect[cid] = mda_condemns and not mdi_condemns
+
+    return cluster_vetoed, cluster_suspect
+
+
+def _mdi_only_supporter(eligible_decisions: dict) -> bool:
+    """True if MDI is the only eligible method not rejecting."""
+    non_mdi = {m: d for m, d in eligible_decisions.items() if m != "MDI"}
+    if not non_mdi:
+        return False
+    mdi_decision = eligible_decisions.get("MDI")
+    if mdi_decision is None or mdi_decision == "REJECT":
+        return False
+    return all(d == "REJECT" for d in non_mdi.values())
+
+
+def _trend_rescue(fold_vals: np.ndarray, null: float = 0.0) -> str | None:
+    """Check if a feature/cluster trajectory shows growth worth rescuing.
+
+    Uses Kendall's tau (outlier-robust rank correlation) for trend detection
+    and Theil-Sen slope (median of pairwise slopes) for direction.
+
+    Returns:
+        "significant" — tau > 0 AND p <= 0.05 AND last fold > null
+        "heuristic"   — Theil-Sen slope > 0 AND last fold > null (not significant)
+        None          — no rescue (declining, flat, or last fold ≤ null)
+    """
+    from scipy.stats import kendalltau, theilslopes
+
+    if len(fold_vals) < 4:
+        return None
+
+    last_val = float(fold_vals[-1])
+    if last_val <= null:
+        return None
+
+    x = np.arange(len(fold_vals))
+    tau, p = kendalltau(x, fold_vals)
+
+    if tau > 0 and p <= 0.05:
+        return "significant"
+
+    slope = theilslopes(fold_vals, x)[0]
+    if slope > 0:
+        return "heuristic"
+
+    return None
+
+
+def filter_features_v2(
+    sfi_raw: pd.DataFrame,
+    desub_mda_raw: pd.DataFrame,
+    pca_mda_raw: pd.DataFrame,
+    resid_mda_raw: pd.DataFrame,
+    mdi_raw: pd.DataFrame,
+    cfi_mda_raw: pd.DataFrame,
+    cfi_mdi_raw: pd.DataFrame,
+    clusters: dict,
+    sfi_null: float,
+    pca_crosscheck: dict,
+) -> pd.DataFrame:
+    """PCA-validated feature gate with conservative union.
+
+    Only methods that pass the PCA cross-check (p<=0.05, tau>0) participate
+    in gating AND ranking. Ineligible methods are excluded entirely.
+
+    Cluster veto: features in clusters where BOTH CFI_MDI (CLT z-test) AND
+    CFI_MDA (fold-count <= 2 positive) condemn are forced to REJECTED.
+
+    Conservative union: REJECT only if ALL eligible per-feature methods reject.
+    """
+    feat_to_cluster = {}
+    for cid, members in clusters.items():
+        for m in members:
+            feat_to_cluster[m] = cid
+
+    all_features = set()
+    for df in [sfi_raw, desub_mda_raw, pca_mda_raw, resid_mda_raw, mdi_raw]:
+        if df is not None and not df.empty:
+            all_features.update(df.columns.tolist())
+    all_features.update(feat_to_cluster.keys())
+    n_features = len(all_features)
+    threshold_1F = 1.0 / n_features if n_features > 0 else 0.0
+
+    eligible = _determine_eligible_methods(pca_crosscheck)
+    log.info(f"    PCA-eligible methods: {sorted(eligible)}")
+
+    vetoed, suspect = _cluster_veto(cfi_mda_raw, cfi_mdi_raw)
+    n_vetoed = sum(1 for v in vetoed.values() if v)
+    log.info(f"    Cluster veto: {n_vetoed}/{len(vetoed)} clusters vetoed")
+
+    null_values = {
+        "SFI": sfi_null,
+        "DESUB_MDA": 0.0,
+        "PCA_MDA": 0.0,
+        "RESID_MDA": 0.0,
+        "MDI": threshold_1F,
+    }
+
+    method_to_raw = {
+        "SFI": sfi_raw,
+        "DESUB_MDA": desub_mda_raw,
+        "PCA_MDA": pca_mda_raw,
+        "RESID_MDA": resid_mda_raw,
+        "MDI": mdi_raw,
+    }
+
+    rows = []
+    for feat in sorted(all_features):
+        row = {"feature": feat, "cluster_id": feat_to_cluster.get(feat, np.nan)}
+        cid = feat_to_cluster.get(feat)
+        row["cluster_vetoed"] = vetoed.get(cid, False) if cid else False
+        row["cluster_suspect"] = suspect.get(cid, False) if cid else False
+
+        decisions = {}
+
+        for method in ["SFI", "DESUB_MDA", "PCA_MDA", "RESID_MDA", "MDI"]:
+            pass_col = {
+                "SFI": "sfi_passes", "DESUB_MDA": "desub_mda_passes",
+                "PCA_MDA": "pca_mda_passes", "RESID_MDA": "resid_mda_passes",
+                "MDI": "mdi_passes",
+            }[method]
+            mean_col = {
+                "SFI": "sfi_mean", "DESUB_MDA": "desub_mda_mean",
+                "PCA_MDA": "pca_mda_mean", "RESID_MDA": "resid_mda_mean",
+                "MDI": "mdi_mean",
+            }[method]
+            rank_col = {
+                "SFI": "sfi_rank", "DESUB_MDA": "desub_mda_rank",
+                "PCA_MDA": "pca_mda_rank", "RESID_MDA": "resid_mda_rank",
+                "MDI": "mdi_rank",
+            }[method]
+
+            if method not in eligible:
+                row[pass_col] = np.nan
+                row[mean_col] = np.nan
+                continue
+
+            raw_df = method_to_raw[method]
+            if raw_df is None or feat not in raw_df.columns:
+                row[pass_col] = np.nan
+                row[mean_col] = np.nan
+                continue
+
+            vals = raw_df[feat].dropna().values.astype(float)
+            null_val = null_values[method]
+
+            if method == "MDI":
+                if len(vals) < 10:
+                    row[pass_col] = np.nan
+                    row[mean_col] = np.nan
+                    continue
+                result = feature_score_clt(vals, null=null_val)
+                row[mean_col] = result["mean"]
+                row[pass_col] = result["decision"] != "REJECT"
+                decisions[method] = result["decision"]
+            elif method == "RESID_MDA":
+                if len(vals) < 4:
+                    row[pass_col] = np.nan
+                    row[mean_col] = np.nan
+                    continue
+                result = resid_mda_dispatch(vals, null=null_val)
+                row[mean_col] = result.get("level", 0.0)
+                if result["decision"] is None:
+                    row[pass_col] = True
+                    decisions[method] = "NEEDS_SPECIFICATION"
+                elif result["decision"] == "NO_UNIQUE_SIGNAL":
+                    row[pass_col] = np.nan
+                else:
+                    row[pass_col] = result["decision"] != "REJECT"
+                    decisions[method] = result["decision"]
+            else:
+                if len(vals) < 4:
+                    row[pass_col] = np.nan
+                    row[mean_col] = np.nan
+                    continue
+                eb_key = _METHOD_TO_EB_KEY[method]
+                d0 = EB_PRIORS[eb_key]["d0"]
+                s0_sq = EB_PRIORS[eb_key]["s0_sq"]
+                result = feature_score(vals, eb_key, null=null_val, d0=d0, s0_sq=s0_sq)
+                row[mean_col] = result["level"]
+                row[pass_col] = result["decision"] != "REJECT"
+                decisions[method] = result["decision"]
+
+        # CFI_MDA cluster passes (backward compat for routing)
+        if cid and cid in cfi_mda_raw.columns:
+            mda_vals = cfi_mda_raw[cid].dropna().values
+            n_pos = int((mda_vals > 0).sum())
+            row["cfi_mda_cluster_passes"] = n_pos >= 7
+        else:
+            row["cfi_mda_cluster_passes"] = np.nan
+
+        # Tier assignment
+        row["trend_rescue"] = np.nan
+        would_reject = False
+
+        if row["cluster_vetoed"]:
+            would_reject = True
+            # Trend rescue: check cluster's CFI_MDA trajectory
+            if cid and cid in cfi_mda_raw.columns:
+                cluster_vals = cfi_mda_raw[cid].dropna().values.astype(float)
+                rescue = _trend_rescue(cluster_vals, null=0.0)
+                if rescue:
+                    would_reject = False
+                    row["trend_rescue"] = rescue
+        else:
+            eligible_decisions = {m: d for m, d in decisions.items() if m in eligible}
+            decision_list = list(eligible_decisions.values())
+            if not decision_list:
+                pass
+            elif all(d == "REJECT" for d in decision_list):
+                would_reject = True
+            elif _mdi_only_supporter(eligible_decisions):
+                would_reject = True
+
+        if would_reject and row["trend_rescue"] is np.nan:
+            # Per-feature trend rescue — applies to ALL rejection paths
+            rescue_result = None
+            for method in ["PCA_MDA", "DESUB_MDA", "RESID_MDA", "SFI"]:
+                if method not in eligible:
+                    continue
+                raw_df = method_to_raw[method]
+                if raw_df is None or feat not in raw_df.columns:
+                    continue
+                feat_vals = raw_df[feat].dropna().values.astype(float)
+                if len(feat_vals) < 4:
+                    continue
+                null_val = null_values[method]
+                rescue_result = _trend_rescue(feat_vals, null=null_val)
+                if rescue_result:
+                    break
+            if rescue_result:
+                would_reject = False
+                row["trend_rescue"] = rescue_result
+
+        # Final tier
+        if would_reject:
+            row["tier"] = "REJECTED"
+        else:
+            eligible_decisions = {m: d for m, d in decisions.items() if m in eligible}
+            decision_list = list(eligible_decisions.values())
+            if not decision_list:
+                row["tier"] = "NEEDS SPECIFICATION"
+            elif all(d == "ACCEPT" for d in decision_list):
+                row["tier"] = "ACCEPTED"
+            else:
+                row["tier"] = "NEEDS SPECIFICATION"
+
+        rows.append(row)
+
+    report = pd.DataFrame(rows).set_index("feature")
+
+    # Rank columns: only from eligible methods
+    for method in eligible:
+        mean_col = {
+            "SFI": "sfi_mean", "DESUB_MDA": "desub_mda_mean",
+            "PCA_MDA": "pca_mda_mean", "RESID_MDA": "resid_mda_mean",
+            "MDI": "mdi_mean",
+        }[method]
+        rank_col = {
+            "SFI": "sfi_rank", "DESUB_MDA": "desub_mda_rank",
+            "PCA_MDA": "pca_mda_rank", "RESID_MDA": "resid_mda_rank",
+            "MDI": "mdi_rank",
+        }[method]
+        if mean_col in report.columns:
+            report[rank_col] = report[mean_col].rank(ascending=False, na_option="bottom")
+
+    # Composite rank from eligible methods only
+    rank_cols = [f"{m.lower()}_rank" for m in eligible
+                 if f"{m.lower()}_rank" in report.columns]
+    if rank_cols:
+        report["composite_rank"] = report[rank_cols].mean(axis=1)
+        report = report.sort_values("composite_rank")
+    else:
+        report["composite_rank"] = np.nan
+
+    tier_counts = report["tier"].value_counts()
+    for tier, count in tier_counts.items():
+        log.info(f"    {tier}: {count}")
+
+    return report
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1676,8 +2539,15 @@ def pca_cross_check(X: pd.DataFrame,
     X_filled = X_clean.fillna(X_clean.median())
     X_filled = X_filled.dropna(axis=1)
 
+    # Standardize so PCA decomposes the correlation matrix, not covariance.
+    # Without this, features with large raw variance (e.g. venue_capacity ~40k)
+    # dominate all PCs and the tau becomes a unit-of-measurement test.
+    X_mean = X_filled.mean()
+    X_std = X_filled.std().replace(0, 1)
+    X_scaled = (X_filled - X_mean) / X_std
+
     pca = PCA()
-    pca.fit(X_filled)
+    pca.fit(X_scaled)
 
     loadings = np.abs(pca.components_)
     var_ratios = pca.explained_variance_ratio_
@@ -1689,7 +2559,7 @@ def pca_cross_check(X: pd.DataFrame,
     }, index=X_filled.columns)
 
     tau_results = {}
-    for method in ["MDI", "SFI", "CFI_MDA", "DESUB_MDA", "PCA_MDA", "RESID_MDA"]:
+    for method in ["MDI", "CFI_MDI", "SFI", "CFI_MDA", "DESUB_MDA", "PCA_MDA", "RESID_MDA"]:
         rank_col = f"rank_{method}"
         if rank_col not in importance_summary.columns:
             continue
@@ -1795,7 +2665,6 @@ def run_all_importance(X: pd.DataFrame,
                        run_pca_mda: bool = True,
                        run_residual_mda: bool = True,
                        regression: bool = False,
-                       cv_splits: int = None,
                        precomputed: dict = None) -> dict:
     """De Prado feature importance pipeline (AFML Ch.8 + MLAM Ch.4/6):
 
@@ -1871,11 +2740,12 @@ def run_all_importance(X: pd.DataFrame,
     clf = build_rf(n_estimators=1000, n_jobs=n_jobs_full, regression=regression)
     clf.fit(X_filled, y, sample_weight=sample_weight)
 
-    cfi_mdi = feat_imp_cfi_mdi(clf, list(X.columns), clusters)
+    cfi_mdi, cfi_mdi_per_feat, cfi_mdi_raw = feat_imp_cfi_mdi_deprado(
+        clf, list(X.columns), clusters)
     cfi_mda, cfi_mda_raw = feat_imp_cfi_mda(
         build_rf(n_estimators=300, n_jobs=n_jobs_full, regression=regression),
         X, y, years, clusters, sample_weight,
-        scoring=mda_scoring, cv_splits=cv_splits,
+        scoring=mda_scoring,
     )
     log.info(f"    CFI-MDA: {(cfi_mda['mean'] > 0).sum()}/{len(cfi_mda)} clusters "
              f"with positive importance")
@@ -1896,7 +2766,7 @@ def run_all_importance(X: pd.DataFrame,
         sfi, sfi_raw = feat_imp_sfi(
             build_rf(n_estimators=300, n_jobs=1, regression=regression),
             X, y, years, sample_weight,
-            regression=regression, cv_splits=cv_splits,
+            regression=regression,
         )
         null_col = "null_r2" if regression else "null_log_loss"
         null_score = sfi[null_col].iloc[0] if null_col in sfi.columns else 0.0
@@ -1914,7 +2784,6 @@ def run_all_importance(X: pd.DataFrame,
             X, y, years, clusters,
             sample_weight=sample_weight,
             scoring=mda_scoring,
-            cv_splits=cv_splits,
             n_estimators=300,
             regression=regression,
         )
@@ -1932,7 +2801,6 @@ def run_all_importance(X: pd.DataFrame,
             X, y, years,
             sample_weight=sample_weight,
             scoring=mda_scoring,
-            cv_splits=cv_splits,
             n_estimators=300,
             regression=regression,
         )
@@ -1949,7 +2817,6 @@ def run_all_importance(X: pd.DataFrame,
             X, y, years, clusters,
             sample_weight=sample_weight,
             scoring=mda_scoring,
-            cv_splits=cv_splits,
             n_estimators=300,
             regression=regression,
         )
@@ -1971,6 +2838,8 @@ def run_all_importance(X: pd.DataFrame,
         name="CFI_MDA",
     )
     summary = summary.join(cfi_mda_by_feat, how="left")
+    summary = summary.join(
+        cfi_mdi_per_feat[["mean"]].rename(columns={"mean": "CFI_MDI"}), how="left")
     if sfi is not None:
         summary = summary.join(sfi[["mean"]].rename(columns={"mean": "SFI"}), how="outer")
         summary = summary.join(sfi_pvals.rename("p_SFI"), how="left")
@@ -1981,6 +2850,7 @@ def run_all_importance(X: pd.DataFrame,
     if resid_mda is not None:
         summary = summary.join(resid_mda[["mean"]].rename(columns={"mean": "RESID_MDA"}), how="left")
     summary["rank_MDI"] = summary["MDI"].rank(ascending=False)
+    summary["rank_CFI_MDI"] = summary["CFI_MDI"].rank(ascending=False)
     summary["rank_CFI_MDA"] = summary["CFI_MDA"].rank(ascending=False)
     if sfi is not None:
         summary["rank_SFI"] = summary["SFI"].rank(ascending=False)
@@ -2000,20 +2870,21 @@ def run_all_importance(X: pd.DataFrame,
     with blas_full():
         pca_info, tau_results = pca_cross_check(X, summary)
 
-    # ── Step 10: Algorithmic filtering ───────────────────────────────────
-    log.info("10/10  Algorithmic filtering (ACCEPTED / NEEDS SPECIFICATION / REJECTED)...")
+    # ── Step 10: Algorithmic filtering (PCA-validated gate) ─────────────
+    log.info("10/10  Algorithmic filtering (PCA-validated, conservative union)...")
     sfi_null_val = null_score if run_sfi else None
-    filter_report = filter_features(
-        mdi_raw, cfi_mda_raw, clusters,
+    filter_report = filter_features_v2(
         sfi_raw=sfi_raw,
-        sfi_null=sfi_null_val,
         desub_mda_raw=desub_mda_raw,
         pca_mda_raw=pca_mda_raw,
         resid_mda_raw=resid_mda_raw,
+        mdi_raw=mdi_raw,
+        cfi_mda_raw=cfi_mda_raw,
+        cfi_mdi_raw=cfi_mdi_raw,
+        clusters=clusters,
+        sfi_null=sfi_null_val,
+        pca_crosscheck=tau_results,
     )
-    tier_counts = filter_report["tier"].value_counts()
-    for tier, count in tier_counts.items():
-        log.info(f"    {tier}: {count}")
     survivors = filter_report[filter_report["tier"].isin(["ACCEPTED", "NEEDS SPECIFICATION"])]
     log.info(f"    {len(survivors)} features survive (ACCEPTED + NEEDS SPECIFICATION)")
 
@@ -2030,6 +2901,8 @@ def run_all_importance(X: pd.DataFrame,
         "resid_mda": resid_mda,
         "resid_mda_raw": resid_mda_raw,
         "cfi_mdi": cfi_mdi,
+        "cfi_mdi_per_feat": cfi_mdi_per_feat,
+        "cfi_mdi_raw": cfi_mdi_raw,
         "cfi_mda": cfi_mda,
         "cfi_mda_raw": cfi_mda_raw,
         "clusters": clusters,
@@ -2039,4 +2912,42 @@ def run_all_importance(X: pd.DataFrame,
         "pca_info": pca_info,
         "tau_results": tau_results,
         "denoising_info": denoising_info,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Standalone CFI-MDI runner (no CV, no filtering)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_cfi_mdi_only(
+    X: pd.DataFrame,
+    y: pd.Series,
+    clusters: dict,
+    sample_weight: pd.Series = None,
+    regression: bool = False,
+) -> dict:
+    """Run ONLY CFI-MDI (de Prado per-tree aggregation).
+
+    In-sample method: fits one RF (1000 trees), extracts per-tree MDI,
+    aggregates by cluster. No CV loops, no OOS methods.
+    """
+    n_jobs = get_n_jobs()
+    X_filled = X.fillna(X.median())
+
+    log.info(f"CFI-MDI only: fitting RF (1000 trees) on {X.shape[1]} features, "
+             f"{X.shape[0]} samples...")
+    clf = build_rf(n_estimators=1000, n_jobs=n_jobs, regression=regression)
+    clf.fit(X_filled, y, sample_weight=sample_weight)
+
+    log.info("Computing per-tree cluster MDI...")
+    cluster_summary, per_feature, raw_cluster = feat_imp_cfi_mdi_deprado(
+        clf, list(X.columns), clusters)
+
+    log.info(f"CFI-MDI complete: {len(cluster_summary)} clusters, "
+             f"top-3: {cluster_summary.head(3).index.tolist()}")
+
+    return {
+        "cfi_mdi_cluster": cluster_summary,
+        "cfi_mdi_per_feature": per_feature,
+        "cfi_mdi_raw": raw_cluster,
     }
