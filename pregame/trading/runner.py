@@ -41,7 +41,7 @@ from pregame.trading.config import (
     SCAN_INTERVAL_SEC, EXIT_BUFFER_MINUTES, CANCEL_BEFORE_FIRST_PITCH_MIN,
     TAKER_EDGE_THRESHOLD, REPRICE_MIN_TICK_MOVE, MIN_REPRICE_INTERVAL_SEC,
     MAX_REPRICES_PER_ORDER, TRADEABLE_SERIES, LOGS_DIR, DRY_RUN,
-    DISCOVERY_INTERVAL_SEC, PORTFOLIO_RECONCILE_SEC,
+    DISCOVERY_INTERVAL_SEC, MODEL_ERROR_STD, BANKROLL,
 )
 from pregame.trading.kalshi_client import make_client, make_write_client
 from pregame.trading.models import EnsembleStore
@@ -91,6 +91,7 @@ class TradingRunner:
         self._portfolio: Portfolio | None = None
         self._features: FeatureManager | None = None
         self._ensemble_store: EnsembleStore | None = None
+        self._tradeable_series: list[str] = []  # Populated in start() from available models
 
         # Reprice tracking: {order_id: {"count": int, "last_reprice": float}}
         self._reprice_state: dict[str, dict] = {}
@@ -100,7 +101,6 @@ class TradingRunner:
         self._market_set: dict[str, dict] = {}
         self._market_set_lock = threading.Lock()
         self._last_full_discovery: float = 0
-        self._last_portfolio_reconcile: float = 0
 
     def start(self) -> None:
         """Initialize all components and start the trading loop."""
@@ -121,10 +121,17 @@ class TradingRunner:
         self._features = FeatureManager()
         self._features.load()
 
-        # 3. Load model ensembles
+        # 3. Load model ensembles and determine tradeable series dynamically
         self._ensemble_store = EnsembleStore()
         targets = self._ensemble_store.discover()
         preload_accuracy_profiles(targets)
+
+        # Build tradeable series list dynamically from available models
+        self._tradeable_series = self._get_tradeable_series_from_models()
+        if not self._tradeable_series:
+            logger.warning("No tradeable series found — no models have Kalshi markets!")
+        else:
+            logger.info(f"Tradeable series based on available models: {self._tradeable_series}")
 
         # 4. Initialize portfolio
         self._portfolio = Portfolio(client=self._client, dry_run=self._dry_run)
@@ -145,6 +152,7 @@ class TradingRunner:
                 on_fill=self._handle_ws_fill,
                 on_order_update=self._handle_ws_order,
                 on_position_update=self._handle_ws_position,
+                on_orderbook_delta=self._handle_orderbook_delta,
             )
             self._ws._on_reconnect = self._on_ws_reconnect
             self._ws.start()
@@ -159,8 +167,10 @@ class TradingRunner:
         if self._ws:
             with self._market_set_lock:
                 tickers = list(self._market_set.keys())
-            self._ws.subscribe_markets_batch(tickers)
-            time.sleep(2)  # allow snapshots to arrive
+            if tickers:
+                logger.info(f"Subscribing to {len(tickers)} markets across {len(self._tradeable_series)} series: {self._tradeable_series}")
+                self._ws.subscribe_markets_batch(tickers)
+                time.sleep(2)  # allow snapshots to arrive
 
         self._running = True
         logger.info(f"Initialized. {self._portfolio.summary()}")
@@ -168,13 +178,9 @@ class TradingRunner:
     def run_once(self) -> None:
         """Execute a single scan cycle."""
         # Portfolio state is maintained in real-time via WS fill/order/position channels.
-        # REST refresh as fallback: when WS is down, or every PORTFOLIO_RECONCILE_SEC
-        # to catch drift from missed events during reconnection windows.
+        # REST refresh only when WS is disconnected (startup + reconnect handle the rest).
         if not self._ws or not self._ws.is_connected:
             self._portfolio.refresh()
-        elif time.time() - self._last_portfolio_reconcile >= PORTFOLIO_RECONCILE_SEC:
-            self._portfolio.refresh()
-            self._last_portfolio_reconcile = time.time()
         self._sweep_stale_positions()
         self._features.check_and_refresh()
 
@@ -223,13 +229,27 @@ class TradingRunner:
                 except Exception:
                     pass
 
-        # Generate quotes
+        # Generate quotes (synthetic row construction uses feature_manager for GUMBO context)
         features = self._features.get_features()
-        quotes = generate_quotes(markets, features, self._ensemble_store, book_tops)
+        quotes = generate_quotes(
+            markets, features, self._ensemble_store, book_tops,
+            feature_manager=self._features,
+        )
 
-        # Size quotes
+        # Size quotes: EBR-proportional allocation
         inventory = self._compute_cluster_inventory()
-        sized = size_quotes(quotes, self._bankroll, existing_inventory=inventory)
+        with self._market_set_lock:
+            n_active_games = max(1, len({
+                parse_ticker(t).game_key
+                for t in self._market_set
+                if parse_ticker(t) is not None
+            }))
+        sized = size_quotes(
+            quotes, self._bankroll,
+            existing_inventory=inventory,
+            n_active_games=n_active_games,
+            model_error_std=MODEL_ERROR_STD,
+        )
 
         # Execute
         executed = 0
@@ -374,14 +394,46 @@ class TradingRunner:
 
     # ── Market discovery ─────────────────────────────────────────────────────
 
+    def _get_tradeable_series_from_models(self) -> list[str]:
+        """Map discovered model targets to their Kalshi series.
+
+        Returns only series for which we have trained ensemble models.
+        Dynamically expands as new models are added.
+        """
+        from .market_map import MODEL_TO_SERIES
+
+        series_set = set()
+        for target in self._ensemble_store.tradeable_targets:
+            series = MODEL_TO_SERIES.get(target)
+            if series:
+                series_set.add(series)
+
+        # Derived targets (home_runs, away_runs) map to KXMLBTEAMTOTAL
+        # and require both total_runs and home_run_diff ensembles
+        if "total_runs" in self._ensemble_store.tradeable_targets and \
+           "home_run_diff" in self._ensemble_store.tradeable_targets:
+            team_total_series = MODEL_TO_SERIES.get("home_runs")
+            if team_total_series:
+                series_set.add(team_total_series)
+
+        return sorted(series_set)
+
     def _full_discovery(self) -> None:
         """Full REST discovery: populate/reconcile the market set.
 
         Called once at startup and then hourly as a fallback to catch markets
         that may have been missed during WS disconnection windows.
+
+        Only discovers markets for which we have trained models.
         """
+        if not self._tradeable_series:
+            logger.warning("No tradeable series — skipping market discovery")
+            return
+
         discovered = {}
-        for series in TRADEABLE_SERIES:
+        skipped_g2 = 0
+        skipped_no_model = 0
+        for series in self._tradeable_series:
             try:
                 resp = self._client.get_markets(series_ticker=series, status="open", limit=200)
                 markets = resp.get("markets", [])
@@ -394,10 +446,31 @@ class TradingRunner:
                     if date_str is None:
                         discovered[m["ticker"]] = m
                         continue
+                    # Skip doubleheader game 2
+                    game_num = gumbo_schedule.get_game_number(
+                        parsed.away_team, parsed.home_team, date_str, parsed.ticker_time
+                    )
+                    if game_num is not None and game_num > 1:
+                        skipped_g2 += 1
+                        continue
                     if not gumbo_schedule.game_has_started(parsed.away_team, parsed.home_team, date_str):
                         discovered[m["ticker"]] = m
             except Exception as e:
                 logger.warning(f"Market discovery failed for {series}: {e}")
+
+        # Also check for markets we can't trade (no model) and count them at DEBUG level
+        for series in TRADEABLE_SERIES:
+            if series not in self._tradeable_series:
+                try:
+                    resp = self._client.get_markets(series_ticker=series, status="open", limit=200)
+                    skipped_no_model += len(resp.get("markets", []))
+                except Exception:
+                    pass
+
+        if skipped_g2:
+            logger.info(f"Skipped {skipped_g2} doubleheader game-2 markets")
+        if skipped_no_model:
+            logger.debug(f"Skipped {skipped_no_model} markets with no trained model")
 
         # Diff against current set: subscribe new, unsubscribe removed
         with self._market_set_lock:
@@ -419,14 +492,30 @@ class TradingRunner:
         )
 
     def _handle_market_created(self, ticker: str, info: dict) -> None:
-        """WS lifecycle: new market created. Add to market set if pre-game."""
+        """WS lifecycle: new market created. Add to market set and immediately quote.
+
+        Only processes markets for which we have trained models.
+        """
         parsed = parse_ticker(ticker)
         if parsed is None:
             return
 
+        # Filter by tradeable series (those with models)
+        if parsed.series not in self._tradeable_series:
+            logger.debug(f"Ignoring market {ticker}: no model for series {parsed.series}")
+            return
+
         date_str = _game_key_to_date(parsed.game_key)
-        if date_str and gumbo_schedule.game_has_started(parsed.away_team, parsed.home_team, date_str):
-            return  # game already in progress
+        if date_str:
+            # Skip doubleheader game 2
+            game_num = gumbo_schedule.get_game_number(
+                parsed.away_team, parsed.home_team, date_str, parsed.ticker_time
+            )
+            if game_num is not None and game_num > 1:
+                logger.debug(f"Skipping doubleheader game {game_num}: {ticker}")
+                return
+            if gumbo_schedule.game_has_started(parsed.away_team, parsed.home_team, date_str):
+                return  # game already in progress
 
         market_dict = {"ticker": ticker, "status": "open"}
         with self._market_set_lock:
@@ -436,6 +525,93 @@ class TradingRunner:
             self._ws.subscribe_markets_batch([ticker])
 
         logger.info(f"Market created via WS: {ticker}")
+
+        # Immediately quote if inference is available (enter at market open)
+        if self._ensemble_store and self._features and self._running:
+            threading.Thread(
+                target=self._quote_single_market,
+                args=(ticker,),
+                daemon=True,
+            ).start()
+
+    def _quote_single_market(self, ticker: str) -> None:
+        """Generate and submit a quote for a single market immediately.
+
+        Called from WS market_created callback for instant entry at market open.
+        """
+        try:
+            parsed = parse_ticker(ticker)
+            if parsed is None:
+                return
+
+            # Check if features are stale for this game
+            if self._features.is_stale_for_game(parsed.home_team, parsed.away_team):
+                logger.debug(f"Skipping immediate quote for {ticker}: features stale")
+                return
+
+            features = self._features.get_features()
+            market_dict = {"ticker": ticker, "status": "open"}
+
+            # Get book state (may be empty if snapshot hasn't arrived yet)
+            book_tops = {}
+            if self._ws:
+                top = self._ws.book.get_top(ticker)
+                if top != (None, None):
+                    book_tops[ticker] = top
+
+            quotes = generate_quotes([market_dict], features, self._ensemble_store, book_tops)
+            if not quotes:
+                return
+
+            # Size with current game count
+            inventory = self._compute_cluster_inventory()
+            with self._market_set_lock:
+                n_active_games = max(1, len({
+                    parse_ticker(t).game_key
+                    for t in self._market_set
+                    if parse_ticker(t) is not None
+                }))
+            sized = size_quotes(
+                quotes, self._bankroll,
+                existing_inventory=inventory,
+                n_active_games=n_active_games,
+                model_error_std=MODEL_ERROR_STD,
+            )
+
+            for sq in sized:
+                # Time gate
+                hours_to_fp = self._hours_to_first_pitch(sq.ticker)
+                if hours_to_fp is None or hours_to_fp < EXIT_BUFFER_MINUTES / 60.0:
+                    continue
+
+                # Risk gate
+                state = self._portfolio.get_portfolio_state()
+                allowed, risk_reason = check_limits(
+                    ticker=sq.ticker,
+                    price=sq.fair_value,
+                    contracts=sq.contracts,
+                    hours_to_first_pitch=hours_to_fp,
+                    bankroll=self._bankroll,
+                    portfolio_state=state,
+                )
+                if not allowed:
+                    logger.debug(f"Risk blocked immediate quote {sq.ticker}: {risk_reason}")
+                    continue
+
+                post_two_sided(
+                    self._client, sq.ticker,
+                    bid_cents=sq.bid_cents,
+                    ask_cents=sq.ask_cents,
+                    contracts=sq.contracts,
+                    dry_run=self._dry_run,
+                    metadata={"target": sq.target, "fair": sq.fair_value,
+                              "reason": "market_open_entry"},
+                )
+                logger.info(f"Immediate quote posted on market open: {sq.ticker} "
+                            f"({sq.contracts}x, EBR={sq.weight_breakdown.get('ebr', 0):.3f})")
+
+        except Exception as e:
+            logger.warning(f"Immediate quote failed for {ticker}: {e}")
 
     def _handle_close_date_updated(self, ticker: str, close_ts: int) -> None:
         """WS lifecycle: close date changed (delay/postponement).
@@ -477,58 +653,73 @@ class TradingRunner:
 
     # ── Repricing ────────────────────────────────────────────────────────────
 
-    def _reprice_resting_orders(self, book_tops: dict) -> None:
-        """Update resting orders to maintain top-of-book position.
+    def _handle_orderbook_delta(self, ticker: str) -> None:
+        """Called inline from WS when orderbook changes for a subscribed ticker.
 
-        Never crosses the conservative fair value boundary.
+        Triggers immediate reprice check for orders on this ticker.
         """
+        if not self._portfolio:
+            return
+        for order in self._portfolio.get_open_orders():
+            if order["ticker"] != ticker:
+                continue
+            if self._ws and ticker in self._ws._snapshot_pending:
+                return
+            top = self._ws.book.get_top(ticker) if self._ws else (None, None)
+            if top == (None, None):
+                return
+            self._reprice_single_order(order, {ticker: top})
+
+    def _reprice_single_order(self, order: dict, book_tops: dict) -> None:
+        """Reprice a single resting order to maintain top-of-book position."""
+        ticker = order["ticker"]
+        bb, ba = book_tops.get(ticker, (None, None))
+        if bb is None or ba is None:
+            return
+
+        oid = order.get("order_id", "")
+        state = self._reprice_state.get(oid, {"count": 0, "last_reprice": 0})
+        if state["count"] >= MAX_REPRICES_PER_ORDER:
+            return
+        if time.time() - state["last_reprice"] < MIN_REPRICE_INTERVAL_SEC:
+            return
+
+        side = order["side"]
+        current_price = order["price_cents"]
+
+        if side == "yes":
+            target = min(bb + 1, ba - 1)
+        else:
+            target = current_price + 1
+
+        if abs(target - current_price) < REPRICE_MIN_TICK_MOVE:
+            return
+
+        if cancel_order(self._client, oid, self._dry_run):
+            self._portfolio.remove_order(oid)
+            from .executor import _place_with_retry
+            import uuid
+            new_id = f"reprice_{uuid.uuid4().hex[:8]}"
+            if not self._dry_run:
+                _place_with_retry(
+                    self._client, ticker, side=side,
+                    price=target, contracts=order["contracts"],
+                    client_order_id=new_id,
+                )
+            self._portfolio.add_order(new_id, ticker, side, target, order["contracts"])
+            state["count"] += 1
+            state["last_reprice"] = time.time()
+            self._reprice_state[oid] = state
+
+    def _reprice_resting_orders(self, book_tops: dict) -> None:
+        """Sweep all resting orders for reprice opportunities (safety net)."""
         for order in self._portfolio.get_open_orders():
             ticker = order["ticker"]
-            # Skip reprice if a snapshot is pending (orderbook state is uncertain)
-            if ticker in self._ws._snapshot_pending:
+            if self._ws and ticker in self._ws._snapshot_pending:
                 continue
-            bb, ba = book_tops.get(ticker, (None, None))
-            if bb is None or ba is None:
+            if ticker not in book_tops:
                 continue
-
-            # Check reprice constraints
-            oid = order.get("order_id", "")
-            state = self._reprice_state.get(oid, {"count": 0, "last_reprice": 0})
-            if state["count"] >= MAX_REPRICES_PER_ORDER:
-                continue
-            if time.time() - state["last_reprice"] < MIN_REPRICE_INTERVAL_SEC:
-                continue
-
-            side = order["side"]
-            current_price = order["price_cents"]
-
-            if side == "yes":
-                # Our YES bid should be at or near best_bid + 1
-                target = min(bb + 1, ba - 1)  # never cross the ask
-            else:
-                # Our NO bid — best NO bid + 1
-                target = current_price + 1  # simplified; full logic needs NO book
-
-            if abs(target - current_price) < REPRICE_MIN_TICK_MOVE:
-                continue
-
-            # Execute cancel + repost
-            if cancel_order(self._client, oid, self._dry_run):
-                self._portfolio.remove_order(oid)
-                # Repost at new price (single-sided for reprice)
-                from .executor import _place_with_retry
-                import uuid
-                new_id = f"reprice_{uuid.uuid4().hex[:8]}"
-                if not self._dry_run:
-                    _place_with_retry(
-                        self._client, ticker, side=side,
-                        price=target, contracts=order["contracts"],
-                        client_order_id=new_id,
-                    )
-                self._portfolio.add_order(new_id, ticker, side, target, order["contracts"])
-                state["count"] += 1
-                state["last_reprice"] = time.time()
-                self._reprice_state[oid] = state
+            self._reprice_single_order(order, book_tops)
 
     def _cancel_stale_orders(self) -> None:
         """Cancel resting orders for games approaching first pitch."""
@@ -578,7 +769,7 @@ class TradingRunner:
         "KXMLBRFI", "KXMLBEXTRAS",
     })
 
-    def _handle_settlement(self, ticker: str) -> None:
+    def _handle_settlement(self, ticker: str, event_type: str = "settled") -> None:
         """Called via WS when a market settles or is determined."""
         logger.info(f"Settled: {ticker}")
 
@@ -601,7 +792,10 @@ class TradingRunner:
                 yes_won = result == "yes"
                 self._portfolio.record_settlement(ticker, yes_won=yes_won)
             else:
-                logger.warning(f"Unknown settlement result for {ticker}: {result!r}")
+                # 'determined' fires before the REST result field propagates; 'settled'
+                # always follows with the actual result, so this is not a true error.
+                log_fn = logger.debug if event_type == "determined" else logger.warning
+                log_fn(f"Unknown settlement result for {ticker}: {result!r}")
         except Exception as e:
             logger.warning(f"Could not fetch settlement result for {ticker}: {e}")
 
@@ -676,6 +870,18 @@ class TradingRunner:
             self._ensemble_store.reload_all()
             targets = self._ensemble_store.tradeable_targets
             preload_accuracy_profiles(targets)
+
+            # Rebuild tradeable series list (may have changed if models were added/removed)
+            old_series = set(self._tradeable_series)
+            self._tradeable_series = self._get_tradeable_series_from_models()
+            new_series = set(self._tradeable_series)
+
+            if new_series != old_series:
+                added = new_series - old_series
+                removed = old_series - new_series
+                logger.info(f"Tradeable series updated: +{added} -{removed}")
+                # Trigger a full discovery to subscribe to new series
+                self._full_discovery()
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -799,7 +1005,7 @@ def main():
                         help="Execute real orders on Kalshi")
     parser.add_argument("--once", action="store_true",
                         help="Run a single scan then exit")
-    parser.add_argument("--bankroll", type=float, default=1000.0,
+    parser.add_argument("--bankroll", type=float, default=BANKROLL,
                         help="Total trading bankroll in dollars")
     parser.add_argument("--kelly-override", type=float, default=None,
                         help="Override KELLY_FRACTION (for ramp-up)")

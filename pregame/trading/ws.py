@@ -127,12 +127,13 @@ class KalshiWS:
         rsa_key_path: str | Path,
         env: str = "prod",
         on_game_start: Optional[Callable[[str], None]] = None,
-        on_settle: Optional[Callable[[str], None]] = None,
+        on_settle: Optional[Callable[[str, str], None]] = None,
         on_market_created: Optional[Callable[[str, dict], None]] = None,
         on_close_date_updated: Optional[Callable[[str, int], None]] = None,
         on_fill: Optional[Callable[[dict], None]] = None,
         on_order_update: Optional[Callable[[dict], None]] = None,
         on_position_update: Optional[Callable[[dict], None]] = None,
+        on_orderbook_delta: Optional[Callable[[str], None]] = None,
     ):
         self._api_key = api_key
         self._private_key = _load_private_key(rsa_key_path)
@@ -144,6 +145,7 @@ class KalshiWS:
         self._on_fill = on_fill
         self._on_order_update = on_order_update
         self._on_position_update = on_position_update
+        self._on_orderbook_delta = on_orderbook_delta
 
         self.book = LocalBook()
         self._trades: list[dict] = []
@@ -251,7 +253,10 @@ class KalshiWS:
                 },
             }))
 
-        logger.info(f"Subscribed to {len(new_tickers)} new markets (total: {len(self._subscribed_tickers)})")
+        if len(new_tickers) > 10:
+            logger.info(f"Subscribed to {len(new_tickers)} new markets (total: {len(self._subscribed_tickers)})")
+        else:
+            logger.debug(f"Subscribed to {len(new_tickers)} new markets (total: {len(self._subscribed_tickers)})")
 
     def unsubscribe_markets_batch(self, tickers: list[str]):
         """Unsubscribe from orderbook_delta and trade for a batch of markets."""
@@ -461,6 +466,9 @@ class KalshiWS:
                     },
                 }))
 
+        if ok and self._on_orderbook_delta:
+            self._on_orderbook_delta(ticker)
+
     def _handle_trade(self, msg):
         data = msg.get("msg", {})
         trade = {
@@ -485,12 +493,18 @@ class KalshiWS:
         if not ticker.startswith("KXMLB"):
             return
 
-        logger.info(f"[LIFECYCLE] {event_type} → {ticker}")
+        series = ticker.split("-")[0]
+        in_tradeable = series in TRADEABLE_SERIES
+
+        # Log at INFO for series we trade, DEBUG for others
+        if in_tradeable:
+            logger.info(f"[LIFECYCLE] {event_type} → {ticker}")
+        else:
+            logger.debug(f"[LIFECYCLE] {event_type} → {ticker} (non-tradeable series)")
 
         if event_type == "created":
             # New market created — check if it's a series we trade
-            series = ticker.split("-")[0]
-            if series in TRADEABLE_SERIES and self._on_market_created:
+            if in_tradeable and self._on_market_created:
                 close_ts = data.get("close_ts")
                 metadata = data.get("additional_metadata", {})
                 threading.Thread(
@@ -520,7 +534,7 @@ class KalshiWS:
             self._subscribed_tickers.discard(ticker)
             if self._on_settle:
                 threading.Thread(
-                    target=self._on_settle, args=(ticker,), daemon=True
+                    target=self._on_settle, args=(ticker, event_type), daemon=True
                 ).start()
 
     # ── User trading activity handlers ─────────────────────────────────────────

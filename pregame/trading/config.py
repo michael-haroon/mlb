@@ -34,21 +34,7 @@ MIN_EDGE_BUFFER_MAKER = 1.5        # Maker is free but still need real signal
 TAKER_EDGE_THRESHOLD = 2.0         # edge >= taker_breakeven * 2 → aggress
 
 # ── Quoting spread ───────────────────────────────────────────────────────────
-# Half-spread in cents by confidence tier. Wider = less fill rate but less adverse selection.
-HALF_SPREAD_CENTS = {
-    "HIGH": 2,      # Tight: we're confident in fair value
-    "MEDIUM": 3,
-    "LOW": 4,       # Wide: uncertainty reflected in spread
-}
-
-# ── Confidence shading ───────────────────────────────────────────────────────
-# Sigma units to shade fair value toward less favorable direction.
-# Higher = more conservative = fewer fills but higher EV per fill.
-SHADE_SIGMA = {
-    "HIGH": 0.5,
-    "MEDIUM": 1.0,
-    "LOW": 1.5,
-}
+HALF_SPREAD_BASE_CENTS = 3  # Fixed spread width; NegBin-derived adaptive spread replaces tier system
 
 # ── Timing ───────────────────────────────────────────────────────────────────
 MIN_HOURS_TO_FIRST_PITCH = 0.5     # MLB lineups confirmed ~1h before; trade from 30min out
@@ -83,18 +69,6 @@ CLUSTER_MAX_CONTRACTS = {
     "extra_innings": 4,  # MLBEXTRAINNINGS (tail event)
 }
 
-# ── Prediction health ───────────────────────────────────────────────────────
-# OOF prediction std from training (empirical). If live predictions collapse
-# below MIN_SHARPNESS_RATIO * expected, feature distributions have shifted and
-# the model is outputting uninformative probs clustered near 0.5.
-EXPECTED_PRED_STD = {
-    "home_win": 0.14,
-    "yrfi": 0.02,
-    "extra_innings": 0.04,
-    "first_5_home_win": 0.06,
-}
-MIN_SHARPNESS_RATIO = 0.40  # halt target if live_std < 40% of expected
-
 # ── Feature refresh ─────────────────────────────────────────────────────────
 S3_DATA_URI = "s3://mlb-265753586044-us-east-1-an/data"
 FEATURES_MAX_AGE_HOURS = 12         # Rebuild if parquet older than this
@@ -115,3 +89,7 @@ TRADEABLE_SERIES = [
     "KXMLBTEAMTOTAL",  # Team total runs
     "KXMLBEXTRAS",  # Extra innings
 ]
+
+# ── Legacy fallbacks — loaded from artifact at runtime via targets/ ──────────
+MODEL_ERROR_STD = 0.795  # total_runs only; from variance decomposition MSE-NegBin_var
+BANKROLL = 25_000        # Sizing denominator; overridden by --bankroll CLI arg
