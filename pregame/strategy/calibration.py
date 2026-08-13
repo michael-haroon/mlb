@@ -234,15 +234,21 @@ def cover_probability(
 def negbin_cover_probability(
     mu: float, threshold: float, alpha: float, direction: str = "over",
 ) -> float:
-    """P(actual > threshold) from NegBin(mu, alpha) marginal.
+    """P(actual >= threshold) from NegBin(mu, alpha) marginal.
 
     Parameterization: n=alpha, p=alpha/(alpha+mu).
-    For half-integer lines (e.g., 8.5), floor gives the last integer below.
+    Kalshi integer tickers (e.g., TOTAL-9) mean YES iff total >= 9, so we need
+    P(X >= threshold) = 1 - CDF(threshold - 1). For half-integer lines floor
+    gives the same result, e.g. floor(8.5)=8 → P(X >= 8.5) = P(X >= 9) = 1-CDF(8).
+    Using threshold-1 for integers and floor for non-integers unifies both cases:
+    k = floor(threshold - epsilon) = floor(threshold) for non-integers,
+    and threshold - 1 for integers.
     """
     from scipy.stats import nbinom
     n = alpha
     p = alpha / (alpha + max(mu, 0.01))
-    k = int(np.floor(threshold))
+    # k is the last integer strictly below threshold: CDF(k) = P(X <= k) = P(X < threshold)
+    k = int(np.ceil(threshold) - 1)
     cdf_val = nbinom.cdf(k, n, p)
     return float((1.0 - cdf_val) if direction == "over" else cdf_val)
 
@@ -272,7 +278,8 @@ def negbin_total_cover_probability(
     # Convolution gives PMF of total
     pmf_total = np.convolve(pmf_h, pmf_a)
 
-    k = int(np.floor(threshold))
+    # Same convention as negbin_cover_probability: k is last integer strictly below threshold
+    k = int(np.ceil(threshold) - 1)
     cdf_val = pmf_total[:k + 1].sum()
     return float((1.0 - cdf_val) if direction == "over" else cdf_val)
 

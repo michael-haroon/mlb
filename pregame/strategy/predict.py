@@ -64,6 +64,9 @@ def predict_game(
 
     game_ctx = f" [{label}]" if label else ""
     log.info(f"Predicting {target}{game_ctx}: {n_populated}/{n_features} features populated")
+    if n_populated < n_features:
+        missing = populated_pct[populated_pct <= 0.5].index.tolist()
+        log.debug(f"  Missing features{game_ctx}: {missing}")
 
     # Generate per-model predictions
     preds_per_model = []
