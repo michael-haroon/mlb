@@ -167,8 +167,12 @@ _PREGAME_FEATURE_PREFIXES = (
     # are computed from this game's box score
     "home_bsr_offense", "home_bsr_defense",
     "away_bsr_offense", "away_bsr_defense",
+    # Massey per-inning ratings (cumulative margin through each inning, prior games only)
+    "diff_massey_",
+    # Colley per-inning ratings (win/loss variant of Massey, prior games only)
+    "diff_colley_",
     # Matchup probability estimates from rating systems
-    "log5_prob", "consensus_home_win_prob", "consensus_home_win_std",
+    "log5_prob", "consensus_home_win_prob", "consensus_home_win_std", "consensus_prob",
     # Head-to-head from prior meetings
     "h2h_",
     # Venue, weather, and air density (known before game)
@@ -203,6 +207,15 @@ _PREGAME_FEATURE_PREFIXES = (
     "weather_temp",
     # Structural regime flags
     "rule_",
+    # Postseason indicator (known from game_type_code before first pitch)
+    "is_postseason",
+    # Bullpen workload in prior 3 / 7 calendar days (pitch counts, appearances)
+    "home_bullpen_", "away_bullpen_",
+    # Travel distance and timezone shift since last game
+    "home_travel_", "away_travel_",
+    "home_timezone_", "away_timezone_",
+    # Manager tendency rolling averages (pitchers used, bunt rate)
+    "home_mgr_", "away_mgr_",
 )
 
 
@@ -227,6 +240,15 @@ _POSTGAME_EXCLUSIONS = frozenset({
     # guarded here in case a stale parquet still carries them)
     "home_wins", "home_losses", "home_win_pct",
     "away_wins", "away_losses", "away_win_pct",
+    # Same-game final score — leaked via home_team_/away_team_ prefix match
+    "home_team_total_runs", "away_team_total_runs",
+})
+
+# Columns that are pregame-knowable but should not be passed as continuous
+# numeric features. Integer team IDs are arbitrary; tree models would fit on
+# their ordinal value, which encodes nothing meaningful about team strength.
+_IDENTIFIER_EXCLUSIONS = frozenset({
+    "home_team_id", "away_team_id",
 })
 
 # Prefix-based exclusions: any column starting with these is game-A's own stats.
@@ -251,7 +273,7 @@ def _select_pregame_features(df: pd.DataFrame) -> list[str]:
     for col in df.columns:
         if df[col].dtype not in ("float32", "float64", "int32", "int64"):
             continue
-        if col in _POSTGAME_EXCLUSIONS:
+        if col in _POSTGAME_EXCLUSIONS or col in _IDENTIFIER_EXCLUSIONS:
             continue
         if any(col.startswith(p) for p in _POSTGAME_EXCLUSION_PREFIXES):
             continue
