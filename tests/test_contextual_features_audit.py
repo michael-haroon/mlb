@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pregame.engineering.feature_engineering import (
+from classical_learning.engineering.feature_engineering import (
     _air_density_features,
     _consensus_probability,
     _differentials_and_sums,
@@ -407,7 +407,7 @@ class TestAirDensityFeatures:
     def test_missing_venue_elevation_bias(self):
         """Venues not in the elevation dict get ADI=1.0 regardless of actual elevation.
         This means any venue above 400ft NOT in the dict is underestimated."""
-        from pregame.engineering.feature_engineering import _VENUE_ELEVATIONS_FT
+        from classical_learning.engineering.feature_engineering import _VENUE_ELEVATIONS_FT
 
         # Check that the dict covers the extreme outliers
         assert 19 in _VENUE_ELEVATIONS_FT, "Coors Field must be in elevation dict"
@@ -430,7 +430,7 @@ class TestStartingPitcherFeatures:
 
     def test_no_lookahead_era_uses_shift(self, base_games):
         """ERA at game i must not use earned runs from game i itself."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         df = _compute_pregame_pitcher_era(base_games)
         df = _starting_pitcher_features(df)
@@ -442,7 +442,7 @@ class TestStartingPitcherFeatures:
 
     def test_era_excludes_current_game(self, base_games):
         """Verify ERA at game N uses only starts 0..N-1."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         df = _compute_pregame_pitcher_era(base_games)
         # ERA at game 5 for home pitcher (id=100) should use games 0-4
@@ -457,7 +457,7 @@ class TestStartingPitcherFeatures:
 
     def test_handedness_encoding(self, base_games):
         """Handedness should be binary 0/1."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         df = _compute_pregame_pitcher_era(base_games)
         df = _starting_pitcher_features(df)
@@ -469,7 +469,7 @@ class TestStartingPitcherFeatures:
 
     def test_era_diff_sign_convention(self, base_games):
         """sp_era_diff = away_era - home_era. Positive means away pitcher is worse."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         df = _compute_pregame_pitcher_era(base_games)
         df = _starting_pitcher_features(df)
@@ -481,7 +481,7 @@ class TestStartingPitcherFeatures:
 
     def test_era_distribution_range(self, base_games):
         """Season ERA should be in [0, ~30] range (extreme outliers possible early season)."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         df = _compute_pregame_pitcher_era(base_games)
         for side in ("home", "away"):
@@ -493,7 +493,7 @@ class TestStartingPitcherFeatures:
     def test_pitcher_cross_team_accumulation(self):
         """A pitcher who starts for both teams (trade scenario) should accumulate
         stats across both sides correctly in the unified timeline."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         # Pitcher 300 starts 3 games at home, then 3 games away (simulates trade)
         df = pd.DataFrame({
@@ -519,7 +519,7 @@ class TestStartingPitcherFeatures:
 
     def test_missingness_cold_start(self):
         """New pitcher with no history should have NaN ERA, not 0."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         df = pd.DataFrame({
             "sp_home_id": [500],
@@ -889,7 +889,7 @@ class TestLeakageDetection:
 
     def test_sp_era_temporal_isolation(self):
         """Corrupting future pitching stats should not affect past ERA."""
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         np.random.seed(42)
         n = 10
@@ -981,7 +981,7 @@ class TestBiasAndStaleness:
         """Only 9 venues have elevation data. The other ~21 MLB venues all get ADI=1.0.
         Some mid-elevation venues (400-500ft) like Pittsburgh, Milwaukee may deserve
         non-trivial ADI values."""
-        from pregame.engineering.feature_engineering import _VENUE_ELEVATIONS_FT
+        from classical_learning.engineering.feature_engineering import _VENUE_ELEVATIONS_FT
         # 30 MLB teams but only 9 venues in the dict
         assert len(_VENUE_ELEVATIONS_FT) <= 10, (
             "Most venues default to sea level — potential underfitting"

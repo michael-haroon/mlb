@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pregame.analysis.feature_routing import (
+from classical_learning.analysis.feature_routing import (
     _classify_feature,
     classify_all_features,
     get_feature_set,
@@ -181,11 +181,11 @@ class TestClassifyAdversarial:
         row = _make_row(mdi=True, pca=True)
         assert _classify_feature(row) == "absorbed"
 
-    def test_resid_only_is_noise(self):
-        """RESID alone (no PCA, no MDI, no SFI) → noise.
-        RESID without PCA doesn't qualify for linear_only."""
+    def test_resid_only_is_linear_only(self):
+        """RESID alone (no PCA, no MDI, no SFI) → linear_only.
+        Unique residual signal should reach linear models even without PCA."""
         row = _make_row(resid=True)
-        assert _classify_feature(row) == "noise"
+        assert _classify_feature(row) == "linear_only"
 
     def test_desub_only_no_mdi_is_complementary(self):
         """desub alone (no MDI, no SFI) → complementary.

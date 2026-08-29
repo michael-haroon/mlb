@@ -4,10 +4,10 @@
 Use conda env `pred`. Prefix all Python with `conda run -n pred python`. When using SSH in EC2, use `python3.11` only.
 
 ## Architecture
-MLB API → Parquet (S3/local) → feature store (14 artifacts) → pregame/ :
+MLB API → Parquet (S3/local) → feature stores → two modeling stacks:
 
-- **`pregame/`** — classic ML on pre-game features (win, YRFI, totals, run diff); all 21 market families priced at inference via distribution integration
-- **`live/`** — deep learning on live in-game state (pitch sequences, game context); reprices markets in real time; still needs to be implemented
+- **`classical_learning/`** — classic ML on pre-engineered pregame features (win, YRFI, totals, run diff); pregame market making only; all 21 market families priced at inference via distribution integration
+- **`deep_learning/`** — deep learning (GameTransformer) on live in-game state (pitch sequences, game context); consumes tensors from its own 20-artifact feature store; reprices markets in real time. Training pipeline implemented (`mlb_dl/train_unified.py`); live serving via `mlb_dl/inference_engine.py`
 
 Key invariants:
 - **No leakage**: features use only data prior to `target_game_date`; standardizer fit on train only
@@ -36,7 +36,7 @@ For every statistical method and test used, clearly state their assumptions and 
 
 ## Bug-Fix & Testing Discipline
 - **Failing test first.** Before fixing any bug, write a test that defines expected behavior and demonstrates the failure. No patch without a reproducing test.
-- **Isolate before fixing.** Define expected behavior → write unit test → show it fails → identify root cause → then implement the fix.
+- **Isolate before fixing.** Define expected behavior → write unit test → show it fails → identify root cause → then implement the fix. Do NOT force the test to pass by changing the test itself.
 - **Adversarial stress tests after basics.** Once a fix passes its unit test, write adversarial edge cases (year boundaries, traded players, doubleheaders, cold-start, sparse data).
 - **Prove issues before changing.** For design-level decisions (not clear-cut bugs), reproduce the issue with data and raise to the user before modifying code.
 

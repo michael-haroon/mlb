@@ -173,12 +173,18 @@ _PREGAME_FEATURE_PREFIXES = (
     "diff_colley_",
     # Matchup probability estimates from rating systems
     "log5_prob", "consensus_home_win_prob", "consensus_home_win_std", "consensus_prob",
+    # Market/model disagreement features (derived from consensus vs rating systems)
+    "market_",
+    # Division-strength interaction features
+    "div_strength_",
     # Head-to-head from prior meetings
     "h2h_",
     # Venue, weather, and air density (known before game)
     "park_factor", "temp_f", "is_dome", "is_night_game", "is_doubleheader",
     "venue_capacity", "venue_latitude", "venue_longitude",
     "air_density_index",
+    # Umpire tendency (career expanding mean with shift(1) — prior games only)
+    "ump_hp_", "ump_2b_",
     # Schedule context flags (known before game)
     "is_same_league", "is_same_division",
     "home_league_id", "away_league_id",
@@ -195,6 +201,8 @@ _PREGAME_FEATURE_PREFIXES = (
     "home_bat_", "away_bat_",
     # Differentials of batting and team discipline rolling features
     "diff_bat_", "diff_team_",
+    # Differentials of SP-level derived features (platoon divergence, etc.)
+    "diff_sp_",
     # Platoon advantage index
     "home_platoon", "away_platoon",
     # Pennant race (shift(1) per team from post-game standings)
@@ -205,8 +213,6 @@ _PREGAME_FEATURE_PREFIXES = (
     "diff_div",
     # Weather (available at Pre-Game state, ~4h before first pitch)
     "weather_temp",
-    # Structural regime flags
-    "rule_",
     # Postseason indicator (known from game_type_code before first pitch)
     "is_postseason",
     # Bullpen workload in prior 3 / 7 calendar days (pitch counts, appearances)

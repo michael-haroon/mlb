@@ -18,7 +18,7 @@ This report documents three areas where the pregame ML pipeline has data leakage
 ## Issue #1: Rating Parameter Tuning Leakage 🔴 HIGH
 
 ### Location
-`pregame/engineering/ratings_tuning.py`, lines 31–67
+`classical_learning/engineering/ratings_tuning.py`, lines 31–67
 
 ### Current Code
 ```python
@@ -97,7 +97,7 @@ def tune_all_ratings(
 ## Issue #2: Optuna HPO Hyperparameter Leakage 🟡 MEDIUM
 
 ### Location
-`pregame/strategy/train.py`, lines 209–252
+`classical_learning/strategy/train.py`, lines 209–252
 
 ### Current Code
 ```python
@@ -205,7 +205,7 @@ def _run_optuna_hpo_loyo_aware(
 ## Issue #3: LOYO Structure Itself ✅ ASSESSMENT: CORRECT
 
 ### Location
-`pregame/strategy/data.py`, lines 215–250
+`classical_learning/strategy/data.py`, lines 215–250
 
 ### Current Code
 ```python

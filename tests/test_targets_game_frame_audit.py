@@ -434,7 +434,7 @@ class TestColumnProvenance:
         excludes all identified post-game columns from model inputs."""
         # Import the feature selection function
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from pregame.strategy.data import _PREGAME_FEATURE_PREFIXES, _POSTGAME_EXCLUSIONS
+        from classical_learning.strategy.data import _PREGAME_FEATURE_PREFIXES, _POSTGAME_EXCLUSIONS
 
         # These raw columns from the game frame should NOT match any prefix
         postgame_raw = [
@@ -463,7 +463,7 @@ class TestColumnProvenance:
         3. The feature captures park effects on ball flight, not outcomes
         """
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from pregame.strategy.data import _PREGAME_FEATURE_PREFIXES
+        from classical_learning.strategy.data import _PREGAME_FEATURE_PREFIXES
 
         assert any("temp_f" == p or "temp_f".startswith(p)
                    for p in _PREGAME_FEATURE_PREFIXES)
@@ -476,7 +476,7 @@ class TestColumnProvenance:
         match any prefix in _PREGAME_FEATURE_PREFIXES.
         """
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from pregame.strategy.data import _PREGAME_FEATURE_PREFIXES
+        from classical_learning.strategy.data import _PREGAME_FEATURE_PREFIXES
 
         assert not any("attendance".startswith(p) or "attendance" == p
                        for p in _PREGAME_FEATURE_PREFIXES)
@@ -675,7 +675,7 @@ class TestStartingPitcherLeakageGuard:
     def test_sp_game_stats_excluded_from_features(self):
         """Starting pitcher game-level stats should NOT match any feature prefix."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from pregame.strategy.data import _PREGAME_FEATURE_PREFIXES
+        from classical_learning.strategy.data import _PREGAME_FEATURE_PREFIXES
 
         sp_game_cols = [
             "sp_home_game_innings_pitched", "sp_home_game_hits",

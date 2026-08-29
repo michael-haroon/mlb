@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from scipy.stats import kendalltau
 
-from pregame.analysis.feature_importance import (
+from classical_learning.analysis.feature_importance import (
     feature_score,
     feature_score_resid_sometimes_zero,
     EB_PRIORS,
@@ -246,7 +246,7 @@ class TestCombinerUnanimousAccept:
     """All 4 EB tests ACCEPT with full confidence → ACCEPTED."""
 
     def test_unanimous_accept(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": None},
             "desub_mda": {"decision": "ACCEPT", "flag": None},
@@ -263,7 +263,7 @@ class TestCombinerUnanimousReject:
     """All tests REJECT → REJECTED."""
 
     def test_unanimous_reject(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "REJECT", "flag": None},
             "desub_mda": {"decision": "REJECT", "flag": None},
@@ -282,7 +282,7 @@ class TestCombinerFlagReducesWeight:
     should still ACCEPT (3.0 accept vs 0.5 reject out of 3.5 available)."""
 
     def test_flagged_reject_underweighted(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": None},       # +1.0
             "desub_mda": {"decision": "ACCEPT", "flag": None},       # +1.0
@@ -301,7 +301,7 @@ class TestCombinerInstabilityAbstains:
     available votes."""
 
     def test_instability_abstains(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": None},        # +1.0
             "desub_mda": {"decision": "REJECT", "flag": None},        # -1.0
@@ -320,7 +320,7 @@ class TestCombinerCLTTestsHalfWeight:
     """MDI/CFI_MDA carry base weight 0.5 — calibrated z-test but near-zero selectivity."""
 
     def test_clt_tests_half_weight(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         # 2 EB reject (2.0) vs 2 CLT accept (1.0) → reject wins
         scores = {
             "sfi":       {"decision": "REJECT", "flag": None},   # -1.0
@@ -336,7 +336,7 @@ class TestCombinerCLTTestsHalfWeight:
 
     def test_mdi_half_weight_value(self):
         """MDI vote contributes weight 0.5."""
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "mdi": {"decision": "ACCEPT", "flag": None},
         }
@@ -349,7 +349,7 @@ class TestCombinerSplitVoteNeedsSpec:
     """Even split between accept and reject → NEEDS SPECIFICATION."""
 
     def test_even_split(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": None},   # +1.0
             "desub_mda": {"decision": "REJECT", "flag": None},   # -1.0
@@ -365,7 +365,7 @@ class TestCombinerResidSometimesZeroAbstains:
     """resid_MDA sometimes-zero features (decision=None) abstain from voting."""
 
     def test_sometimes_zero_abstains(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": None},
             "desub_mda": {"decision": "ACCEPT", "flag": None},
@@ -382,7 +382,7 @@ class TestCombinerIsolatedAcceptDiluted:
     Intended: ACCEPTED — uncertainty without opposition shouldn't block."""
 
     def test_unopposed_accept_passes(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": None},                    # +1.0
             "desub_mda": {"decision": "NEEDS_SPECIFICATION", "flag": "NEEDS_SPECIFICATION"},  # 0
@@ -397,7 +397,7 @@ class TestCombinerIsolatedAcceptDiluted:
 
     def test_isolated_reject_symmetric(self):
         """Symmetric case: 1 REJECT + 3 NEEDS_SPEC → REJECTED."""
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "REJECT", "flag": None},
             "desub_mda": {"decision": "NEEDS_SPECIFICATION", "flag": "NEEDS_SPECIFICATION"},
@@ -412,7 +412,7 @@ class TestCombinerAllAbstain:
     """If all tests abstain, tier = UNKNOWN."""
 
     def test_all_abstain(self):
-        from pregame.analysis.feature_importance import combine_test_scores
+        from classical_learning.analysis.feature_importance import combine_test_scores
         scores = {
             "sfi":       {"decision": "ACCEPT", "flag": "INSTABILITY"},
             "desub_mda": {"decision": None, "flag": None},
@@ -427,7 +427,7 @@ class TestFeatureScoreCLT:
 
     def test_clearly_above_null_accepts(self):
         """Feature with mean well above empirical null → ACCEPT."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         rng = np.random.default_rng(42)
         # 80 trees, mean~0.05 (vs empirical null~0.029), std~0.01
         vals = rng.normal(0.05, 0.01, size=80)
@@ -439,7 +439,7 @@ class TestFeatureScoreCLT:
 
     def test_at_null_needs_spec(self):
         """Feature centered exactly at empirical null → NEEDS_SPECIFICATION."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         rng = np.random.default_rng(99)
         null = 0.029
         # Mean exactly at null, moderate variance
@@ -451,7 +451,7 @@ class TestFeatureScoreCLT:
 
     def test_below_null_rejects(self):
         """Feature significantly below empirical null → REJECT."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         rng = np.random.default_rng(7)
         null = 0.029
         # Mean at 0.010, well below null
@@ -463,7 +463,7 @@ class TestFeatureScoreCLT:
 
     def test_insufficient_trees_needs_spec(self):
         """Fewer than 10 valid trees → insufficient data, flag."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         vals = np.array([0.01, 0.02, np.nan, np.nan, np.nan, np.nan, np.nan, 0.015])
         result = feature_score_clt(vals, null=0.029, alpha=0.05)
         assert result["decision"] == "NEEDS_SPECIFICATION"
@@ -471,7 +471,7 @@ class TestFeatureScoreCLT:
 
     def test_n_counts_only_valid(self):
         """N should count only non-NaN values."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         rng = np.random.default_rng(55)
         vals = np.full(100, np.nan)
         vals[:60] = rng.normal(0.05, 0.01, size=60)
@@ -480,7 +480,7 @@ class TestFeatureScoreCLT:
 
     def test_ci_width_scales_with_sqrt_n(self):
         """CI should narrow as N increases (basic sanity)."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         rng = np.random.default_rng(12)
         vals_small = rng.normal(0.03, 0.01, size=30)
         vals_large = rng.normal(0.03, 0.01, size=200)
@@ -492,7 +492,7 @@ class TestFeatureScoreCLT:
 
     def test_alpha_controls_rejection(self):
         """Marginal feature: significant at alpha=0.10, not at alpha=0.01."""
-        from pregame.analysis.feature_importance import feature_score_clt
+        from classical_learning.analysis.feature_importance import feature_score_clt
         rng = np.random.default_rng(33)
         null = 0.029
         # Mean slightly above null, such that p is between 0.01 and 0.10
@@ -508,14 +508,14 @@ class TestResidMdaDispatch:
     """Oracle tests for resid_mda_dispatch routing."""
 
     def test_always_zero(self):
-        from pregame.analysis.feature_importance import resid_mda_dispatch
+        from classical_learning.analysis.feature_importance import resid_mda_dispatch
         vals = np.zeros(8)
         result = resid_mda_dispatch(vals)
         assert result["path"] == "always_zero"
         assert result["decision"] == "NO_UNIQUE_SIGNAL"
 
     def test_always_nonzero(self):
-        from pregame.analysis.feature_importance import resid_mda_dispatch
+        from classical_learning.analysis.feature_importance import resid_mda_dispatch
         vals = np.array([0.001, 0.002, 0.0015, 0.0018, 0.0012, 0.0022, 0.0019, 0.0025])
         result = resid_mda_dispatch(vals)
         assert result["path"] == "always_nonzero"
@@ -524,7 +524,7 @@ class TestResidMdaDispatch:
         assert result["mod_t"] is not None
 
     def test_sometimes_zero(self):
-        from pregame.analysis.feature_importance import resid_mda_dispatch
+        from classical_learning.analysis.feature_importance import resid_mda_dispatch
         vals = np.array([0.0, 0.0, 0.001, 0.0, 0.002, 0.0, 0.0015, 0.0])
         result = resid_mda_dispatch(vals)
         assert result["path"] == "sometimes_zero"
@@ -533,7 +533,7 @@ class TestResidMdaDispatch:
         assert result["decision"] is None  # no hard decision from this path
 
     def test_single_nonzero_fold(self):
-        from pregame.analysis.feature_importance import resid_mda_dispatch
+        from classical_learning.analysis.feature_importance import resid_mda_dispatch
         vals = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5e-7])
         result = resid_mda_dispatch(vals)
         assert result["path"] == "sometimes_zero"

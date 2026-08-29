@@ -1,10 +1,12 @@
 """
 MLB GUMBO Live Feed Daemon
 --------------------------
-Responsibilities (only these):
+Responsibilities:
   1. Poll live game feed — every 10s when live, every 60s when passive/delayed.
   2. Write data/live_state/{game_pk}.json on every poll for real-time inference.
   3. On game Final: call download_history.run_ingestion() to persist to S3/parquet.
+  4. Daily enrichment at 08:00 UTC: fetch_weather.run_daily_weather() archive refresh.
+  5. Forecast refresh loop: fetch_weather.run_forecast_refresh() every 6h (dedicated thread).
 
 download_history.py owns ALL persistent storage and checkpoint tracking.
 If this daemon crashes mid-game, run download_history.py standalone —
@@ -33,6 +35,7 @@ import download_history as dh
 SCHEDULE_FETCH_HOUR_UTC = 8    # UTC hour for daily schedule reload
 PASSIVE_POLL_INTERVAL   = 60   # seconds when no game is live
 LIVE_POLL_INTERVAL      = 10   # seconds when a game is in Live state
+FORECAST_REFRESH_INTERVAL = 6 * 3600  # ECMWF HRES runs at 00/06/12/18Z
 MAX_RETRIES             = 7
 BASE_BACKOFF            = 2.0  # exponential backoff base (seconds)
 MAX_BACKOFF             = 120.0
@@ -385,6 +388,62 @@ class LiveDaemon:
             self._shutdown.wait(timeout=sleep_for)
 
     # ------------------------------------------------------------------ #
+    #  DAILY ENRICHMENT                                                    #
+    # ------------------------------------------------------------------ #
+    def _daily_enrichment(self):
+        """Fetch standings, rosters, player stats, and platoon splits for today.
+
+        Called once per day right after _seed_schedule at 08:00 UTC.
+        A failure here never propagates — daemon stays alive regardless.
+        """
+        try:
+            import daily_enrichment as de
+            from datetime import timezone as tz
+            now_utc  = datetime.now(tz.utc)
+            date_str = now_utc.strftime("%Y-%m-%d")
+            season   = now_utc.year
+            logger.info(f"[enrichment] Starting daily enrichment for {date_str}")
+            de.USE_S3 = dh.USE_S3  # inherit --local flag if set
+            de.run_daily_enrichment(date_str, season)
+            logger.info(f"[enrichment] Daily enrichment complete for {date_str}")
+        except Exception:
+            logger.warning("[enrichment] Daily enrichment failed — daemon continues", exc_info=True)
+
+        # Weather is a separate try block: an enrichment failure above must not
+        # skip it. Nothing called run_daily_weather() before, so the forecast
+        # parquet went stale and fetch_live_weather silently returned zeros.
+        try:
+            import fetch_weather as fw
+            logger.info("[weather] Starting daily weather refresh")
+            fw.run_daily_weather(local=not dh.USE_S3)
+            logger.info("[weather] Daily weather refresh complete")
+        except Exception:
+            logger.warning("[weather] Daily weather refresh failed — daemon continues", exc_info=True)
+
+    # ------------------------------------------------------------------ #
+    #  FORECAST REFRESH LOOP                                               #
+    # ------------------------------------------------------------------ #
+    def _forecast_refresh_loop(self):
+        """Re-pull forecast products every FORECAST_REFRESH_INTERVAL.
+
+        Separate from _schedule_loop's once-daily archive refresh: without this,
+        a 01:00 UTC game prices off a forecast issued at 08:00 UTC the previous
+        day (~17h lead). ECMWF HRES initialises at 00/06/12/18Z, so 6h is the
+        shortest interval that can surface a new run.
+        """
+        while not self._shutdown.is_set():
+            # Wait first — _daily_enrichment already fetched forecasts at startup.
+            if self._shutdown.wait(timeout=FORECAST_REFRESH_INTERVAL):
+                return
+            try:
+                import fetch_weather as fw
+                logger.info("[weather] Starting 6-hourly forecast refresh")
+                fw.run_forecast_refresh(local=not dh.USE_S3)
+                logger.info("[weather] Forecast refresh complete")
+            except Exception:
+                logger.warning("[weather] Forecast refresh failed — daemon continues", exc_info=True)
+
+    # ------------------------------------------------------------------ #
     #  SCHEDULE RESET LOOP                                                 #
     # ------------------------------------------------------------------ #
     def _schedule_loop(self):
@@ -396,6 +455,7 @@ class LiveDaemon:
             )
             if now_utc >= next_seed_utc:
                 self._seed_schedule()
+                self._daily_enrichment()
                 next_seed_utc += timedelta(days=1)
 
             wait_secs = (next_seed_utc - datetime.now(timezone.utc)).total_seconds()
@@ -421,12 +481,15 @@ class LiveDaemon:
         logger.info("=" * 60)
 
         self._seed_schedule()
+        self._daily_enrichment()
 
         poll_thread     = threading.Thread(target=self._polling_loop,  name="PollLoop",     daemon=True)
         schedule_thread = threading.Thread(target=self._schedule_loop, name="ScheduleLoop", daemon=True)
+        weather_thread  = threading.Thread(target=self._forecast_refresh_loop, name="WeatherLoop", daemon=True)
 
         poll_thread.start()
         schedule_thread.start()
+        weather_thread.start()
 
         logger.info("Daemon threads launched. Waiting for shutdown signal (SIGTERM / SIGINT).")
         self._shutdown.wait()
@@ -434,6 +497,7 @@ class LiveDaemon:
         logger.info("Shutdown requested — waiting for threads to drain (up to 30s).")
         poll_thread.join(timeout=30)
         schedule_thread.join(timeout=5)
+        weather_thread.join(timeout=5)
 
         remaining = list(self._matrix.keys())
         if remaining:

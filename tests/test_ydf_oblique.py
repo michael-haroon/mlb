@@ -19,7 +19,7 @@ class TestRegistration:
 
     def test_in_tree_models_not_imputation_not_scaling(self):
         """YDF handles NaN and normalizes internally — must NOT require imputation or scaling."""
-        from pregame.strategy.config import TREE_MODELS, NEEDS_IMPUTATION, NEEDS_SCALING
+        from classical_learning.strategy.config import TREE_MODELS, NEEDS_IMPUTATION, NEEDS_SCALING
 
         assert "ydf_oblique_gbt" in TREE_MODELS
         assert "ydf_oblique_gbt" not in NEEDS_IMPUTATION
@@ -27,20 +27,20 @@ class TestRegistration:
 
     def test_in_model_builders(self):
         """Must be instantiable via build_model."""
-        from pregame.strategy.models import build_model
+        from classical_learning.strategy.models import build_model
         clf = build_model("ydf_oblique_gbt", "classification", {})
         assert hasattr(clf, "fit")
         assert hasattr(clf, "predict_proba")
 
     def test_in_column_subsample_confirmed(self):
         """YDF subsamples features per split — safe to include redundant features."""
-        from pregame.analysis.feature_routing import COLUMN_SUBSAMPLE_CONFIRMED
+        from classical_learning.analysis.feature_routing import COLUMN_SUBSAMPLE_CONFIRMED
         assert "ydf_oblique_gbt" in COLUMN_SUBSAMPLE_CONFIRMED
 
     def test_in_feature_sizing_families(self):
         """Must participate in per-family sizing curves."""
         import inspect
-        from pregame.strategy.feature_sizing import run_sizing_curve
+        from classical_learning.strategy.feature_sizing import run_sizing_curve
         source = inspect.getsource(run_sizing_curve)
         assert "ydf_oblique_gbt" in source
 
@@ -57,7 +57,7 @@ class TestSklearnContract:
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (200, 8))
         y = (X[:, 0] + X[:, 1] > 1.0).astype(int)
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         clf = YDFObliqueClassifier(num_trees=30, max_depth=4)
         clf.fit(X, y)
         return clf, X
@@ -87,7 +87,7 @@ class TestSklearnContract:
 
     def test_get_set_params_roundtrip(self):
         """get_params → set_params must be lossless."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         clf = YDFObliqueClassifier(num_trees=77, shrinkage=0.05)
         params = clf.get_params()
         clf2 = YDFObliqueClassifier()
@@ -97,7 +97,7 @@ class TestSklearnContract:
     def test_sklearn_clone(self):
         """sklearn.base.clone must produce a valid unfitted copy."""
         from sklearn.base import clone
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         clf = YDFObliqueClassifier(num_trees=50, shrinkage=0.03)
         clf2 = clone(clf)
         assert clf2.get_params() == clf.get_params()
@@ -113,7 +113,7 @@ class TestNaNHandling:
 
     def test_nan_in_training_data(self):
         """Fit must succeed with arbitrary NaN patterns."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(99)
         X = rng.uniform(0, 1, (300, 10))
         y = (X[:, 0] > 0.5).astype(int)
@@ -125,7 +125,7 @@ class TestNaNHandling:
 
     def test_nan_in_inference_data(self):
         """Predict must succeed when inference data has NaN in different positions than train."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(7)
         X_train = rng.uniform(0, 1, (200, 5))
         y = (X_train[:, 0] > 0.5).astype(int)
@@ -141,7 +141,7 @@ class TestNaNHandling:
 
     def test_all_nan_column(self):
         """An entirely NaN column must not crash — model ignores it."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(11)
         X = rng.uniform(0, 1, (200, 5))
         X[:, 2] = np.nan
@@ -162,7 +162,7 @@ class TestSampleWeights:
 
     def test_sample_weights_change_predictions(self):
         """Heavily weighting one class's samples must shift predictions toward it."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (400, 5))
         y = (X[:, 0] > 0.5).astype(int)
@@ -191,7 +191,7 @@ class TestObliqueSignal:
 
     def test_oblique_beats_axisaligned_on_linear_boundary(self):
         """When the true decision boundary is w1*X1 + w2*X2 > t, oblique must do better."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(42)
         n = 1000
         X = rng.uniform(0, 1, (n, 10))
@@ -216,7 +216,7 @@ class TestObliqueSignal:
 
     def test_high_density_uses_more_features(self):
         """Higher density_factor should produce projections involving more features."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (500, 20))
         y = (X[:, :5].sum(axis=1) > 2.5).astype(int)
@@ -251,7 +251,7 @@ class TestSerialization:
     """Model must survive pickle round-trip with identical predictions."""
 
     def test_pickle_roundtrip_identical(self):
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (200, 5))
         y = (X[:, 0] > 0.5).astype(int)
@@ -268,7 +268,7 @@ class TestSerialization:
         )
 
     def test_pickle_roundtrip_regressor(self):
-        from pregame.strategy.models import YDFObliqueRegressor
+        from classical_learning.strategy.models import YDFObliqueRegressor
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (200, 5))
         y = X[:, 0] + X[:, 1]
@@ -294,7 +294,7 @@ class TestMaxNumFeatures:
 
     def test_max_num_features_does_not_crash(self):
         """Setting the cap must not error — just constrain projection width."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (200, 20))
         y = (X[:, :3].sum(axis=1) > 1.5).astype(int)
@@ -307,7 +307,7 @@ class TestMaxNumFeatures:
 
     def test_none_means_uncapped(self):
         """Default None must allow arbitrary projection width."""
-        from pregame.strategy.models import YDFObliqueClassifier
+        from classical_learning.strategy.models import YDFObliqueClassifier
         clf = YDFObliqueClassifier()
         assert clf.sparse_oblique_max_num_features is None
         params = clf.get_params()
@@ -322,7 +322,7 @@ class TestRegression:
     """Regressor must produce continuous float predictions, not classes."""
 
     def test_regressor_continuous_output(self):
-        from pregame.strategy.models import YDFObliqueRegressor
+        from classical_learning.strategy.models import YDFObliqueRegressor
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (300, 5))
         y = X[:, 0] + 2 * X[:, 1] + rng.normal(0, 0.1, 300)
@@ -336,7 +336,7 @@ class TestRegression:
 
     def test_regressor_reasonable_range(self):
         """Predictions should be within a reasonable range of actual targets."""
-        from pregame.strategy.models import YDFObliqueRegressor
+        from classical_learning.strategy.models import YDFObliqueRegressor
         rng = np.random.default_rng(42)
         X = rng.uniform(0, 1, (300, 5))
         y = X[:, 0] + X[:, 1]  # range ~ [0, 2]

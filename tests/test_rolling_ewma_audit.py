@@ -24,7 +24,7 @@ import pytest
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pregame.engineering.feature_engineering import (
+from classical_learning.engineering.feature_engineering import (
     _rolling_batting_stats,
     _rolling_pitching_stats,
     _ewma_features,

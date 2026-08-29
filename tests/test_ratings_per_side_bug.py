@@ -14,7 +14,7 @@ import pytest
 import sys
 sys.path.insert(0, ".")
 
-from pregame.engineering.ratings import compute_baseruns, compute_pythagenpat
+from classical_learning.engineering.ratings import compute_baseruns, compute_pythagenpat
 
 
 def _make_bsr_columns(games, n):

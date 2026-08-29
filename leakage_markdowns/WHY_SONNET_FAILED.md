@@ -35,7 +35,7 @@ data.py (reviewed alone):
 ratings_tuning.py (lines 31-67)
     Output: Rating parameters tuned on seasons [2024, 2025, 2026]
             ↓
-pregame/engineering/build.py
+classical_learning/engineering/build.py
     Used by: attach_all_ratings(games, params=...)
             ↓
 game_features.parquet
@@ -158,8 +158,8 @@ For the pregame MLB model, do this EXACT sequence:
 
 **Then ask Explore to execute it:**
 ```
-Use this checklist on pregame/engineering/ratings_tuning.py, 
-pregame/strategy/train.py, and pregame/strategy/data.py.
+Use this checklist on classical_learning/engineering/ratings_tuning.py, 
+classical_learning/strategy/train.py, and classical_learning/strategy/data.py.
 
 Your output should be a table with columns:
 [Tuning_Location, Tuning_Data_Seasons, Test_Set_Seasons, Overlap, Severity, Code_Snippet]

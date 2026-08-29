@@ -5,7 +5,7 @@
 ## Fix #1: Rating Parameter Tuning Leakage 🔴 HIGH PRIORITY
 
 ### Current Code (LEAKS)
-**File:** `pregame/engineering/ratings_tuning.py` (lines 31–71)
+**File:** `classical_learning/engineering/ratings_tuning.py` (lines 31–71)
 
 ```python
 def tune_all_ratings(
@@ -156,7 +156,7 @@ def tune_all_ratings_safer(games, n_trials=100, val_seasons=None):
 ## Fix #2: Optuna HPO Hyperparameter Leakage 🟡 MEDIUM PRIORITY
 
 ### Current Code (LEAKS)
-**File:** `pregame/strategy/train.py` (lines 53–206)
+**File:** `classical_learning/strategy/train.py` (lines 53–206)
 
 ```python
 def train_target(

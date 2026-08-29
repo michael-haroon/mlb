@@ -90,7 +90,7 @@ class TestStandardizerFitScope:
 
         This test proves scaler statistics come only from training rows.
         """
-        from pregame.strategy.data import prepare_fold, generate_loyo_splits, load_features
+        from classical_learning.strategy.data import prepare_fold, generate_loyo_splits, load_features
 
         df, path = synthetic_data
         X, y, seasons, game_pks = load_features(path, "home_win", "2016+")
@@ -109,7 +109,7 @@ class TestStandardizerFitScope:
                 X_train_subset = X_train_raw[feature_cols]
 
                 # Handle NaN imputation same as prepare_fold does
-                from pregame.strategy.data import _semantic_impute
+                from classical_learning.strategy.data import _semantic_impute
                 X_train_imputed = _semantic_impute(X_train_subset)
 
                 # Scaler mean should match training fold means
@@ -145,7 +145,7 @@ class TestStandardizerFitScope:
 
         Each inner fold must have independent scaling.
         """
-        from pregame.strategy.data import load_features, generate_loyo_splits, compute_temporal_weights
+        from classical_learning.strategy.data import load_features, generate_loyo_splits, compute_temporal_weights
         from sklearn.model_selection import TimeSeriesSplit
 
         df, path = synthetic_data
@@ -182,7 +182,7 @@ class TestLOYOSplitCorrectness:
 
     def test_train_seasons_strictly_before_val(self, synthetic_data):
         """Training folds must contain ONLY seasons < val_season."""
-        from pregame.strategy.data import generate_loyo_splits
+        from classical_learning.strategy.data import generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -197,7 +197,7 @@ class TestLOYOSplitCorrectness:
 
     def test_val_season_not_in_train(self, synthetic_data):
         """Validation season must NOT appear in training indices."""
-        from pregame.strategy.data import generate_loyo_splits
+        from classical_learning.strategy.data import generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -211,7 +211,7 @@ class TestLOYOSplitCorrectness:
 
     def test_no_future_seasons_in_train(self, synthetic_data):
         """No season after val_season should appear in training."""
-        from pregame.strategy.data import generate_loyo_splits
+        from classical_learning.strategy.data import generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -226,7 +226,7 @@ class TestLOYOSplitCorrectness:
 
     def test_2020_excluded_from_all_splits(self, synthetic_data):
         """2020 must never appear as train or val season (SKIP_SEASONS=[2020])."""
-        from pregame.strategy.data import generate_loyo_splits
+        from classical_learning.strategy.data import generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -245,7 +245,7 @@ class TestLOYOSplitCorrectness:
 
         Verify: same feature values appear regardless of which fold uses them.
         """
-        from pregame.strategy.data import load_features, generate_loyo_splits
+        from classical_learning.strategy.data import load_features, generate_loyo_splits
 
         df, path = synthetic_data
         X, y, seasons, game_pks = load_features(path, "home_win", "2016+")
@@ -263,8 +263,8 @@ class TestLOYOSplitCorrectness:
 
     def test_minimum_train_seasons_enforced(self, synthetic_data):
         """LOYO_MIN_TRAIN_SEASONS (3) must be respected."""
-        from pregame.strategy.data import generate_loyo_splits
-        from pregame.strategy.config import LOYO_MIN_TRAIN_SEASONS
+        from classical_learning.strategy.data import generate_loyo_splits
+        from classical_learning.strategy.config import LOYO_MIN_TRAIN_SEASONS
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -292,7 +292,7 @@ class TestFeatureSelectionLeakage:
 
         VERDICT: FALSE ALARM — importance uses proper temporal CV.
         """
-        from pregame.analysis.feature_importance import PurgedYearKFold
+        from classical_learning.analysis.feature_importance import PurgedYearKFold
 
         # Simulate: n_splits=None means true LOYO
         seasons = pd.Series([2016]*50 + [2017]*50 + [2018]*50 + [2019]*50)
@@ -358,7 +358,7 @@ class TestOptunaHPOLeakage:
         Impact: hyperparameters are slightly biased toward patterns in
         intermediate seasons that are val folds for earlier splits.
         """
-        from pregame.strategy.data import generate_loyo_splits
+        from classical_learning.strategy.data import generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -490,7 +490,7 @@ class TestTargetEncodingLeakage:
         gets the prior start. This correctly excludes the current game.
         """
         import inspect
-        from pregame.engineering.feature_engineering import _compute_pregame_pitcher_era
+        from classical_learning.engineering.feature_engineering import _compute_pregame_pitcher_era
 
         source = inspect.getsource(_compute_pregame_pitcher_era)
         assert 'side="left"' in source, "searchsorted must use side='left' for exclusion"
@@ -510,7 +510,7 @@ class TestSampleWeighting:
         compute_temporal_weights uses linear interpolation from min_weight=0.05
         (oldest) to 1.0 (newest). This correctly down-weights older data.
         """
-        from pregame.strategy.data import compute_temporal_weights
+        from classical_learning.strategy.data import compute_temporal_weights
 
         seasons = pd.Series([2016]*100 + [2017]*100 + [2018]*100 + [2019]*100 + [2021]*100)
         weights = compute_temporal_weights(seasons)
@@ -530,7 +530,7 @@ class TestSampleWeighting:
         The weight normalization uses min/max of the TRAINING fold's seasons,
         not global min/max. This means weights are relative within each fold.
         """
-        from pregame.strategy.data import compute_temporal_weights, generate_loyo_splits
+        from classical_learning.strategy.data import compute_temporal_weights, generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -554,7 +554,7 @@ class TestSampleWeighting:
 
     def test_single_season_training_gets_uniform_weights(self):
         """When train has only one season, all weights should be 1.0."""
-        from pregame.strategy.data import compute_temporal_weights
+        from classical_learning.strategy.data import compute_temporal_weights
 
         seasons = pd.Series([2023] * 100)
         weights = compute_temporal_weights(seasons)
@@ -567,7 +567,7 @@ class TestSampleWeighting:
         The weight formula is: (season - min_train_season) / (max_train_season - min_train_season)
         This uses ONLY training seasons, never the validation season.
         """
-        from pregame.strategy.data import compute_temporal_weights, generate_loyo_splits
+        from classical_learning.strategy.data import compute_temporal_weights, generate_loyo_splits
 
         df, _ = synthetic_data
         seasons = df["season"]
@@ -615,7 +615,7 @@ class TestSizingCurveLeakage:
         COUNT is optimized on that season, not the model weights.
         """
         import inspect
-        from pregame.strategy.feature_sizing import run_sizing_curve
+        from classical_learning.strategy.feature_sizing import run_sizing_curve
 
         source = inspect.getsource(run_sizing_curve)
         assert "sizing_split = splits[-1]" in source, (
@@ -633,7 +633,7 @@ class TestSizingCurveLeakage:
         No scaler leakage possible in sizing because no scaler is used.
         """
         import inspect
-        from pregame.strategy.feature_sizing import run_sizing_curve
+        from classical_learning.strategy.feature_sizing import run_sizing_curve
 
         source = inspect.getsource(run_sizing_curve)
         # Verify no StandardScaler usage in sizing
@@ -651,7 +651,7 @@ class TestPregameAllowlist:
 
     def test_allowlist_excludes_postgame_columns(self):
         """_POSTGAME_EXCLUSIONS must block known leaky columns."""
-        from pregame.strategy.data import _POSTGAME_EXCLUSIONS
+        from classical_learning.strategy.data import _POSTGAME_EXCLUSIONS
 
         known_leakers = [
             "home_bsr_offense_game", "home_bsr_defense_game",
@@ -668,7 +668,7 @@ class TestPregameAllowlist:
         This is a strict allowlist (not a blocklist), meaning any new column
         that doesn't match a known prefix is automatically excluded.
         """
-        from pregame.strategy.data import _select_pregame_features
+        from classical_learning.strategy.data import _select_pregame_features
 
         # Create a DataFrame with mixed columns
         df = pd.DataFrame({
@@ -697,7 +697,7 @@ class TestEndToEndFoldIsolation:
 
     def test_prepared_data_shapes_consistent(self, synthetic_data):
         """PreparedData must have correct shapes for each fold."""
-        from pregame.strategy.data import prepare_fold, generate_loyo_splits, load_features
+        from classical_learning.strategy.data import prepare_fold, generate_loyo_splits, load_features
 
         df, path = synthetic_data
         X, y, seasons, game_pks = load_features(path, "home_win", "2016+")
@@ -729,7 +729,7 @@ class TestEndToEndFoldIsolation:
 
         The threshold for adding _observed masks comes from training NaN rates.
         """
-        from pregame.strategy.data import prepare_fold, generate_loyo_splits, load_features
+        from classical_learning.strategy.data import prepare_fold, generate_loyo_splits, load_features
 
         df, path = synthetic_data
 

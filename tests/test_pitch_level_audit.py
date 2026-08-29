@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pregame.engineering.pitch_level_features import (
+from classical_learning.engineering.pitch_level_features import (
     FIP_CONSTANT,
     WOBA_PA_DENOM_EVENTS,
     WOBA_WEIGHTS,

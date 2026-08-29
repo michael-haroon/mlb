@@ -25,8 +25,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pregame.engineering.constants import PITCH_LEVEL_COLUMNS
-from pregame.engineering.data_loader import (
+from classical_learning.engineering.constants import PITCH_LEVEL_COLUMNS
+from classical_learning.engineering.data_loader import (
     _TABLE_CONFIG,
     load_all,
     load_pitches_raw,
@@ -82,7 +82,7 @@ def test_pitches_raw_absent_from_table_config():
 
 def test_load_pitches_raw_importable():
     """load_pitches_raw must be a public callable in data_loader."""
-    from pregame.engineering import data_loader
+    from classical_learning.engineering import data_loader
     assert callable(getattr(data_loader, "load_pitches_raw", None))
 
 
@@ -191,10 +191,10 @@ def test_build_py_frees_raw_before_pitches_raw(tmp_path, monkeypatch, minimal_pi
         if mod_name in ("pregame.engineering.build", "pregame.engineering.ratings_tuning"):
             del sys.modules[mod_name]
 
-    import pregame.engineering.build as build_mod
-    import pregame.engineering.game_builder as gb_mod
-    import pregame.engineering.pitch_level_features as plf_mod
-    import pregame.engineering.feature_engineering as fe_mod
+    import classical_learning.engineering.build as build_mod
+    import classical_learning.engineering.game_builder as gb_mod
+    import classical_learning.engineering.pitch_level_features as plf_mod
+    import classical_learning.engineering.feature_engineering as fe_mod
 
     if _optuna_missing:
         sys.modules.pop("optuna", None)

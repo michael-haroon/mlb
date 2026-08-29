@@ -45,9 +45,9 @@ def select_adversarial_games(source: str) -> dict:
     Returns a dict mapping case_name -> list of game_pk values, plus
     the full list of all game_pks needed.
     """
-    from pregame.engineering.data_loader import load_all
-    from pregame.engineering.game_builder import build_game_frame
-    from pregame.engineering.constants import MLB_FRANCHISE_IDS, VALID_GAME_TYPE_CODES
+    from classical_learning.engineering.data_loader import load_all
+    from classical_learning.engineering.game_builder import build_game_frame
+    from classical_learning.engineering.constants import MLB_FRANCHISE_IDS, VALID_GAME_TYPE_CODES
 
     # Load 2022 and 2023 (year boundary) + 2024 early season
     log.info("Loading raw data for 2022-2024...")
@@ -160,11 +160,11 @@ def select_adversarial_games(source: str) -> dict:
 
 def run_feature_pipeline(cases: dict, source: str) -> pd.DataFrame:
     """Run the full feature pipeline on 2022-2024 and extract adversarial games."""
-    from pregame.engineering.feature_engineering import (
+    from classical_learning.engineering.feature_engineering import (
         engineer_features, _compute_pregame_pitcher_era
     )
-    from pregame.engineering.pitch_level_features import compute_pitch_level_features
-    from pregame.engineering.ratings import attach_all_ratings, DEFAULT_PARAMS
+    from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
+    from classical_learning.engineering.ratings import attach_all_ratings, DEFAULT_PARAMS
 
     games = cases["_games_df"].copy()
     raw = cases["_raw"]

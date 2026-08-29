@@ -1,0 +1,6 @@
+{"event": "settlement", "ts": "2026-08-09T22:50:31.988199+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 6.0}
+{"event": "settlement", "ts": "2026-08-09T22:50:31.988986+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 6.0}
+{"event": "exit", "ts": "2026-08-09T22:50:31.989497+00:00", "ticker": "TICK-B", "side": "no", "contracts": 5, "entry_price": 0.35, "exit_price": 0.55, "pnl": -1.0000000000000004, "daily_pnl": 5.0}
+{"event": "settlement", "ts": "2026-08-09T22:50:31.990018+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": false, "pnl": -4.0, "daily_pnl": 1.0}
+{"event": "settlement", "ts": "2026-08-09T22:50:31.990512+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 7.0}
+{"event": "position_add", "ts": "2026-08-09T22:50:32.023973+00:00", "ticker": "KXMLBGAME-26JUL261910NYMLAD-LAD", "side": "yes", "entry_price": 0.55, "contracts": 3, "state": "filled", "target": "home_win", "confidence_tier": "HIGH", "accuracy_mult": 1.2, "entry_edge": 0.05, "opened_at": "2026-08-09T22:50:32.023963+00:00"}

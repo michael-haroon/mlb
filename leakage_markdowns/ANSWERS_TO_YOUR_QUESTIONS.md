@@ -200,7 +200,7 @@ Payoff: Saves entire retraining cycle if leakage is found
 **Rating tuning leakage is real:**
 
 ```python
-# File: pregame/engineering/ratings_tuning.py, line 70
+# File: classical_learning/engineering/ratings_tuning.py, line 70
 if val_seasons is None:
     all_seasons = sorted(games["season"].dropna().unique())
     val_seasons = all_seasons[-3:]  # [2024, 2025, 2026]
@@ -284,12 +284,12 @@ PYEOF
 # Compare metrics
 
 # Current:
-conda run -n pred python pregame/strategy/train.py \
+conda run -n pred python classical_learning/strategy/train.py \
   --features current_features.parquet \
   --output current_results/
 
 # Fixed (after applying LEAKAGE_FIXES.md):
-conda run -n pred python pregame/strategy/train.py \
+conda run -n pred python classical_learning/strategy/train.py \
   --features fixed_features.parquet \
   --output fixed_results/
 

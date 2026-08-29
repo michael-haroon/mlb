@@ -111,7 +111,7 @@ class TestH2HRemoval:
 
     def test_engineer_features_excludes_h2h_columns(self, mixed_context_games):
         """The top-level engineer_features must not produce H2H columns."""
-        from pregame.engineering.feature_engineering import engineer_features
+        from classical_learning.engineering.feature_engineering import engineer_features
 
         # Add minimum required columns for engineer_features to run
         df = mixed_context_games.copy()
@@ -131,7 +131,7 @@ class TestH2HRemoval:
     def test_h2h_function_still_exists_but_unused(self):
         """The _head_to_head function may still exist (for reference) but
         must not be called from engineer_features."""
-        from pregame.engineering import feature_engineering
+        from classical_learning.engineering import feature_engineering
         import inspect
 
         source = inspect.getsource(feature_engineering.engineer_features)
@@ -149,7 +149,7 @@ class TestScheduleContextFlags:
 
     def test_same_division_game(self, intra_division_game):
         """NYY vs BOS: same division=1, same league=1."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(intra_division_game)
         assert result["is_same_division"].iloc[0] == 1.0
@@ -157,7 +157,7 @@ class TestScheduleContextFlags:
 
     def test_same_league_different_division(self, intra_league_cross_division_game):
         """NYY vs HOU: same division=0, same league=1."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(intra_league_cross_division_game)
         assert result["is_same_division"].iloc[0] == 0.0
@@ -165,7 +165,7 @@ class TestScheduleContextFlags:
 
     def test_interleague_game(self, interleague_game):
         """NYY vs LAD: same division=0, same league=0."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(interleague_game)
         assert result["is_same_division"].iloc[0] == 0.0
@@ -173,7 +173,7 @@ class TestScheduleContextFlags:
 
     def test_all_contexts_in_batch(self, mixed_context_games):
         """Multiple games correctly classified in one pass."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(mixed_context_games)
         # game 0: NYY vs BOS (same div)
@@ -194,7 +194,7 @@ class TestScheduleContextFlags:
 
     def test_output_dtype_is_float32(self, intra_division_game):
         """Flags must be float32 for consistency with other features."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(intra_division_game)
         assert result["is_same_division"].dtype == np.float32
@@ -202,7 +202,7 @@ class TestScheduleContextFlags:
 
     def test_same_division_implies_same_league(self, mixed_context_games):
         """Invariant: is_same_division=1 must always have is_same_league=1."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(mixed_context_games)
         same_div_mask = result["is_same_division"] == 1.0
@@ -221,7 +221,7 @@ class TestScheduleInteractions:
 
     def test_elo_interaction_same_league(self, intra_division_game):
         """elo_prob_x_same_league = elo_prob when same league."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(intra_division_game)
         expected = 0.58 * 1.0  # elo_prob * is_same_league
@@ -229,14 +229,14 @@ class TestScheduleInteractions:
 
     def test_elo_interaction_interleague(self, interleague_game):
         """elo_prob_x_same_league = 0.0 when interleague."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(interleague_game)
         assert result["elo_prob_x_same_league"].iloc[0] == 0.0
 
     def test_elo_interaction_same_division(self, intra_division_game):
         """elo_prob_x_same_division = elo_prob when same division."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(intra_division_game)
         expected = 0.58 * 1.0
@@ -244,14 +244,14 @@ class TestScheduleInteractions:
 
     def test_consensus_interaction(self, interleague_game):
         """consensus_home_win_prob_x_same_league = 0.0 when interleague."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(interleague_game)
         assert result["consensus_prob_x_same_league"].iloc[0] == 0.0
 
     def test_interactions_are_float32(self, mixed_context_games):
         """All interaction columns must be float32."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         result = _schedule_context(mixed_context_games)
         interaction_cols = [c for c in result.columns if "_x_" in c]
@@ -269,7 +269,7 @@ class TestScheduleContextAdversarial:
 
     def test_missing_league_id_both_sides(self):
         """Games with NaN league_id (spring training, exhibition) get NaN flags."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9001],
@@ -290,7 +290,7 @@ class TestScheduleContextAdversarial:
 
     def test_missing_league_id_one_side(self):
         """One team has NaN league_id — should not produce 1.0 for same_league."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9002],
@@ -311,7 +311,7 @@ class TestScheduleContextAdversarial:
         """Hypothetical: if division IDs were reused across leagues (they're not
         in current MLB, but tests should be robust to schema changes).
         Same division_id alone is NOT sufficient — must also be same league."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9003],
@@ -335,7 +335,7 @@ class TestScheduleContextAdversarial:
         """If elo_prob is NaN, interactions must be NaN (not 0.0).
         NaN * 1.0 = NaN. This prevents imputation from silently turning
         missing ratings into 'zero home advantage' signals."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9004],
@@ -357,7 +357,7 @@ class TestScheduleContextAdversarial:
     def test_missing_elo_with_zero_flag(self):
         """If elo_prob is NaN and flag is 0.0, interaction should still be NaN.
         NaN * 0.0 = NaN in pandas (not 0.0)."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9005],
@@ -377,7 +377,7 @@ class TestScheduleContextAdversarial:
 
     def test_all_interleague_stretch(self):
         """10 consecutive interleague games — all flags should be 0."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         n = 10
         df = pd.DataFrame({
@@ -401,7 +401,7 @@ class TestScheduleContextAdversarial:
     def test_no_league_division_columns_graceful_fallback(self):
         """If league_id/division_id columns are absent entirely (legacy data),
         function should still produce columns filled with NaN (not crash)."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9020],
@@ -421,7 +421,7 @@ class TestScheduleContextAdversarial:
     def test_missing_consensus_prob_column(self):
         """If consensus_home_win_prob doesn't exist yet (called before
         _consensus_probability), interaction should gracefully handle absence."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         df = pd.DataFrame({
             "game_pk": [9021],
@@ -456,14 +456,14 @@ class TestRestAndScheduleMonotonic:
     _T1, _T2 = 147, 111
 
     def _make_games(self, rows):
-        from pregame.engineering.feature_engineering import _rest_and_schedule
+        from classical_learning.engineering.feature_engineering import _rest_and_schedule
         import pandas as pd
         return pd.DataFrame(rows).reset_index(drop=True), _rest_and_schedule
 
     def test_doubleheader_same_date_does_not_crash(self):
         """Two games same date for same team (doubleheader) must not raise ValueError."""
         import pandas as pd
-        from pregame.engineering.feature_engineering import _rest_and_schedule
+        from classical_learning.engineering.feature_engineering import _rest_and_schedule
 
         games = pd.DataFrame([
             {"game_pk": 1, "game_date": "2015-03-07", "season": 2015,
@@ -484,7 +484,7 @@ class TestRestAndScheduleMonotonic:
     def test_games_last_7d_counts_doubleheader_correctly(self):
         """After the fix, games_last_7d for game 3 must count both DH games from Mar 7."""
         import pandas as pd
-        from pregame.engineering.feature_engineering import _rest_and_schedule
+        from classical_learning.engineering.feature_engineering import _rest_and_schedule
 
         games = pd.DataFrame([
             {"game_pk": 1, "game_date": "2015-03-07", "season": 2015,

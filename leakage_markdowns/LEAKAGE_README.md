@@ -123,10 +123,10 @@ Confidence:         High if fixes are applied; medium if not
 
 ### If Fixing Now
 1. Open `LEAKAGE_FIXES.md`
-2. Copy Fix #1 code into `pregame/engineering/ratings_tuning.py`
+2. Copy Fix #1 code into `classical_learning/engineering/ratings_tuning.py`
 3. Run Optuna re-training (estimated 800s = ~13 minutes)
 4. Compare metrics (expect ~1% drop)
-5. Copy Fix #2 code into `pregame/strategy/train.py`
+5. Copy Fix #2 code into `classical_learning/strategy/train.py`
 6. Run full training pipeline (per-fold HPO adds ~2x time)
 
 ### If Deferring
@@ -140,11 +140,11 @@ Confidence:         High if fixes are applied; medium if not
 
 | Issue | File | Lines | Severity |
 |-------|------|-------|----------|
-| Rating tuning | `pregame/engineering/ratings_tuning.py` | 31–71 | 🔴 HIGH |
-| HPO leakage | `pregame/strategy/train.py` | 53–252 | 🟡 MEDIUM |
-| LOYO splits | `pregame/strategy/data.py` | 215–250 | ✅ SAFE |
-| Feature engineering | `pregame/engineering/feature_engineering.py` | ~155, 207, 232 | ✅ SAFE (uses shift(1)) |
-| Postgame exclusions | `pregame/strategy/data.py` | 133–192 | ✅ SAFE |
+| Rating tuning | `classical_learning/engineering/ratings_tuning.py` | 31–71 | 🔴 HIGH |
+| HPO leakage | `classical_learning/strategy/train.py` | 53–252 | 🟡 MEDIUM |
+| LOYO splits | `classical_learning/strategy/data.py` | 215–250 | ✅ SAFE |
+| Feature engineering | `classical_learning/engineering/feature_engineering.py` | ~155, 207, 232 | ✅ SAFE (uses shift(1)) |
+| Postgame exclusions | `classical_learning/strategy/data.py` | 133–192 | ✅ SAFE |
 
 ---
 
@@ -176,10 +176,10 @@ A: You'll recover ~1–1.5% of the optimism. Fix #2 remains, but the impact is u
 ## Sign-Off
 
 This analysis was performed by reviewing:
-- `pregame/engineering/ratings_tuning.py` — Found explicit TODO acknowledging leakage
-- `pregame/strategy/train.py` — Found HPO using only latest split
-- `pregame/strategy/data.py` — Verified LOYO structure is correct
-- `pregame/engineering/feature_engineering.py` — Verified shift(1) usage
+- `classical_learning/engineering/ratings_tuning.py` — Found explicit TODO acknowledging leakage
+- `classical_learning/strategy/train.py` — Found HPO using only latest split
+- `classical_learning/strategy/data.py` — Verified LOYO structure is correct
+- `classical_learning/engineering/feature_engineering.py` — Verified shift(1) usage
 
 All findings are backed by code inspection and architectural reasoning. The identified leakages are the most likely explanation for why reported metrics are slightly optimistic.
 

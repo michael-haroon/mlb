@@ -71,7 +71,7 @@ class TestLeagueDivisionPassthrough:
 
     def test_extract_game_metadata_includes_league_columns(self):
         """_extract_game_metadata must include home_league_id and away_league_id."""
-        from pregame.engineering.game_builder import _extract_game_metadata
+        from classical_learning.engineering.game_builder import _extract_game_metadata
 
         pitches = self._make_pitches()
         meta = _extract_game_metadata(pitches)
@@ -85,7 +85,7 @@ class TestLeagueDivisionPassthrough:
 
     def test_extract_game_metadata_includes_division_columns(self):
         """_extract_game_metadata must include home_division_id and away_division_id."""
-        from pregame.engineering.game_builder import _extract_game_metadata
+        from classical_learning.engineering.game_builder import _extract_game_metadata
 
         pitches = self._make_pitches()
         meta = _extract_game_metadata(pitches)
@@ -99,7 +99,7 @@ class TestLeagueDivisionPassthrough:
 
     def test_extract_game_metadata_league_values_non_null(self):
         """League IDs must be non-null in the extracted metadata."""
-        from pregame.engineering.game_builder import _extract_game_metadata
+        from classical_learning.engineering.game_builder import _extract_game_metadata
 
         pitches = self._make_pitches()
         meta = _extract_game_metadata(pitches)
@@ -114,7 +114,7 @@ class TestLeagueDivisionPassthrough:
     def test_schedule_context_produces_non_null_flags_when_ids_present(self):
         """When the game_frame has populated league/division IDs, is_same_league
         and is_same_division must not be NaN (regression gate)."""
-        from pregame.engineering.feature_engineering import _schedule_context
+        from classical_learning.engineering.feature_engineering import _schedule_context
 
         game_frame = pd.DataFrame({
             "game_pk": [1001, 1002, 1003],
@@ -264,7 +264,7 @@ class TestEventTypeColumn:
 
     def test_kpct_features_non_null_with_event_type(self):
         """K% features must be non-NaN when using event_type column."""
-        from pregame.engineering.pitch_level_features import compute_pitch_level_features
+        from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
 
         pitches, games = _build_pitches_snake_case(n_history_games=12)
         result = compute_pitch_level_features(pitches, games)
@@ -281,7 +281,7 @@ class TestEventTypeColumn:
 
     def test_bbpct_features_non_null_with_event_type(self):
         """BB% features must be non-NaN when using event_type column."""
-        from pregame.engineering.pitch_level_features import compute_pitch_level_features
+        from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
 
         pitches, games = _build_pitches_snake_case(n_history_games=12)
         result = compute_pitch_level_features(pitches, games)
@@ -298,7 +298,7 @@ class TestEventTypeColumn:
 
     def test_fip_features_non_null_with_event_type(self):
         """FIP features must be non-NaN when using event_type column."""
-        from pregame.engineering.pitch_level_features import compute_pitch_level_features
+        from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
 
         pitches, games = _build_pitches_snake_case(n_history_games=12)
         result = compute_pitch_level_features(pitches, games)
@@ -315,7 +315,7 @@ class TestEventTypeColumn:
 
     def test_woba_features_non_null_with_event_type(self):
         """Platoon wOBA features must be non-NaN when using event_type column."""
-        from pregame.engineering.pitch_level_features import compute_pitch_level_features
+        from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
 
         pitches, games = _build_pitches_snake_case(n_history_games=12)
         result = compute_pitch_level_features(pitches, games)
@@ -341,7 +341,7 @@ class TestInningHalfColumnName:
 
     def test_pitch_level_columns_contains_half_inning(self):
         """PITCH_LEVEL_COLUMNS must list 'half_inning' (the S3 column name)."""
-        from pregame.engineering.constants import PITCH_LEVEL_COLUMNS
+        from classical_learning.engineering.constants import PITCH_LEVEL_COLUMNS
 
         assert "half_inning" in PITCH_LEVEL_COLUMNS, (
             "PITCH_LEVEL_COLUMNS uses 'inning_half' but S3 parquet has 'half_inning'. "
@@ -350,7 +350,7 @@ class TestInningHalfColumnName:
 
     def test_pitch_level_columns_does_not_contain_inning_half(self):
         """'inning_half' must not appear in PITCH_LEVEL_COLUMNS (wrong S3 name)."""
-        from pregame.engineering.constants import PITCH_LEVEL_COLUMNS
+        from classical_learning.engineering.constants import PITCH_LEVEL_COLUMNS
 
         assert "inning_half" not in PITCH_LEVEL_COLUMNS, (
             "'inning_half' is present in PITCH_LEVEL_COLUMNS but S3 has 'half_inning'. "
@@ -359,7 +359,7 @@ class TestInningHalfColumnName:
 
     def test_woba_splits_use_half_inning_for_team_assignment(self):
         """Platoon wOBA home/away team assignment uses 'half_inning' (S3 name)."""
-        from pregame.engineering.pitch_level_features import compute_pitch_level_features
+        from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
 
         pitches, games = _build_pitches_snake_case(n_history_games=12)
         assert "half_inning" in pitches.columns, (
@@ -388,7 +388,7 @@ class TestInningHalfColumnName:
     def test_pitchmix_matchup_score_non_null_with_half_inning(self):
         """pitchmix_matchup_score features depend on half_inning for team
         lineup assignment and must be non-NaN after the column-name fix."""
-        from pregame.engineering.pitch_level_features import compute_pitch_level_features
+        from classical_learning.engineering.pitch_level_features import compute_pitch_level_features
 
         pitches, games = _build_pitches_snake_case(n_history_games=12)
         result = compute_pitch_level_features(pitches, games)

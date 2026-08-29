@@ -27,7 +27,7 @@
 cd /Users/michaelharoon/Projects/prediction_markets/mlb
 
 # Proof #1: See that rating params are tuned on last 3 seasons
-grep -A 3 "val_seasons = all_seasons" pregame/engineering/ratings_tuning.py
+grep -A 3 "val_seasons = all_seasons" classical_learning/engineering/ratings_tuning.py
 
 # Proof #2: See that those seasons later appear as LOYO folds
 conda run -n pred python -c "
@@ -41,7 +41,7 @@ print('Overlap (LEAKAGE):', set([2024, 2025, 2026]) & set([s.val_season for s in
 "
 
 # Proof #3: See HPO uses only latest split
-grep -B 2 -A 2 "latest_split = splits" pregame/strategy/train.py
+grep -B 2 -A 2 "latest_split = splits" classical_learning/strategy/train.py
 ```
 
 ---
@@ -55,7 +55,7 @@ grep -B 2 -A 2 "latest_split = splits" pregame/strategy/train.py
 
 ```bash
 # Just keep training
-conda run -n pred python pregame/strategy/train.py ...
+conda run -n pred python classical_learning/strategy/train.py ...
 # Document in results: "Expect 1-2% metric optimism due to rating param tuning"
 ```
 
@@ -65,14 +65,14 @@ conda run -n pred python pregame/strategy/train.py ...
 **Risk:** Low  
 
 ```bash
-# 1. Edit pregame/engineering/ratings_tuning.py
+# 1. Edit classical_learning/engineering/ratings_tuning.py
 #    Copy code from LEAKAGE_FIXES.md Fix #1
 
 # 2. Regenerate features
-conda run -n pred python pregame/engineering/build.py ...
+conda run -n pred python classical_learning/engineering/build.py ...
 
 # 3. Retrain models
-conda run -n pred python pregame/strategy/train.py ...
+conda run -n pred python classical_learning/strategy/train.py ...
 
 # Expect: metrics drop ~1% (that's the fix working)
 ```

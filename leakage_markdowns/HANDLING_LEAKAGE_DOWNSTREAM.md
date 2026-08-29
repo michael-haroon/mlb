@@ -55,7 +55,7 @@ PARAMETER TUNING (what you have):
 ```bash
 # Keep training as-is
 conda run -n pred python -m pregame.strategy.train \
-  --features pregame/artifacts/game_features.parquet \
+  --features classical_learning/artifacts/game_features.parquet \
   --target home_win \
   --output results_2026/ \
   --tier A
@@ -112,13 +112,13 @@ with open('optimized_rating_params.json', 'w') as f:
 "
 
 # 3. Regenerate features with corrected params
-conda run -n pred python pregame/engineering/build.py \
-  --output pregame/artifacts/ \
+conda run -n pred python classical_learning/engineering/build.py \
+  --output classical_learning/artifacts/ \
   --params optimized_rating_params.json
 
 # 4. Re-run training
-conda run -n pred python pregame/strategy/train.py \
-  --features pregame/artifacts/game_features.parquet \
+conda run -n pred python classical_learning/strategy/train.py \
+  --features classical_learning/artifacts/game_features.parquet \
   --target home_win \
   --output results_fixed/ \
   --tier A

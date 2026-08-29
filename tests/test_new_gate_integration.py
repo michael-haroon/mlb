@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pregame.analysis.feature_importance import (
+from classical_learning.analysis.feature_importance import (
     filter_features_v2,
     feature_score,
     feature_score_clt,

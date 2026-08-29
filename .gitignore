@@ -12,3 +12,9 @@ artifacts/
 
 # Sensitive
 .env
+
+# Data files — live on S3, not in git
+*.parquet
+*.csv
+# DL feature-store artifacts (canonical copy: s3://mlb-.../deep_learning/feature_store/)
+deep_learning/feature_store/

@@ -1,0 +1,10 @@
+{"event": "settlement", "ts": "2026-07-20T22:35:51.759186+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 13.0}
+{"event": "settlement", "ts": "2026-07-20T22:35:51.760194+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 6.0}
+{"event": "exit", "ts": "2026-07-20T22:35:51.760868+00:00", "ticker": "TICK-B", "side": "no", "contracts": 5, "entry_price": 0.35, "exit_price": 0.55, "pnl": -1.0000000000000004, "daily_pnl": 5.0}
+{"event": "settlement", "ts": "2026-07-20T22:35:51.761501+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": false, "pnl": -4.0, "daily_pnl": 1.0}
+{"event": "settlement", "ts": "2026-07-20T22:35:51.762138+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 7.0}
+{"event": "settlement", "ts": "2026-07-20T22:36:09.419154+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 13.0}
+{"event": "settlement", "ts": "2026-07-20T22:36:09.420706+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 6.0}
+{"event": "exit", "ts": "2026-07-20T22:36:09.424178+00:00", "ticker": "TICK-B", "side": "no", "contracts": 5, "entry_price": 0.35, "exit_price": 0.55, "pnl": -1.0000000000000004, "daily_pnl": 5.0}
+{"event": "settlement", "ts": "2026-07-20T22:36:09.425490+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": false, "pnl": -4.0, "daily_pnl": 1.0}
+{"event": "settlement", "ts": "2026-07-20T22:36:09.426200+00:00", "ticker": "TICK-A", "side": "yes", "contracts": 10, "entry_price": 0.4, "yes_won": true, "pnl": 6.0, "daily_pnl": 7.0}
