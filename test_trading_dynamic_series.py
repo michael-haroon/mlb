@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from pregame.trading.models import EnsembleStore
-from pregame.trading.market_map import MODEL_TO_SERIES
+from trading.models import EnsembleStore
+from trading.market_map import MODEL_TO_SERIES
 
 def test_series_mapping():
     """Verify that we correctly map model targets to Kalshi series."""

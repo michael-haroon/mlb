@@ -307,21 +307,21 @@ def test_incremental_build_filters_stale_checkpoint():
 # ---------------------------------------------------------------------------
 
 def test_all_skip_seasons_references_use_canonical_config():
-    """All filtering uses the canonical pregame.strategy.config.SKIP_SEASONS."""
+    """All filtering uses the canonical classical_learning.strategy.config.SKIP_SEASONS."""
     import inspect
 
     # feature_store.py
     from live.mlb_dl import feature_store
     source = inspect.getsource(feature_store.build_feature_store)
-    assert "from pregame.strategy.config import SKIP_SEASONS" in source, (
-        "feature_store.build_feature_store must import from pregame.strategy.config"
+    assert "from classical_learning.strategy.config import SKIP_SEASONS" in source, (
+        "feature_store.build_feature_store must import from classical_learning.strategy.config"
     )
 
     # train.py — check both fit functions
     from live.mlb_dl import train
     full_source = inspect.getsource(train)
-    assert "from pregame.strategy.config import SKIP_SEASONS" in full_source, (
-        "train.py must import from pregame.strategy.config"
+    assert "from classical_learning.strategy.config import SKIP_SEASONS" in full_source, (
+        "train.py must import from classical_learning.strategy.config"
     )
 
 

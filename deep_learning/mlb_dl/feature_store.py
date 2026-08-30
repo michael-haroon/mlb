@@ -1067,7 +1067,7 @@ def build_feature_store(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
-    # Canonical source: pregame.strategy.config.SKIP_SEASONS
+    # Canonical source: classical_learning.strategy.config.SKIP_SEASONS
     from classical_learning.strategy.config import SKIP_SEASONS
     skip = set(SKIP_SEASONS)
 

@@ -16,7 +16,7 @@ class TestSharpnessPerScan:
 
     def test_sharpness_halts_only_current_scan(self):
         """If std is low THIS scan, quotes are removed; next scan starts fresh."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
+        from trading.scanner import _check_batch_sharpness
 
         # Simulate a batch with collapsed home_win predictions (all near 0.5)
         quotes_collapsed = [
@@ -32,7 +32,7 @@ class TestSharpnessPerScan:
 
     def test_sharpness_does_not_persist(self):
         """Calling _check_batch_sharpness again with good data returns empty."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
+        from trading.scanner import _check_batch_sharpness
 
         # First scan: collapsed
         quotes_bad = [
@@ -54,7 +54,7 @@ class TestSharpnessPerScan:
 
     def test_sharpness_returns_set(self):
         """_check_batch_sharpness returns a set (not None)."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
+        from trading.scanner import _check_batch_sharpness
 
         halted = _check_batch_sharpness([])
         assert isinstance(halted, set)
@@ -62,7 +62,7 @@ class TestSharpnessPerScan:
 
     def test_sharpness_requires_min_3_quotes(self):
         """Targets with fewer than 3 quotes are never halted."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
+        from trading.scanner import _check_batch_sharpness
 
         quotes = [
             {"target": "home_win", "model_prob": 0.50},
@@ -80,7 +80,7 @@ class TestSweepStalePositions:
 
     def _make_runner(self):
         """Create a minimal TradingRunner with mocked components."""
-        from classical_learning.trading.runner import TradingRunner
+        from trading.runner import TradingRunner
         runner = TradingRunner(dry_run=True, env="prod", bankroll=350.0)
 
         # Mock the client
@@ -226,13 +226,13 @@ class TestExposureExcludesSettled:
     """Verify that total_exposure() only counts open positions."""
 
     def _make_portfolio(self):
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
         p = Portfolio(client=None, dry_run=True)
         return p
 
     def test_settled_positions_excluded_from_exposure(self):
         """Positions in 'settled' state do not count toward exposure."""
-        from classical_learning.trading.portfolio import PositionState
+        from trading.portfolio import PositionState
         p = self._make_portfolio()
         p._positions = {
             "TICK-A": {"entry_price": 0.40, "contracts": 10, "state": PositionState.SETTLED},
@@ -243,7 +243,7 @@ class TestExposureExcludesSettled:
 
     def test_exited_positions_excluded_from_exposure(self):
         """Positions in 'exited' state do not count toward exposure."""
-        from classical_learning.trading.portfolio import PositionState
+        from trading.portfolio import PositionState
         p = self._make_portfolio()
         p._positions = {
             "TICK-A": {"entry_price": 0.50, "contracts": 10, "state": PositionState.EXITED},
@@ -293,7 +293,7 @@ class TestSettlementRemovesPosition:
     """Verify that record_settlement/record_exit purge positions from the dict."""
 
     def _make_portfolio(self):
-        from classical_learning.trading.portfolio import Portfolio, PositionState
+        from trading.portfolio import Portfolio, PositionState
         p = Portfolio(client=None, dry_run=True)
         p._positions = {
             "TICK-A": {
@@ -364,7 +364,7 @@ class TestFeatureRebuildLoop:
     """Verify that features don't rebuild every scan when no new games exist."""
 
     def _make_manager(self, tmp_path):
-        from classical_learning.trading.features import FeatureManager
+        from trading.features import FeatureManager
         features_path = tmp_path / "game_features.parquet"
         # Create a dummy parquet file
         import pandas as pd
@@ -398,7 +398,7 @@ class TestFeatureRebuildLoop:
     def test_stale_triggers_again_after_max_age(self, tmp_path):
         """_last_rebuild older than FEATURES_MAX_AGE_HOURS triggers rebuild."""
         from datetime import datetime, timezone, timedelta
-        from classical_learning.trading.config import FEATURES_MAX_AGE_HOURS
+        from trading.config import FEATURES_MAX_AGE_HOURS
         fm = self._make_manager(tmp_path)
 
         # Last rebuild was beyond max age
@@ -408,7 +408,7 @@ class TestFeatureRebuildLoop:
     def test_not_stale_within_max_age(self, tmp_path):
         """_last_rebuild within FEATURES_MAX_AGE_HOURS does not trigger."""
         from datetime import datetime, timezone, timedelta
-        from classical_learning.trading.config import FEATURES_MAX_AGE_HOURS
+        from trading.config import FEATURES_MAX_AGE_HOURS
         fm = self._make_manager(tmp_path)
 
         fm._last_rebuild = datetime.now(timezone.utc) - timedelta(hours=FEATURES_MAX_AGE_HOURS - 1)
@@ -424,9 +424,9 @@ class TestWSSubscriptionCleanup:
     def test_on_open_clears_subscribed_tickers(self):
         """_on_open clears _subscribed_tickers so reconnect doesn't replay stale subs."""
         from unittest.mock import MagicMock, patch
-        from classical_learning.trading.ws import KalshiWS
+        from trading.ws import KalshiWS
 
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(
                 api_key="fake",
                 rsa_key_path="/fake/path",
@@ -445,11 +445,11 @@ class TestWSSubscriptionCleanup:
     def test_settled_lifecycle_removes_from_subscriptions(self):
         """Settlement lifecycle event discards ticker from _subscribed_tickers."""
         from unittest.mock import MagicMock, patch
-        from classical_learning.trading.ws import KalshiWS
+        from trading.ws import KalshiWS
 
         settle_calls = []
 
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(
                 api_key="fake",
                 rsa_key_path="/fake/path",
@@ -479,9 +479,9 @@ class TestWSSubscriptionCleanup:
     def test_subscribe_market_adds_to_set_and_sends(self):
         """subscribe_market adds ticker and sends to live connection."""
         from unittest.mock import MagicMock, patch
-        from classical_learning.trading.ws import KalshiWS
+        from trading.ws import KalshiWS
 
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(
                 api_key="fake",
                 rsa_key_path="/fake/path",

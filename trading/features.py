@@ -63,6 +63,10 @@ class FeatureManager:
         self._last_hash: Optional[str] = None
         self._last_rebuild: Optional[datetime] = None
         self._rebuild_lock = threading.Lock()
+        # Separate from _rebuild_lock because _sync_s3 runs BEFORE that lock is taken.
+        # Without a guard of its own, every refresh trigger launched another full
+        # data-lake sync: 35 were observed in flight on the 2-vCPU trading box, load 51.
+        self._sync_lock = threading.Lock()
         # Teams whose last completed game has not yet been incorporated into
         # game_features.parquet.  Populated by mark_teams_pending() on settlement;
         # cleared on successful refresh().
@@ -168,6 +172,14 @@ class FeatureManager:
 
         Falls back to age-based rebuild if parquet exceeds FEATURES_MAX_AGE_HOURS.
         """
+        # A rebuild already in flight has its own fresh sync behind it, and _rebuild's
+        # "already in progress" path returns without calling _refresh_known_pks -- so the
+        # finalized game stays unknown and is re-detected every cycle. Without this gate
+        # each detection fired another sync, for as long as the build ran.
+        if self._rebuild_lock.locked():
+            logger.debug("Rebuild in progress; deferring refresh check")
+            return False
+
         # Fallback safety net: age-based rebuild
         if self.is_stale():
             logger.info("Fallback trigger: features exceed max age")
@@ -347,7 +359,23 @@ class FeatureManager:
         threading.Thread(target=_run, daemon=True).start()
 
     def _sync_s3(self) -> bool:
-        """aws s3 sync the delta. Returns True if any new files were downloaded."""
+        """aws s3 sync the delta. Returns True if any new files were downloaded.
+
+        Skips rather than queues when a sync is already running: this is driven by a
+        ~60s scan loop while a full-lake sync takes minutes, so waiting would just
+        move the pile-up from the process table into the thread pool. Callers ignore
+        the return value, so a skip is indistinguishable from "no new files" — which
+        is the correct reading, since the in-flight sync is fetching them.
+        """
+        if not self._sync_lock.acquire(blocking=False):
+            logger.info("S3 sync already in progress, skipping")
+            return False
+        try:
+            return self._sync_s3_locked()
+        finally:
+            self._sync_lock.release()
+
+    def _sync_s3_locked(self) -> bool:
         self._local_cache.mkdir(parents=True, exist_ok=True)
         # No --quiet so we can count transferred lines to detect new data.
         cmd = [

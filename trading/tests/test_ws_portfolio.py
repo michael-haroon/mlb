@@ -24,8 +24,8 @@ class TestWSFillHandler(unittest.TestCase):
     """Test that _handle_fill correctly parses fill messages and invokes callback."""
 
     def _make_ws(self, on_fill=None):
-        from classical_learning.trading.ws import KalshiWS
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        from trading.ws import KalshiWS
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(
                 api_key="test",
                 rsa_key_path="/dev/null",
@@ -104,8 +104,8 @@ class TestWSUserOrderHandler(unittest.TestCase):
     """Test _handle_user_order parsing."""
 
     def _make_ws(self, on_order_update=None):
-        from classical_learning.trading.ws import KalshiWS
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        from trading.ws import KalshiWS
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(
                 api_key="test",
                 rsa_key_path="/dev/null",
@@ -218,8 +218,8 @@ class TestWSMarketPositionHandler(unittest.TestCase):
     """Test _handle_market_position parsing."""
 
     def _make_ws(self, on_position_update=None):
-        from classical_learning.trading.ws import KalshiWS
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        from trading.ws import KalshiWS
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(
                 api_key="test",
                 rsa_key_path="/dev/null",
@@ -289,7 +289,7 @@ class TestPortfolioOnFill(unittest.TestCase):
     """Test Portfolio.on_fill() state transitions."""
 
     def _make_portfolio(self):
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
         p = Portfolio(client=None, dry_run=True)
         # Reset state loaded from disk so tests are isolated
         p._positions = {}
@@ -320,7 +320,7 @@ class TestPortfolioOnFill(unittest.TestCase):
         self.assertAlmostEqual(positions[0]["entry_price"], 0.42)
 
     def test_fill_accumulates_existing_position(self):
-        from classical_learning.trading.portfolio import PositionState
+        from trading.portfolio import PositionState
         p = self._make_portfolio()
 
         # Seed an existing position
@@ -418,7 +418,7 @@ class TestPortfolioOnOrderUpdate(unittest.TestCase):
     """Test Portfolio.on_order_update() state transitions."""
 
     def _make_portfolio(self):
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
         p = Portfolio(client=None, dry_run=True)
         p._positions = {}
         p._orders = {}
@@ -511,7 +511,7 @@ class TestPortfolioOnPositionUpdate(unittest.TestCase):
     """Test Portfolio.on_position_update() — authoritative exchange state."""
 
     def _make_portfolio(self):
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
         p = Portfolio(client=None, dry_run=True)
         p._positions = {}
         p._orders = {}
@@ -558,7 +558,7 @@ class TestPortfolioOnPositionUpdate(unittest.TestCase):
         self.assertAlmostEqual(pos["entry_price"], 0.4)
 
     def test_zero_position_removes_and_records_pnl(self):
-        from classical_learning.trading.portfolio import PositionState
+        from trading.portfolio import PositionState
         p = self._make_portfolio()
 
         # Seed existing position
@@ -585,7 +585,7 @@ class TestPortfolioOnPositionUpdate(unittest.TestCase):
 
     def test_preserves_existing_metadata(self):
         """When position_update adjusts an existing position, model metadata is kept."""
-        from classical_learning.trading.portfolio import PositionState
+        from trading.portfolio import PositionState
         p = self._make_portfolio()
 
         p._positions["KXMLBTOTAL-26JUL211907TBTOR-O8"] = {
@@ -626,7 +626,7 @@ class TestUpgradeRateLimit(unittest.TestCase):
     """Test kalshi_client.upgrade_rate_limit() calls correct endpoint."""
 
     def test_calls_post_endpoint(self):
-        from classical_learning.trading.kalshi_client import KalshiClient
+        from trading.kalshi_client import KalshiClient
         client = KalshiClient.__new__(KalshiClient)
         client._request = MagicMock(return_value={})
 
@@ -643,8 +643,8 @@ class TestWSMessageRouting(unittest.TestCase):
     """Test that _on_message routes new message types correctly."""
 
     def _make_ws(self):
-        from classical_learning.trading.ws import KalshiWS
-        with patch("pregame.trading.ws._load_private_key", return_value=MagicMock()):
+        from trading.ws import KalshiWS
+        with patch("trading.ws._load_private_key", return_value=MagicMock()):
             ws = KalshiWS(api_key="test", rsa_key_path="/dev/null")
         ws._handle_fill = MagicMock()
         ws._handle_user_order = MagicMock()

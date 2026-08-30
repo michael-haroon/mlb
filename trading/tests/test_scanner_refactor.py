@@ -23,7 +23,7 @@ class TestConservativeFairValue(unittest.TestCase):
     """Unit tests for the simplified conservative_fair_value function."""
 
     def _fn(self):
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
         return conservative_fair_value
 
     def test_passthrough_mid_range(self):
@@ -79,7 +79,7 @@ class TestBehavioralEquivalence(unittest.TestCase):
     """
 
     def _new_fn(self):
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
         return conservative_fair_value
 
     def _old_behavior(self, model_prob: float, ensemble_std: float = 0.0,
@@ -121,7 +121,7 @@ class TestHalfSpreadConstant(unittest.TestCase):
 
     def test_spread_is_fixed_at_3(self):
         """Confirm HALF_SPREAD_BASE_CENTS is 3."""
-        from classical_learning.trading.config import HALF_SPREAD_BASE_CENTS
+        from trading.config import HALF_SPREAD_BASE_CENTS
         self.assertEqual(HALF_SPREAD_BASE_CENTS, 3)
 
     def test_old_high_tier_was_2_not_3(self):
@@ -130,7 +130,7 @@ class TestHalfSpreadConstant(unittest.TestCase):
         But since ensemble_std=0 was always forcing confidence_tier='HIGH',
         and HALF_SPREAD_CENTS.get('HIGH', 3) returned 2, the change from
         2 to 3 is intentional as documented in the refactor spec."""
-        from classical_learning.trading.config import HALF_SPREAD_BASE_CENTS
+        from trading.config import HALF_SPREAD_BASE_CENTS
         # The new fixed value is 3 (was 2 for HIGH tier in the old dict)
         self.assertEqual(HALF_SPREAD_BASE_CENTS, 3)
 
@@ -163,10 +163,10 @@ class TestPriceMarketOutputStructure(unittest.TestCase):
         store.get_bundle.return_value = MagicMock()
         return store
 
-    @patch("pregame.trading.scanner.predict_market_prob")
+    @patch("trading.scanner.predict_market_prob")
     def test_output_contains_ensemble_fields(self, mock_predict):
         """Output quote dict still has ensemble_std and confidence_tier."""
-        from classical_learning.trading.scanner import _price_market
+        from trading.scanner import _price_market
 
         mock_predict.return_value = {
             "prob": 0.55,
@@ -186,7 +186,7 @@ class TestPriceMarketOutputStructure(unittest.TestCase):
         result_cache = {}
 
         # Need to mock _apply_line's internal import
-        with patch("pregame.trading.scanner._apply_line") as mock_apply:
+        with patch("trading.scanner._apply_line") as mock_apply:
             mock_apply.return_value = {
                 "prob": 0.55,
                 "ensemble_std": 0.0,
@@ -203,10 +203,10 @@ class TestPriceMarketOutputStructure(unittest.TestCase):
         self.assertEqual(quote["ensemble_std"], 0.0)
         self.assertEqual(quote["confidence_tier"], "HIGH")
 
-    @patch("pregame.trading.scanner.predict_market_prob")
+    @patch("trading.scanner.predict_market_prob")
     def test_spread_width_is_3(self, mock_predict):
         """Bid/ask spread uses fixed 3-cent half-spread."""
-        from classical_learning.trading.scanner import _price_market
+        from trading.scanner import _price_market
 
         mock_predict.return_value = {
             "prob": 0.50,
@@ -225,7 +225,7 @@ class TestPriceMarketOutputStructure(unittest.TestCase):
         book_tops = {"KXMLBTOTAL-26AUG11-NYY-BOS-O8.5": (25, 35)}
         result_cache = {}
 
-        with patch("pregame.trading.scanner._apply_line") as mock_apply:
+        with patch("trading.scanner._apply_line") as mock_apply:
             mock_apply.return_value = {
                 "prob": 0.50,
                 "ensemble_std": 0.0,
@@ -246,14 +246,14 @@ class TestPriceMarketOutputStructure(unittest.TestCase):
 class TestGenerateQuotesStructure(unittest.TestCase):
     """Regression test: generate_quotes output maintains expected structure."""
 
-    @patch("pregame.trading.scanner._price_market")
-    @patch("pregame.trading.scanner._lookup_game_row")
-    @patch("pregame.trading.scanner.parse_ticker")
-    @patch("pregame.trading.scanner.classify_cluster")
+    @patch("trading.scanner._price_market")
+    @patch("trading.scanner._lookup_game_row")
+    @patch("trading.scanner.parse_ticker")
+    @patch("trading.scanner.classify_cluster")
     def test_output_quote_structure(self, mock_cluster, mock_parse,
                                      mock_lookup, mock_price):
         """generate_quotes returns dicts with all expected fields."""
-        from classical_learning.trading.scanner import generate_quotes
+        from trading.scanner import generate_quotes
 
         mock_parse.return_value = MagicMock(
             series="KXMLBTOTAL", away_team="NYY", home_team="BOS"
@@ -308,7 +308,7 @@ class TestEdgeCases(unittest.TestCase):
     """Edge cases for conservative_fair_value at domain boundaries."""
 
     def _fn(self):
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
         return conservative_fair_value
 
     def test_prob_zero(self):
@@ -345,27 +345,27 @@ class TestRemovedConstants(unittest.TestCase):
 
     def test_shade_sigma_removed(self):
         """SHADE_SIGMA no longer exists in config."""
-        import classical_learning.trading.config as cfg
+        import trading.config as cfg
         self.assertFalse(hasattr(cfg, "SHADE_SIGMA"))
 
     def test_expected_pred_std_removed(self):
         """EXPECTED_PRED_STD no longer exists in config."""
-        import classical_learning.trading.config as cfg
+        import trading.config as cfg
         self.assertFalse(hasattr(cfg, "EXPECTED_PRED_STD"))
 
     def test_min_sharpness_ratio_removed(self):
         """MIN_SHARPNESS_RATIO no longer exists in config."""
-        import classical_learning.trading.config as cfg
+        import trading.config as cfg
         self.assertFalse(hasattr(cfg, "MIN_SHARPNESS_RATIO"))
 
     def test_half_spread_cents_dict_removed(self):
         """HALF_SPREAD_CENTS dict no longer exists in config."""
-        import classical_learning.trading.config as cfg
+        import trading.config as cfg
         self.assertFalse(hasattr(cfg, "HALF_SPREAD_CENTS"))
 
     def test_half_spread_base_cents_exists(self):
         """HALF_SPREAD_BASE_CENTS replacement exists."""
-        import classical_learning.trading.config as cfg
+        import trading.config as cfg
         self.assertTrue(hasattr(cfg, "HALF_SPREAD_BASE_CENTS"))
         self.assertEqual(cfg.HALF_SPREAD_BASE_CENTS, 3)
 
@@ -390,10 +390,10 @@ class TestNegbinAdaptiveSpread(unittest.TestCase):
             "game_date": [pd.Timestamp("2026-08-11")],
         })
 
-    @patch("pregame.trading.scanner.predict_market_prob")
+    @patch("trading.scanner.predict_market_prob")
     def test_high_mu_gets_wider_spread(self, mock_predict):
         """total_runs with mu=14 should produce wider spread (4 or 5 cents)."""
-        from classical_learning.trading.scanner import _price_market
+        from trading.scanner import _price_market
 
         mock_predict.return_value = {
             "prob": 0.60,
@@ -412,7 +412,7 @@ class TestNegbinAdaptiveSpread(unittest.TestCase):
         book_tops = {"KXMLBTOTAL-26AUG11-NYY-BOS-O8.5": (30, 40)}
         result_cache = {}
 
-        with patch("pregame.trading.scanner._apply_line") as mock_apply:
+        with patch("trading.scanner._apply_line") as mock_apply:
             mock_apply.return_value = {
                 "prob": 0.60,
                 "ensemble_std": 0.0,
@@ -429,10 +429,10 @@ class TestNegbinAdaptiveSpread(unittest.TestCase):
         half = quote["ask_cents"] - int(round(quote["fair_value"] * 100))
         self.assertGreaterEqual(half, 3)
 
-    @patch("pregame.trading.scanner.predict_market_prob")
+    @patch("trading.scanner.predict_market_prob")
     def test_low_mu_gets_narrower_spread(self, mock_predict):
         """total_runs with mu=5 should produce narrower spread (2 cents)."""
-        from classical_learning.trading.scanner import _price_market
+        from trading.scanner import _price_market
 
         mock_predict.return_value = {
             "prob": 0.40,
@@ -451,7 +451,7 @@ class TestNegbinAdaptiveSpread(unittest.TestCase):
         book_tops = {"KXMLBTOTAL-26AUG11-NYY-BOS-O8.5": (20, 30)}
         result_cache = {}
 
-        with patch("pregame.trading.scanner._apply_line") as mock_apply:
+        with patch("trading.scanner._apply_line") as mock_apply:
             mock_apply.return_value = {
                 "prob": 0.40,
                 "ensemble_std": 0.0,
@@ -468,10 +468,10 @@ class TestNegbinAdaptiveSpread(unittest.TestCase):
         half = quote["ask_cents"] - fair_cents
         self.assertEqual(half, 2)
 
-    @patch("pregame.trading.scanner.predict_market_prob")
+    @patch("trading.scanner.predict_market_prob")
     def test_non_total_runs_uses_fixed_spread(self, mock_predict):
         """Classification targets (home_win) use fixed HALF_SPREAD_BASE_CENTS."""
-        from classical_learning.trading.scanner import _price_market
+        from trading.scanner import _price_market
 
         mock_predict.return_value = {
             "prob": 0.55,
@@ -499,7 +499,7 @@ class TestNegbinAdaptiveSpread(unittest.TestCase):
         book_tops = {"KXMLBGAME-26AUG11-NYY-BOS": (40, 50)}
         result_cache = {}
 
-        with patch("pregame.trading.scanner._apply_line") as mock_apply:
+        with patch("trading.scanner._apply_line") as mock_apply:
             mock_apply.return_value = {
                 "prob": 0.55,
                 "ensemble_std": 0.0,

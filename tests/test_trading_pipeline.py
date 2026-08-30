@@ -124,7 +124,7 @@ class TestScannerQuoteGeneration:
 
         Model at 0.65, market mid at 0.60 → edge = 0.05 → passes.
         """
-        from classical_learning.trading.scanner import generate_quotes, conservative_fair_value
+        from trading.scanner import generate_quotes, conservative_fair_value
 
         model_prob = 0.65
         ensemble_std = 0.04
@@ -147,7 +147,7 @@ class TestScannerQuoteGeneration:
         store._inference_cache_features_hash = None
         store.get_bundle = MagicMock(return_value={"member_bundles": [], "task": "classification"})
 
-        with patch("pregame.trading.scanner.predict_market_prob", return_value=mock_result):
+        with patch("trading.scanner.predict_market_prob", return_value=mock_result):
             quotes = generate_quotes(
                 [fake_markets[0]],  # Just the LAD winner market
                 sample_features,
@@ -172,7 +172,7 @@ class TestScannerQuoteGeneration:
           model_prob=0.60 → fair = 0.60 - 1.0*0.04 = 0.56
         We construct a book whose mid equals 0.56 exactly.
         """
-        from classical_learning.trading.scanner import generate_quotes, conservative_fair_value
+        from trading.scanner import generate_quotes, conservative_fair_value
 
         model_prob = 0.60
         ensemble_std = 0.04
@@ -200,7 +200,7 @@ class TestScannerQuoteGeneration:
         store._inference_cache_features_hash = None
         store.get_bundle = MagicMock(return_value={"member_bundles": [], "task": "classification"})
 
-        with patch("pregame.trading.scanner.predict_market_prob", return_value=mock_result):
+        with patch("trading.scanner.predict_market_prob", return_value=mock_result):
             quotes = generate_quotes(
                 [fake_markets[0]],
                 sample_features,
@@ -214,8 +214,8 @@ class TestScannerQuoteGeneration:
 
     def test_no_quote_when_fair_below_price_floor(self, sample_features, fake_markets):
         """Model prob = 0.08 → fair after shading < PRICE_FLOOR (0.12) → filtered."""
-        from classical_learning.trading.scanner import generate_quotes
-        from classical_learning.trading.config import PRICE_FLOOR
+        from trading.scanner import generate_quotes
+        from trading.config import PRICE_FLOOR
 
         model_prob = 0.08  # Below floor after shading toward 0.5
         ensemble_std = 0.04
@@ -236,7 +236,7 @@ class TestScannerQuoteGeneration:
 
         book_tops = {"KXMLBRFI-26JUL261910NYMLAD": (5, 15)}
 
-        with patch("pregame.trading.scanner.predict_market_prob", return_value=mock_result):
+        with patch("trading.scanner.predict_market_prob", return_value=mock_result):
             quotes = generate_quotes(
                 [fake_markets[2]],  # YRFI market
                 sample_features,
@@ -254,8 +254,8 @@ class TestScannerQuoteGeneration:
 
     def test_no_quote_when_fair_above_price_ceiling(self, sample_features, fake_markets):
         """Model prob = 0.95 → fair after shading > PRICE_CEILING (0.88) → filtered."""
-        from classical_learning.trading.scanner import generate_quotes
-        from classical_learning.trading.config import PRICE_CEILING
+        from trading.scanner import generate_quotes
+        from trading.config import PRICE_CEILING
 
         model_prob = 0.95
         ensemble_std = 0.03
@@ -276,7 +276,7 @@ class TestScannerQuoteGeneration:
 
         book_tops = {"KXMLBGAME-26JUL261910NYMLAD-LAD": (85, 98)}
 
-        with patch("pregame.trading.scanner.predict_market_prob", return_value=mock_result):
+        with patch("trading.scanner.predict_market_prob", return_value=mock_result):
             quotes = generate_quotes(
                 [fake_markets[0]],
                 sample_features,
@@ -300,8 +300,8 @@ class TestSharpnessGate:
 
     def test_sharpness_collapse_halts_target(self, sample_features):
         """If all home_win predictions cluster near 0.50, the sharpness gate fires."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
-        from classical_learning.trading.config import EXPECTED_PRED_STD, MIN_SHARPNESS_RATIO
+        from trading.scanner import _check_batch_sharpness
+        from trading.config import EXPECTED_PRED_STD, MIN_SHARPNESS_RATIO
 
         # Simulate 5 quotes for home_win with nearly identical predictions
         quotes = [
@@ -319,7 +319,7 @@ class TestSharpnessGate:
 
     def test_sharpness_ok_allows_target(self, sample_features):
         """Normal prediction variance does not trigger the gate."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
+        from trading.scanner import _check_batch_sharpness
 
         # Simulate 5 quotes with healthy variance
         quotes = [
@@ -335,7 +335,7 @@ class TestSharpnessGate:
 
     def test_sharpness_not_checked_with_few_quotes(self):
         """< 3 quotes for a target → sharpness check skipped (not enough data)."""
-        from classical_learning.trading.scanner import _check_batch_sharpness
+        from trading.scanner import _check_batch_sharpness
 
         quotes = [
             {"target": "home_win", "model_prob": 0.50},
@@ -355,7 +355,7 @@ class TestSizing:
 
     def test_positive_edge_produces_nonzero_contracts(self):
         """A quote with positive edge must size to at least 1 contract."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
 
         quotes = [{
             "ticker": "KXMLBGAME-26JUL261910NYMLAD-LAD",
@@ -377,7 +377,7 @@ class TestSizing:
 
     def test_zero_edge_produces_no_quotes(self):
         """Edge ≤ 0 means no position should be sized."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
 
         quotes = [{
             "ticker": "KXMLBGAME-26JUL261910NYMLAD-LAD",
@@ -397,8 +397,8 @@ class TestSizing:
 
     def test_cluster_cap_enforced(self):
         """Can't exceed CLUSTER_MAX_CONTRACTS per game within a cluster."""
-        from classical_learning.trading.sizing import size_quotes
-        from classical_learning.trading.config import CLUSTER_MAX_CONTRACTS
+        from trading.sizing import size_quotes
+        from trading.config import CLUSTER_MAX_CONTRACTS
 
         cap = CLUSTER_MAX_CONTRACTS["winner"]  # 10
 
@@ -425,8 +425,8 @@ class TestSizing:
 
     def test_max_contracts_per_market_capped(self):
         """Individual market is capped at MAX_CONTRACTS_PER_MARKET."""
-        from classical_learning.trading.sizing import size_quotes
-        from classical_learning.trading.config import MAX_CONTRACTS_PER_MARKET
+        from trading.sizing import size_quotes
+        from trading.config import MAX_CONTRACTS_PER_MARKET
 
         # Very high edge + bankroll to push raw contracts above cap
         quotes = [{
@@ -459,7 +459,7 @@ class TestRiskGate:
 
     def test_passes_clean_state(self, empty_portfolio_state):
         """A valid quote passes risk checks with clean portfolio."""
-        from classical_learning.trading.risk import check_limits
+        from trading.risk import check_limits
 
         allowed, reason = check_limits(
             ticker="KXMLBGAME-26JUL261910NYMLAD-LAD",
@@ -473,7 +473,7 @@ class TestRiskGate:
 
     def test_blocks_duplicate_ticker(self, empty_portfolio_state):
         """Cannot trade same ticker twice."""
-        from classical_learning.trading.risk import check_limits
+        from trading.risk import check_limits
 
         empty_portfolio_state["position_tickers"] = {"KXMLBGAME-26JUL261910NYMLAD-LAD"}
 
@@ -490,8 +490,8 @@ class TestRiskGate:
 
     def test_blocks_circuit_breaker(self, empty_portfolio_state):
         """Daily loss exceeds DAILY_LOSS_LIMIT_PCT → halt all trading."""
-        from classical_learning.trading.risk import check_limits
-        from classical_learning.trading.config import DAILY_LOSS_LIMIT_PCT
+        from trading.risk import check_limits
+        from trading.config import DAILY_LOSS_LIMIT_PCT
 
         loss_limit = 1000.0 * DAILY_LOSS_LIMIT_PCT / 100.0
         empty_portfolio_state["daily_pnl"] = -(loss_limit + 1.0)
@@ -509,8 +509,8 @@ class TestRiskGate:
 
     def test_blocks_max_concurrent_positions(self, empty_portfolio_state):
         """Cannot exceed MAX_CONCURRENT_POSITIONS."""
-        from classical_learning.trading.risk import check_limits
-        from classical_learning.trading.config import MAX_CONCURRENT_POSITIONS
+        from trading.risk import check_limits
+        from trading.config import MAX_CONCURRENT_POSITIONS
 
         # Fill up to the limit
         empty_portfolio_state["positions"] = [
@@ -531,8 +531,8 @@ class TestRiskGate:
 
     def test_blocks_too_close_to_first_pitch(self, empty_portfolio_state):
         """hours_to_first_pitch < MIN_HOURS_TO_FIRST_PITCH blocks."""
-        from classical_learning.trading.risk import check_limits
-        from classical_learning.trading.config import MIN_HOURS_TO_FIRST_PITCH
+        from trading.risk import check_limits
+        from trading.config import MIN_HOURS_TO_FIRST_PITCH
 
         allowed, reason = check_limits(
             ticker="KXMLBGAME-26JUL261910NYMLAD-LAD",
@@ -556,7 +556,7 @@ class TestExecutorDryRun:
 
     def test_post_two_sided_dry_run_always_returns_dry_run_status(self):
         """Dry-run post_two_sided returns status=DRY_RUN."""
-        from classical_learning.trading.executor import post_two_sided
+        from trading.executor import post_two_sided
 
         result = post_two_sided(
             client=MagicMock(),
@@ -570,7 +570,7 @@ class TestExecutorDryRun:
 
     def test_execute_taker_dry_run_returns_dry_run_status(self):
         """Dry-run execute_taker returns status=DRY_RUN."""
-        from classical_learning.trading.executor import execute_taker
+        from trading.executor import execute_taker
 
         result = execute_taker(
             client=MagicMock(),
@@ -608,11 +608,11 @@ class TestDryRunPositionTracking:
         This is the root cause of 0 positions in dry-run: maker quotes are
         logged but never tracked as positions. Only taker fills create positions.
         """
-        from classical_learning.trading.executor import post_two_sided
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.executor import post_two_sided
+        from trading.portfolio import Portfolio
 
         # Isolate from disk state by patching the state file path
-        with patch("pregame.trading.portfolio._STATE_FILE", tmp_path / "state.json"):
+        with patch("trading.portfolio._STATE_FILE", tmp_path / "state.json"):
             portfolio = Portfolio(client=None, dry_run=True)
 
         # Post a two-sided maker quote (dry-run)
@@ -633,9 +633,9 @@ class TestDryRunPositionTracking:
 
     def test_taker_opportunity_does_create_position(self, tmp_path):
         """Taker fills DO call add_position — this is the only path to positions."""
-        from classical_learning.trading.portfolio import Portfolio, PositionState
+        from trading.portfolio import Portfolio, PositionState
 
-        with patch("pregame.trading.portfolio._STATE_FILE", tmp_path / "state.json"):
+        with patch("trading.portfolio._STATE_FILE", tmp_path / "state.json"):
             portfolio = Portfolio(client=None, dry_run=True)
 
         # Simulate what runner.run_once does after a taker opportunity
@@ -666,9 +666,9 @@ class TestDryRunPositionTracking:
         0 positions and 0 P&L indefinitely. This is the expected (but perhaps
         undesirable) behavior.
         """
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
 
-        with patch("pregame.trading.portfolio._STATE_FILE", tmp_path / "state.json"):
+        with patch("trading.portfolio._STATE_FILE", tmp_path / "state.json"):
             portfolio = Portfolio(client=None, dry_run=True)
 
         # After many scan cycles with only maker posts:
@@ -687,8 +687,8 @@ class TestEdgeCalculation:
 
     def test_edge_is_abs_diff_of_fair_and_book_mid(self):
         """edge = |fair - (best_bid + best_ask) / 200|"""
-        from classical_learning.trading.scanner import conservative_fair_value
-        from classical_learning.trading.config import HALF_SPREAD_CENTS, MIN_EDGE_BUFFER_MAKER
+        from trading.scanner import conservative_fair_value
+        from trading.config import HALF_SPREAD_CENTS, MIN_EDGE_BUFFER_MAKER
 
         model_prob = 0.65
         ensemble_std = 0.04
@@ -707,8 +707,8 @@ class TestEdgeCalculation:
 
     def test_edge_zero_when_fair_equals_mid(self):
         """If model fair == book midpoint, edge = 0 → no quote."""
-        from classical_learning.trading.scanner import conservative_fair_value
-        from classical_learning.trading.config import MIN_EDGE_BUFFER_MAKER
+        from trading.scanner import conservative_fair_value
+        from trading.config import MIN_EDGE_BUFFER_MAKER
 
         model_prob = 0.60
         ensemble_std = 0.04
@@ -741,7 +741,7 @@ class TestConservativeFairValue:
 
     def test_shades_high_prob_down(self):
         """model_prob > 0.5 → shaded down (toward 0.5)."""
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
 
         fair = conservative_fair_value(0.70, 0.05, "MEDIUM")
         assert fair < 0.70
@@ -749,7 +749,7 @@ class TestConservativeFairValue:
 
     def test_shades_low_prob_up(self):
         """model_prob < 0.5 → shaded up (toward 0.5)."""
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
 
         fair = conservative_fair_value(0.30, 0.05, "MEDIUM")
         assert fair > 0.30
@@ -757,7 +757,7 @@ class TestConservativeFairValue:
 
     def test_high_confidence_shades_less(self):
         """HIGH tier shades less than LOW tier."""
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
 
         fair_high = conservative_fair_value(0.70, 0.05, "HIGH")
         fair_low = conservative_fair_value(0.70, 0.05, "LOW")
@@ -767,7 +767,7 @@ class TestConservativeFairValue:
 
     def test_larger_std_shades_more(self):
         """Higher ensemble_std → more shading → fair closer to 0.5."""
-        from classical_learning.trading.scanner import conservative_fair_value
+        from trading.scanner import conservative_fair_value
 
         fair_tight = conservative_fair_value(0.70, 0.02, "MEDIUM")
         fair_wide = conservative_fair_value(0.70, 0.10, "MEDIUM")
@@ -786,8 +786,8 @@ class TestTakerOpportunity:
 
     def test_taker_fires_when_ask_far_below_fair(self):
         """If best_ask << fair, buy YES aggressively."""
-        from classical_learning.trading.runner import TradingRunner
-        from classical_learning.trading.sizing import SizedQuote
+        from trading.runner import TradingRunner
+        from trading.sizing import SizedQuote
 
         runner = TradingRunner.__new__(TradingRunner)
 
@@ -815,8 +815,8 @@ class TestTakerOpportunity:
 
     def test_taker_does_not_fire_when_ask_near_fair(self):
         """If best_ask is close to fair, no taker opportunity."""
-        from classical_learning.trading.runner import TradingRunner
-        from classical_learning.trading.sizing import SizedQuote
+        from trading.runner import TradingRunner
+        from trading.sizing import SizedQuote
 
         runner = TradingRunner.__new__(TradingRunner)
 
@@ -851,7 +851,7 @@ class TestTimeGate:
 
     def test_exit_buffer_blocks_quote(self):
         """< EXIT_BUFFER_MINUTES (15 min = 0.25h) before first pitch → SKIP_HOURS."""
-        from classical_learning.trading.config import EXIT_BUFFER_MINUTES
+        from trading.config import EXIT_BUFFER_MINUTES
 
         hours_to_fp = 0.1  # 6 minutes before first pitch
         threshold = EXIT_BUFFER_MINUTES / 60.0  # 0.25 hours
@@ -862,7 +862,7 @@ class TestTimeGate:
 
     def test_well_before_game_passes(self):
         """4 hours before first pitch → not blocked."""
-        from classical_learning.trading.config import EXIT_BUFFER_MINUTES
+        from trading.config import EXIT_BUFFER_MINUTES
 
         hours_to_fp = 4.0
         threshold = EXIT_BUFFER_MINUTES / 60.0
@@ -880,7 +880,7 @@ class TestFeatureStaleness:
 
     def test_stale_teams_block_quoting(self):
         """After settlement, both teams are marked pending → is_stale returns True."""
-        from classical_learning.trading.features import FeatureManager
+        from trading.features import FeatureManager
 
         fm = FeatureManager.__new__(FeatureManager)
         fm._teams_pending_rebuild = set()
@@ -895,7 +895,7 @@ class TestFeatureStaleness:
 
     def test_rebuild_clears_pending(self):
         """After successful rebuild, pending teams are cleared."""
-        from classical_learning.trading.features import FeatureManager
+        from trading.features import FeatureManager
 
         fm = FeatureManager.__new__(FeatureManager)
         fm._teams_pending_rebuild = {"LAD", "NYM"}
@@ -923,9 +923,9 @@ class TestPortfolioDuplicateRejection:
 
     def test_dry_run_portfolio_state_includes_orders(self, tmp_path):
         """get_portfolio_state includes resting order tickers in position_tickers."""
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
 
-        with patch("pregame.trading.portfolio._STATE_FILE", tmp_path / "state.json"):
+        with patch("trading.portfolio._STATE_FILE", tmp_path / "state.json"):
             portfolio = Portfolio(client=None, dry_run=True)
 
         portfolio.add_order(
@@ -950,9 +950,9 @@ class TestPortfolioDuplicateRejection:
 
         This is the structural gap: quotes are logged but not tracked.
         """
-        from classical_learning.trading.portfolio import Portfolio
+        from trading.portfolio import Portfolio
 
-        with patch("pregame.trading.portfolio._STATE_FILE", tmp_path / "state.json"):
+        with patch("trading.portfolio._STATE_FILE", tmp_path / "state.json"):
             portfolio = Portfolio(client=None, dry_run=True)
 
         # Simulate what run_once actually does after a successful dry-run post:
@@ -978,13 +978,13 @@ class TestRunOnceIntegration:
 
     def test_run_once_with_favorable_conditions_posts_quotes(self, tmp_path):
         """Full run_once should log MAKE actions when conditions are met."""
-        from classical_learning.trading.runner import TradingRunner
-        from classical_learning.trading.portfolio import Portfolio
-        from classical_learning.trading.features import FeatureManager
-        from classical_learning.trading.models import EnsembleStore
-        from classical_learning.trading.sizing import SizedQuote
+        from trading.runner import TradingRunner
+        from trading.portfolio import Portfolio
+        from trading.features import FeatureManager
+        from trading.models import EnsembleStore
+        from trading.sizing import SizedQuote
 
-        with patch("pregame.trading.portfolio._STATE_FILE", tmp_path / "state.json"):
+        with patch("trading.portfolio._STATE_FILE", tmp_path / "state.json"):
             runner = TradingRunner.__new__(TradingRunner)
             runner._dry_run = True
             runner._bankroll = 1000.0
@@ -1046,13 +1046,13 @@ class TestRunOnceIntegration:
                 edge_at_mid=0.05,
             )
 
-            with patch("pregame.trading.runner.gumbo_schedule") as mock_sched, \
+            with patch("trading.runner.gumbo_schedule") as mock_sched, \
                  patch.object(runner, "_hours_to_first_pitch", return_value=4.0), \
-                 patch("pregame.trading.runner.generate_quotes", return_value=[{"ticker": "KXMLBGAME-26JUL261910NYMLAD-LAD", "target": "home_win", "cluster": "winner", "fair_value": 0.65, "model_prob": 0.68, "ensemble_std": 0.03, "confidence_tier": "HIGH", "bid_cents": 63, "ask_cents": 67, "edge_at_mid": 0.05}]), \
-                 patch("pregame.trading.runner.size_quotes", return_value=[mock_sized]), \
-                 patch("pregame.trading.runner.post_two_sided") as mock_post, \
-                 patch("pregame.trading.runner._log_decision"), \
-                 patch("pregame.trading.runner.check_limits", return_value=(True, "OK")):
+                 patch("trading.runner.generate_quotes", return_value=[{"ticker": "KXMLBGAME-26JUL261910NYMLAD-LAD", "target": "home_win", "cluster": "winner", "fair_value": 0.65, "model_prob": 0.68, "ensemble_std": 0.03, "confidence_tier": "HIGH", "bid_cents": 63, "ask_cents": 67, "edge_at_mid": 0.05}]), \
+                 patch("trading.runner.size_quotes", return_value=[mock_sized]), \
+                 patch("trading.runner.post_two_sided") as mock_post, \
+                 patch("trading.runner._log_decision"), \
+                 patch("trading.runner.check_limits", return_value=(True, "OK")):
                 mock_sched.game_has_started.return_value = False
                 mock_post.return_value = {"status": "DRY_RUN"}
                 runner.run_once()
@@ -1076,14 +1076,14 @@ class TestTakerThreshold:
 
     def test_taker_fee_at_50_cents(self):
         """max fee at p=0.50: 0.07*0.5*0.5 = 0.0175 → ceil = $0.02."""
-        from classical_learning.trading.scanner import kalshi_taker_fee
+        from trading.scanner import kalshi_taker_fee
 
         fee = kalshi_taker_fee(0.50)
         assert fee == 0.02
 
     def test_taker_fee_at_extremes_is_low(self):
         """Fee at extreme prices (0.05 or 0.95) is minimal."""
-        from classical_learning.trading.scanner import kalshi_taker_fee
+        from trading.scanner import kalshi_taker_fee
 
         fee_low = kalshi_taker_fee(0.05)
         fee_high = kalshi_taker_fee(0.95)
@@ -1092,14 +1092,14 @@ class TestTakerThreshold:
 
     def test_min_edge_for_maker_is_one_cent(self):
         """Maker fee is $0. min_edge_for_profit(maker=True) = 0.01."""
-        from classical_learning.trading.scanner import min_edge_for_profit
+        from trading.scanner import min_edge_for_profit
 
         assert min_edge_for_profit(0.50, maker=True) == 0.01
         assert min_edge_for_profit(0.30, maker=True) == 0.01
 
     def test_min_edge_for_taker_scales_with_price(self):
         """Taker breakeven = 0.07*p*(1-p)."""
-        from classical_learning.trading.scanner import min_edge_for_profit
+        from trading.scanner import min_edge_for_profit
 
         edge_50 = min_edge_for_profit(0.50, maker=False)
         edge_20 = min_edge_for_profit(0.20, maker=False)
@@ -1119,7 +1119,7 @@ class TestMarketMapParsing:
     """Ticker parsing must correctly extract teams and strikes."""
 
     def test_game_winner_ticker(self):
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
 
         p = parse_ticker("KXMLBGAME-26JUL261910NYMLAD-LAD")
         assert p is not None
@@ -1130,7 +1130,7 @@ class TestMarketMapParsing:
         assert p.strike_value is None
 
     def test_total_runs_ticker(self):
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
 
         p = parse_ticker("KXMLBTOTAL-26JUL261910NYMLAD-9")
         assert p is not None
@@ -1139,7 +1139,7 @@ class TestMarketMapParsing:
         assert p.strike_team is None
 
     def test_spread_ticker(self):
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
 
         p = parse_ticker("KXMLBSPREAD-26JUL261910NYMLAD-LAD2")
         assert p is not None
@@ -1148,7 +1148,7 @@ class TestMarketMapParsing:
         assert p.strike_value == 2.0
 
     def test_yrfi_ticker_no_strike(self):
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
 
         p = parse_ticker("KXMLBRFI-26JUL261910NYMLAD")
         assert p is not None
@@ -1157,7 +1157,7 @@ class TestMarketMapParsing:
         assert p.strike_value is None
 
     def test_extras_ticker(self):
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
 
         p = parse_ticker("KXMLBEXTRAS-26JUL261910NYMLAD-EXTRAS")
         assert p is not None
@@ -1166,7 +1166,7 @@ class TestMarketMapParsing:
         assert p.strike_value is None
 
     def test_team_total_ticker(self):
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
 
         p = parse_ticker("KXMLBTEAMTOTAL-26JUL261910NYMLAD-LAD4")
         assert p is not None
@@ -1194,7 +1194,7 @@ class TestZeroQuoteDiagnostics:
 
     def test_no_feature_row_for_game_produces_zero(self):
         """If game's teams aren't in features, _lookup_game_row returns None."""
-        from classical_learning.trading.scanner import _lookup_game_row
+        from trading.scanner import _lookup_game_row
 
         features = pd.DataFrame({
             "home_team_abbr": ["ATL", "BOS"],
@@ -1207,7 +1207,7 @@ class TestZeroQuoteDiagnostics:
 
     def test_all_models_fail_inference_produces_zero(self):
         """If predict_market_prob returns error, no quote is generated."""
-        from classical_learning.trading.scanner import generate_quotes
+        from trading.scanner import generate_quotes
 
         error_result = {"error": "all models failed at inference", "target": "home_win"}
 
@@ -1225,7 +1225,7 @@ class TestZeroQuoteDiagnostics:
 
         markets = [{"ticker": "KXMLBGAME-26JUL261910NYMLAD-LAD", "status": "open"}]
 
-        with patch("pregame.trading.scanner.predict_market_prob", return_value=error_result):
+        with patch("trading.scanner.predict_market_prob", return_value=error_result):
             quotes = generate_quotes(markets, features, store, {})
 
         assert len(quotes) == 0
@@ -1242,7 +1242,7 @@ class TestZeroQuoteDiagnostics:
 
         So if |fair - market_mid| < 1.5c for all markets, ZERO quotes survive.
         """
-        from classical_learning.trading.config import MIN_EDGE_BUFFER_MAKER
+        from trading.config import MIN_EDGE_BUFFER_MAKER
 
         min_edge_threshold = 0.01 * MIN_EDGE_BUFFER_MAKER  # 0.015
         assert min_edge_threshold == 0.015, f"Threshold is {min_edge_threshold}"

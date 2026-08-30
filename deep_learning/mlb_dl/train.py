@@ -432,7 +432,7 @@ def _cmd_fit_pregame(args) -> None:
     game_targets = pd.read_parquet(feature_store / "game_targets.parquet")
     log.info("  game_targets: %d rows (%.1fs)", len(game_targets), time.time() - t)
 
-    # Canonical source: pregame.strategy.config.SKIP_SEASONS
+    # Canonical source: classical_learning.strategy.config.SKIP_SEASONS
     from classical_learning.strategy.config import SKIP_SEASONS
     if SKIP_SEASONS:
         if "season" in team_games.columns:
@@ -764,7 +764,7 @@ def _cmd_fit_live(args) -> None:
         log.warning("No team_games.parquet found — using placeholder pregame features")
         pregame_features = pd.DataFrame({"game_pk": game_targets["game_pk"], "game_date": game_targets["game_date"]})
 
-    # Canonical source: pregame.strategy.config.SKIP_SEASONS
+    # Canonical source: classical_learning.strategy.config.SKIP_SEASONS
     from classical_learning.strategy.config import SKIP_SEASONS
     if SKIP_SEASONS:
         if "season" in pitch_sequences.columns:

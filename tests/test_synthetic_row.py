@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from classical_learning.trading.synthetic import (
+from trading.synthetic import (
     build_synthetic_row,
     _find_latest_team_row,
     _is_team_feature,

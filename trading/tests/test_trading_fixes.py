@@ -21,7 +21,7 @@ class TestGameKeyToDate(unittest.TestCase):
 
     def _fn(self):
         # Import lazily so we don't need the full runner env
-        from classical_learning.trading.runner import _game_key_to_date
+        from trading.runner import _game_key_to_date
         return _game_key_to_date
 
     def test_standard_key_with_time(self):
@@ -61,7 +61,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
         }
 
     def test_get_first_pitch_utc_correct_timezone(self):
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         fake_game = self._make_fake_game("2026-07-10T22:40:00Z", "PHI", "DET")
 
@@ -75,7 +75,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
         self.assertEqual(fp.minute, 40)
 
     def test_game_has_started_true_for_past(self):
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         # Game started 2 hours ago
         past = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -88,7 +88,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
         self.assertTrue(started)
 
     def test_game_has_started_false_for_future(self):
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         # Game starts in 4 hours
         future = (datetime.now(timezone.utc) + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -101,7 +101,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
         self.assertFalse(started)
 
     def test_unknown_game_returns_false_not_started(self):
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         with patch.object(s, "_fetch_schedule", return_value=[]):
             s._cache.clear()
@@ -111,7 +111,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
         self.assertFalse(started)
 
     def test_hours_to_first_pitch_positive_for_future(self):
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         future = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         fake_game = self._make_fake_game(future, "BOS", "NYY")
@@ -125,7 +125,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
         self.assertLess(h, 3.1)
 
     def test_cache_is_reused_within_ttl(self):
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         future = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         fake_game = self._make_fake_game(future, "HOU", "TEX")
@@ -140,7 +140,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
 
     def test_kalshi_abbrev_normalisation(self):
         """Kalshi uses 'KC' for Kansas City; GUMBO uses 'KC'. Both should normalise."""
-        from classical_learning.trading import schedule as s
+        from trading import schedule as s
 
         future = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         fake_game = self._make_fake_game(future, "KC", "BAL")
@@ -157,7 +157,7 @@ class TestScheduleUTCParsing(unittest.TestCase):
 class TestEnsembleCacheLifecycle(unittest.TestCase):
 
     def _make_store(self):
-        from classical_learning.trading.models import EnsembleStore
+        from trading.models import EnsembleStore
         store = EnsembleStore.__new__(EnsembleStore)
         store._models_dir = MagicMock()
         store._bundles = {}
@@ -199,7 +199,7 @@ class TestEnsembleCacheLifecycle(unittest.TestCase):
 class TestRiskNoUpperBound(unittest.TestCase):
 
     def _check(self, hours):
-        from classical_learning.trading.risk import check_limits
+        from trading.risk import check_limits
         state = {
             "daily_pnl": 0.0,
             "position_tickers": set(),

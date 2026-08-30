@@ -28,7 +28,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[3]
 class TestComputeEBR(unittest.TestCase):
 
     def _fn(self):
-        from classical_learning.trading.sizing import compute_ebr
+        from trading.sizing import compute_ebr
         return compute_ebr
 
     def test_basic_over(self):
@@ -92,7 +92,7 @@ def _make_quote(ticker, fair_value=0.55, edge=0.03, point_estimate=9.5, line=8.5
 class TestSizeQuotes(unittest.TestCase):
 
     def _fn(self):
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         return size_quotes
 
     def test_single_game_single_line(self):
@@ -266,7 +266,7 @@ class TestSizedQuoteFields(unittest.TestCase):
 
     def test_weight_breakdown_has_ebr_fields(self):
         """SizedQuote.weight_breakdown contains EBR-specific fields."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         quotes = [_make_quote("KXMLBTOTAL-26JUL10NYMLAD-9", point_estimate=10.0, line=8.5)]
         sized = size_quotes(quotes, bankroll=350, n_active_games=5, model_error_std=0.795)
         self.assertEqual(len(sized), 1)
@@ -278,7 +278,7 @@ class TestSizedQuoteFields(unittest.TestCase):
 
     def test_accuracy_mult_is_always_1(self):
         """With EBR sizing, accuracy_mult is fixed at 1.0 (legacy field)."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         quotes = [_make_quote("KXMLBTOTAL-26JUL10NYMLAD-9", point_estimate=10.0, line=8.5)]
         sized = size_quotes(quotes, bankroll=350, n_active_games=5, model_error_std=0.795)
         self.assertEqual(sized[0].accuracy_mult, 1.0)
@@ -292,7 +292,7 @@ class TestPreloadStub(unittest.TestCase):
 
     def test_stub_is_noop(self):
         """preload_accuracy_profiles is a no-op stub."""
-        from classical_learning.trading.sizing import preload_accuracy_profiles
+        from trading.sizing import preload_accuracy_profiles
         # Should not raise
         preload_accuracy_profiles(["total_runs", "home_win"])
 
@@ -305,7 +305,7 @@ class TestScannerPointEstimate(unittest.TestCase):
 
     def test_apply_line_negbin_includes_point_estimate(self):
         """_apply_line for NegBin returns point_estimate in its dict."""
-        from classical_learning.trading.scanner import _apply_line
+        from trading.scanner import _apply_line
         base_result = {
             "task": "regression",
             "point_estimate": 9.8,
@@ -320,7 +320,7 @@ class TestScannerPointEstimate(unittest.TestCase):
 
     def test_apply_line_classification_no_point_estimate(self):
         """_apply_line for classification does NOT include point_estimate."""
-        from classical_learning.trading.scanner import _apply_line
+        from trading.scanner import _apply_line
         base_result = {
             "task": "classification",
             "prob": 0.62,
@@ -340,7 +340,7 @@ class TestActiveGamesCount(unittest.TestCase):
 
     def test_distinct_game_keys_from_market_set(self):
         """n_active_games counts distinct game_keys, not distinct tickers."""
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
         market_set = {
             "KXMLBTOTAL-26JUL10NYMLAD-9": {},
             "KXMLBTOTAL-26JUL10NYMLAD-10": {},   # same game, different line
@@ -356,7 +356,7 @@ class TestActiveGamesCount(unittest.TestCase):
     def test_empty_market_set_defaults_to_1(self):
         """Empty market set → n_active_games = 1 (avoid division by zero)."""
         market_set = {}
-        from classical_learning.trading.market_map import parse_ticker
+        from trading.market_map import parse_ticker
         game_keys = {
             parse_ticker(t).game_key
             for t in market_set
@@ -375,7 +375,7 @@ class TestOrderbookDeltaCallback(unittest.TestCase):
     def test_delta_fires_callback_on_success(self):
         """Successful delta application fires on_orderbook_delta callback."""
         fired = []
-        from classical_learning.trading.ws import KalshiWS, LocalBook
+        from trading.ws import KalshiWS, LocalBook
 
         book = LocalBook()
         # Pre-seed with a snapshot so delta application succeeds
@@ -409,7 +409,7 @@ class TestOrderbookDeltaCallback(unittest.TestCase):
     def test_delta_does_not_fire_on_seq_gap(self):
         """Sequence gap → callback NOT fired (snapshot requested instead)."""
         fired = []
-        from classical_learning.trading.ws import KalshiWS, LocalBook
+        from trading.ws import KalshiWS, LocalBook
 
         book = LocalBook()
         book.apply_snapshot("KXMLBTOTAL-26JUL10NYMLAD-9",
@@ -453,7 +453,7 @@ class TestRunnerDeltaReprice(unittest.TestCase):
 
     def _make_runner(self):
         """Create a minimal TradingRunner with mocked dependencies."""
-        from classical_learning.trading.runner import TradingRunner
+        from trading.runner import TradingRunner
         with patch.object(TradingRunner, '__init__', lambda self, **kw: None):
             runner = TradingRunner.__new__(TradingRunner)
             runner._dry_run = True
@@ -499,11 +499,15 @@ class TestMarketCreatedImmediateQuote(unittest.TestCase):
 
     def test_spawns_thread_when_ready(self):
         """_handle_market_created spawns a thread for _quote_single_market when components are loaded."""
-        from classical_learning.trading.runner import TradingRunner
+        from trading.runner import TradingRunner
         with patch.object(TradingRunner, '__init__', lambda self, **kw: None):
             runner = TradingRunner.__new__(TradingRunner)
             runner._dry_run = True
             runner._running = True
+            # Set on real instances in __init__; this fixture bypasses __init__, so the
+            # attribute has to be supplied or _handle_market_created raises before the
+            # behaviour under test. Must contain the ticker's series to reach the quote.
+            runner._tradeable_series = ["KXMLBTOTAL"]
             runner._ensemble_store = MagicMock()
             runner._features = MagicMock()
             runner._features.is_stale_for_game.return_value = False
@@ -517,7 +521,7 @@ class TestMarketCreatedImmediateQuote(unittest.TestCase):
             runner._quote_single_market = lambda t: called.append(t)
 
             # Mock schedule check
-            with patch("pregame.trading.runner.gumbo_schedule") as mock_sched:
+            with patch("trading.runner.gumbo_schedule") as mock_sched:
                 mock_sched.game_has_started.return_value = False
                 mock_sched.get_game_number.return_value = None
                 runner._handle_market_created("KXMLBTOTAL-26JUL10NYMLAD-9", {"close_ts": None})
@@ -528,11 +532,14 @@ class TestMarketCreatedImmediateQuote(unittest.TestCase):
 
     def test_no_thread_when_not_running(self):
         """No immediate quote if runner hasn't started yet."""
-        from classical_learning.trading.runner import TradingRunner
+        from trading.runner import TradingRunner
         with patch.object(TradingRunner, '__init__', lambda self, **kw: None):
             runner = TradingRunner.__new__(TradingRunner)
             runner._dry_run = True
             runner._running = False  # not started yet
+            # Populated so the assertion proves the _running gate stopped the quote,
+            # rather than an empty tradeable-series list short-circuiting it earlier.
+            runner._tradeable_series = ["KXMLBTOTAL"]
             runner._ensemble_store = MagicMock()
             runner._features = MagicMock()
             runner._ws = MagicMock()
@@ -542,7 +549,7 @@ class TestMarketCreatedImmediateQuote(unittest.TestCase):
             called = []
             runner._quote_single_market = lambda t: called.append(t)
 
-            with patch("pregame.trading.runner.gumbo_schedule") as mock_sched:
+            with patch("trading.runner.gumbo_schedule") as mock_sched:
                 mock_sched.game_has_started.return_value = False
                 mock_sched.get_game_number.return_value = None
                 runner._handle_market_created("KXMLBTOTAL-26JUL10NYMLAD-9", {"close_ts": None})
@@ -559,7 +566,7 @@ class TestEBRStress(unittest.TestCase):
 
     def test_15_games_with_6_lines_each(self):
         """Full MLB day: 15 games × 6 lines = 90 quotes. All should size correctly."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         quotes = []
         for g in range(15):
             away = f"TM{g:02d}"
@@ -586,7 +593,7 @@ class TestEBRStress(unittest.TestCase):
 
     def test_extreme_mu_hat_does_not_crash(self):
         """Very large mu_hat (20) or very small (2) shouldn't break sizing."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         quotes = [
             _make_quote("KXMLBTOTAL-26JUL10NYMLAD-9", point_estimate=2.0, line=8.5,
                         fair_value=0.20, edge=0.05),
@@ -598,7 +605,7 @@ class TestEBRStress(unittest.TestCase):
 
     def test_bankroll_zero(self):
         """Bankroll of 0 → no contracts (graceful, no ZeroDivisionError)."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         quotes = [_make_quote("KXMLBTOTAL-26JUL10NYMLAD-9", point_estimate=10.0, line=8.5)]
         sized = size_quotes(quotes, bankroll=0, n_active_games=1, model_error_std=0.795)
         # Either empty or contracts are all 1 (minimum). Should not raise.
@@ -607,7 +614,7 @@ class TestEBRStress(unittest.TestCase):
 
     def test_all_lines_same_ebr(self):
         """If all lines have identical EBR, each gets equal weight."""
-        from classical_learning.trading.sizing import size_quotes
+        from trading.sizing import size_quotes
         # mu=9.5, lines at 8.5 and 10.5 → both have |distance|=1.0
         quotes = [
             _make_quote("KXMLBTOTAL-26JUL10NYMLAD-9", point_estimate=9.5, line=8.5),
@@ -626,15 +633,15 @@ class TestEBRStress(unittest.TestCase):
 class TestConfigConstants(unittest.TestCase):
 
     def test_model_error_std_defined(self):
-        from classical_learning.trading.config import MODEL_ERROR_STD
+        from trading.config import MODEL_ERROR_STD
         self.assertAlmostEqual(MODEL_ERROR_STD, 0.795, places=3)
 
     def test_bankroll_defined(self):
-        from classical_learning.trading.config import BANKROLL
+        from trading.config import BANKROLL
         self.assertEqual(BANKROLL, 25_000)
 
     def test_scan_interval_defined(self):
-        from classical_learning.trading.config import SCAN_INTERVAL_SEC
+        from trading.config import SCAN_INTERVAL_SEC
         self.assertEqual(SCAN_INTERVAL_SEC, 60)
 
 

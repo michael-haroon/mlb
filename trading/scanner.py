@@ -161,7 +161,7 @@ def _apply_line(base_result: dict, target: str, line: Optional[float], direction
     the requested line — much cheaper than re-running the full ensemble.
     Dispatches on distribution type: NegBin for counts, Student-t for signed.
     """
-    from ..strategy.calibration import cover_probability, negbin_cover_probability
+    from classical_learning.strategy.calibration import cover_probability, negbin_cover_probability
 
     task = base_result.get("task", "classification")
 

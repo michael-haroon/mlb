@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from pregame.trading.models import EnsembleStore
-from pregame.trading.market_map import MODEL_TO_SERIES, parse_ticker
+from trading.models import EnsembleStore
+from trading.market_map import MODEL_TO_SERIES, parse_ticker
 
 def mock_get_tradeable_series(ensemble_store):
     """Mock implementation of _get_tradeable_series_from_models()."""

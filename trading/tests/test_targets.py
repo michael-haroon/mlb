@@ -1,4 +1,4 @@
-"""Tests for pregame.trading.targets sub-package."""
+"""Tests for trading.targets sub-package."""
 from __future__ import annotations
 
 import pickle
@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from classical_learning.trading.targets import TOTAL_RUNS_CONFIG, load_total_runs_config
-from classical_learning.trading.targets.base import TargetConfig
-from classical_learning.trading.targets.total_runs import _negbin_half_spread
+from trading.targets import TOTAL_RUNS_CONFIG, load_total_runs_config
+from trading.targets.base import TargetConfig
+from trading.targets.total_runs import _negbin_half_spread
 
 
 # ---------------------------------------------------------------------------

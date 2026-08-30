@@ -1,6 +1,6 @@
 # Trading Runner Integration Guide
 
-This document shows how to integrate the `LiveInferenceEngine` with the existing `TradingRunner` in `classical_learning/trading/runner.py`.
+This document shows how to integrate the `LiveInferenceEngine` with the existing `TradingRunner` in `trading/runner.py`.
 
 ## Architecture Overview
 
@@ -356,10 +356,10 @@ def test_on_pitch_event():
 ### Integration test with TradingRunner
 
 ```python
-# classical_learning/trading/tests/test_runner_live_integration.py
+# trading/tests/test_runner_live_integration.py
 
 import pytest
-from pregame.trading.runner import TradingRunner
+from trading.runner import TradingRunner
 from live.mlb_dl.inference_engine import PitchEvent
 
 def test_runner_with_live_bridge(tmpdir):

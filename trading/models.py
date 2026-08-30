@@ -20,8 +20,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from ..strategy.predict import predict_game, predict_spread_lines, predict_total_lines
-from ..strategy.calibration import cover_probability, negbin_cover_probability, negbin_total_cover_probability
+from classical_learning.strategy.predict import predict_game, predict_spread_lines, predict_total_lines
+from classical_learning.strategy.calibration import cover_probability, negbin_cover_probability, negbin_total_cover_probability
 from .config import ARTIFACTS_DIR
 from .market_map import MODEL_TO_SERIES
 

@@ -2,7 +2,7 @@
 probe_lifecycle.py — Dump raw WS lifecycle payloads to see if settled/determined events carry result.
 
 Run on EC2:
-    python3.11 -m pregame.trading.probe_lifecycle
+    python3.11 -m trading.probe_lifecycle
 
 Connects to Kalshi WS, subscribes to market_lifecycle_v2, and prints every
 lifecycle message verbatim (JSON-indented). Let it run until a game settles

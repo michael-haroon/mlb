@@ -9,13 +9,13 @@ Two-phase operation:
 
 Usage:
     # Dry-run: log decisions without executing
-    conda run -n pred python -m pregame.trading.runner --dry-run --once
+    conda run -n pred python -m trading.runner --dry-run --once
 
     # Live with safety-net Kelly override
-    conda run -n pred python -m pregame.trading.runner --live --kelly-override 0.015
+    conda run -n pred python -m trading.runner --live --kelly-override 0.015
 
     # Continuous loop
-    conda run -n pred python -m pregame.trading.runner --dry-run
+    conda run -n pred python -m trading.runner --dry-run
 """
 
 from __future__ import annotations
@@ -37,23 +37,23 @@ load_dotenv()
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from classical_learning.trading.config import (
+from trading.config import (
     SCAN_INTERVAL_SEC, EXIT_BUFFER_MINUTES, CANCEL_BEFORE_FIRST_PITCH_MIN,
     TAKER_EDGE_THRESHOLD, REPRICE_MIN_TICK_MOVE, MIN_REPRICE_INTERVAL_SEC,
     MAX_REPRICES_PER_ORDER, TRADEABLE_SERIES, LOGS_DIR, DRY_RUN,
     DISCOVERY_INTERVAL_SEC, MODEL_ERROR_STD, BANKROLL,
 )
-from classical_learning.trading.kalshi_client import make_client, make_write_client
-from classical_learning.trading.models import EnsembleStore
-from classical_learning.trading.scanner import generate_quotes, min_edge_for_profit
-from classical_learning.trading.sizing import size_quotes, preload_accuracy_profiles
-from classical_learning.trading.risk import check_limits
-from classical_learning.trading.executor import post_two_sided, execute_taker, cancel_order, _log_decision
-from classical_learning.trading.portfolio import Portfolio, PositionState
-from classical_learning.trading.ws import KalshiWS
-from classical_learning.trading.features import FeatureManager
-from classical_learning.trading.market_map import parse_ticker
-from classical_learning.trading import schedule as gumbo_schedule
+from trading.kalshi_client import make_client, make_write_client
+from trading.models import EnsembleStore
+from trading.scanner import generate_quotes, min_edge_for_profit
+from trading.sizing import size_quotes, preload_accuracy_profiles
+from trading.risk import check_limits
+from trading.executor import post_two_sided, execute_taker, cancel_order, _log_decision
+from trading.portfolio import Portfolio, PositionState
+from trading.ws import KalshiWS
+from trading.features import FeatureManager
+from trading.market_map import parse_ticker
+from trading import schedule as gumbo_schedule
 
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -71,7 +71,7 @@ logging.basicConfig(
 debug_handler = logging.FileHandler(LOGS_DIR / "runner_debug.log")
 debug_handler.setLevel(logging.DEBUG)
 debug_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
-logging.getLogger("pregame.trading").addHandler(debug_handler)
+logging.getLogger("trading").addHandler(debug_handler)
 
 logger = logging.getLogger(__name__)
 
@@ -1025,10 +1025,10 @@ def main():
 
     dry_run = not args.live
     if args.kelly_override is not None:
-        from classical_learning.trading import config
+        from trading import config
         config.KELLY_FRACTION = args.kelly_override
         # Also update sizing module's import
-        from classical_learning.trading import sizing
+        from trading import sizing
         sizing.KELLY_FRACTION = args.kelly_override
         logger.info(f"Kelly fraction overridden to {args.kelly_override}")
 

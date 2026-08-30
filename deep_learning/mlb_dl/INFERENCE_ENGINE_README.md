@@ -56,7 +56,7 @@ Dataclass representing a single pitch from the live feed (MLB GUMBO API or equiv
 
 Thread-safe bridge between the async inference engine and the sync trading runner.
 
-**WHY**: The trading runner (`classical_learning/trading/runner.py`) is synchronous. The ingestion layer (MLB GUMBO WebSocket) is async. This bridge runs the async event loop in a background thread and exposes a sync API.
+**WHY**: The trading runner (`trading/runner.py`) is synchronous. The ingestion layer (MLB GUMBO WebSocket) is async. This bridge runs the async event loop in a background thread and exposes a sync API.
 
 **API**:
 ```python
@@ -74,7 +74,7 @@ bridge.stop()
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         TradingRunner                            │
-│                    (classical_learning/trading/runner.py)                   │
+│                    (trading/runner.py)                   │
 │                         Sync, main thread                        │
 └──────────────────────────┬──────────────────────────────────────┘
                            │

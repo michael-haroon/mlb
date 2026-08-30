@@ -20,8 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from classical_learning.trading.market_map import parse_ticker
-from classical_learning.trading import schedule as gumbo_schedule
+from trading.market_map import parse_ticker
+from trading import schedule as gumbo_schedule
 
 
 # ─── parse_ticker: ticker_time extraction ────────────────────────────────────

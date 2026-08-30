@@ -73,7 +73,7 @@
 
 ### 3. Runner Integration
 
-**File**: `classical_learning/trading/runner.py`
+**File**: `trading/runner.py`
 
 **Tasks**:
 - [ ] Add `_live_bridge` field to `TradingRunner.__init__`
@@ -107,7 +107,7 @@
   - [ ] Push to git, pull on EC2
   - [ ] Ensure model checkpoint is synced
 - [ ] Run in dry-run mode
-  - [ ] `conda run -n pred python -m pregame.trading.runner --dry-run`
+  - [ ] `conda run -n pred python -m trading.runner --dry-run`
   - [ ] Subscribe to 2-3 live games
   - [ ] Monitor logs for errors
 - [ ] Validate metrics
@@ -289,7 +289,7 @@
 
 ### 14. P&L Attribution
 
-**File**: `classical_learning/trading/analytics/pnl_attribution.py`
+**File**: `trading/analytics/pnl_attribution.py`
 
 **Tasks**:
 - [ ] Track P&L by source
