@@ -514,7 +514,7 @@ class PreparedDataset(Dataset):
     __getitem__ is pure array indexing — no computation, no historical lookups.
     """
 
-    def __init__(self, split_dir: str | Path):
+    def __init__(self, split_dir: str | Path, disable_asof: bool = False):
         split_dir = Path(split_dir)
         with open(split_dir / "manifest.json") as f:
             self.manifest = json.load(f)
@@ -536,8 +536,12 @@ class PreparedDataset(Dataset):
         self._player_matchup = np.load(split_dir / "player_matchup.npy", mmap_mode="r")
         self._flat_features = np.load(split_dir / "flat_features.npy", mmap_mode="r")
         self._weather = np.load(split_dir / "weather.npy", mmap_mode="r")
-        # As-of weather (manifest-gated): per-game [7,7,99] + per-sample d
-        self._has_weather_asof = bool(self.manifest.get("has_weather_asof"))
+        # As-of weather (manifest-gated): per-game [7,7,99] + per-sample d.
+        # disable_asof serves the legacy tensor from an appended directory, so the A/B's
+        # control arm reads the same bytes as the treatment. The npy stays on disk
+        # untouched; only this flag decides which array reaches weather_temporal.
+        self._has_weather_asof = (not disable_asof) and bool(
+            self.manifest.get("has_weather_asof"))
         if self._has_weather_asof:
             self._weather_asof = np.load(split_dir / "weather_asof.npy", mmap_mode="r")
             self._wx_decision_hour = np.load(split_dir / "wx_decision_hour.npy", mmap_mode="r")
@@ -753,6 +757,7 @@ def prepared_collate_fn(batch: list[dict]) -> dict:
 
 def load_prepared_datasets(
     prepared_dir: str | Path,
+    disable_asof: bool = False,
 ) -> tuple[PreparedDataset, PreparedDataset, PreparedDataset]:
     """Load prepared train/val/test datasets."""
     prepared_path = Path(prepared_dir)
@@ -760,7 +765,7 @@ def load_prepared_datasets(
     if not manifest_file.exists():
         raise FileNotFoundError(f"No manifest.json in {prepared_path}")
 
-    train_ds = PreparedDataset(prepared_path / "train")
-    val_ds = PreparedDataset(prepared_path / "val")
-    test_ds = PreparedDataset(prepared_path / "test")
+    train_ds = PreparedDataset(prepared_path / "train", disable_asof=disable_asof)
+    val_ds = PreparedDataset(prepared_path / "val", disable_asof=disable_asof)
+    test_ds = PreparedDataset(prepared_path / "test", disable_asof=disable_asof)
     return train_ds, val_ds, test_ds

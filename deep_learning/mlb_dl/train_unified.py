@@ -1445,7 +1445,8 @@ def _evaluate_model(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_weather_geometry(dataset, use_prepared: bool) -> tuple[ContextConfig, bool]:
+def _resolve_weather_geometry(dataset, use_prepared: bool,
+                              disable_asof: bool = False) -> tuple[ContextConfig, bool]:
     """Pick the weather token geometry the DATA actually carries.
 
     As-of weather is 7 decision-hour tokens of 99 channels; legacy is a 4x22
@@ -1456,12 +1457,26 @@ def _resolve_weather_geometry(dataset, use_prepared: bool) -> tuple[ContextConfi
     Detection spans all three data paths: prepared manifest flag, or the
     per-game dict the cached/from-frames datasets attach. An empty dict means
     the artifact was absent, which is legacy, not as-of.
+
+    `disable_asof` overrides all three. The append step patches the prepared manifest in
+    place, so without an override the A/B's control arm could only be reproduced from a
+    different directory than the treatment — two variables moving at once. With it, both
+    arms read the same tensors and differ by one flag. It is also how the weather
+    ablation is run.
     """
     context_config = ContextConfig()
-    asof_active = bool(
-        (use_prepared and dataset.manifest.get("has_weather_asof"))
-        or getattr(dataset, "_weather_asof_by_pk", None)
+    # Prefer what the dataset will ACTUALLY serve over what the manifest claims.
+    # PreparedDataset already resolved the flag into _has_weather_asof, and the failure
+    # mode if these two disagree is a model built for one geometry fed the other.
+    prepared_asof = getattr(dataset, "_has_weather_asof", None)
+    if prepared_asof is None:
+        prepared_asof = use_prepared and bool(dataset.manifest.get("has_weather_asof"))
+    asof_active = (not disable_asof) and bool(
+        prepared_asof or getattr(dataset, "_weather_asof_by_pk", None)
     )
+    if disable_asof:
+        log.info("As-of weather DISABLED by --no-asof-weather; legacy %dx%d geometry",
+                 context_config.weather_tokens, context_config.weather_dim)
     if asof_active:
         from .weather_asof import ASOF_CHANNELS, N_TARGET_HOURS
         context_config.weather_tokens = N_TARGET_HOURS
@@ -1485,7 +1500,8 @@ def _cmd_fit_unified(args) -> None:
     if prepared_dir and Path(prepared_dir).exists() and (Path(prepared_dir) / "manifest.json").exists():
         log.info("Loading pre-collated tensors from: %s", prepared_dir)
         from .precollate import load_prepared_datasets, prepared_collate_fn
-        train_ds, val_ds, test_ds = load_prepared_datasets(prepared_dir)
+        train_ds, val_ds, test_ds = load_prepared_datasets(
+            prepared_dir, disable_asof=getattr(args, "no_asof_weather", False))
         _log_memory("after prepared datasets loaded")
         log.info("Dataset sizes: train=%d, val=%d, test=%d", len(train_ds), len(val_ds), len(test_ds))
         rating_dim = train_ds.manifest.get("rating_dim", 0)
@@ -1550,7 +1566,8 @@ def _cmd_fit_unified(args) -> None:
     log.info("Device: %s", device)
 
     # Model
-    context_config, _asof_active = _resolve_weather_geometry(train_ds, use_prepared)
+    context_config, _asof_active = _resolve_weather_geometry(
+        train_ds, use_prepared, disable_asof=getattr(args, "no_asof_weather", False))
     model = GameTransformer(
         d_model=args.d_model,
         rating_dim=rating_dim,
@@ -1693,7 +1710,8 @@ def _cmd_evaluate(args) -> None:
     if use_prepared:
         from .precollate import load_prepared_datasets, prepared_collate_fn
         log.info("Loading pre-collated tensors from: %s", prepared_dir)
-        _, _, test_ds = load_prepared_datasets(prepared_dir)
+        _, _, test_ds = load_prepared_datasets(
+            prepared_dir, disable_asof=getattr(args, "no_asof_weather", False))
         rating_dim = test_ds.manifest.get("rating_dim", 0)
         collate = prepared_collate_fn
         geometry_src = test_ds
@@ -1707,7 +1725,8 @@ def _cmd_evaluate(args) -> None:
         geometry_src = test_ds
     log.info("Test split: %d games (rating_dim=%d)", len(test_ds), rating_dim)
 
-    context_config, _ = _resolve_weather_geometry(geometry_src, use_prepared)
+    context_config, _ = _resolve_weather_geometry(
+        geometry_src, use_prepared, disable_asof=getattr(args, "no_asof_weather", False))
     model = GameTransformer(
         d_model=args.d_model,
         rating_dim=rating_dim,
@@ -1842,6 +1861,8 @@ def main() -> None:
                      help="Path to pre-computed dataset cache (skips 30-min build)")
     fit.add_argument("--prepared-dir", default=None,
                      help="Path to pre-collated tensors (skips all per-batch assembly)")
+    fit.add_argument("--no-asof-weather", action="store_true",
+                     help="Serve the LEGACY weather geometry even when the prepared manifest says as-of weather was appended. The A/B control arm and the weather ablation both need this: the append patches the manifest in place, so without it the control could only be run from a different directory.")
     fit.set_defaults(func=_cmd_fit_unified)
 
     # learning-curves
@@ -1876,6 +1897,8 @@ def main() -> None:
     ev.add_argument("--prepared-dir", default=None,
                     help="Pre-collated tensor dir; skips feature-store rebuild")
     ev.add_argument("--num-workers", type=int, default=0)
+    ev.add_argument("--no-asof-weather", action="store_true",
+                    help="Serve the LEGACY weather geometry even when the prepared manifest says as-of weather was appended. The A/B control arm and the weather ablation both need this: the append patches the manifest in place, so without it the control could only be run from a different directory.")
     ev.set_defaults(func=_cmd_evaluate)
 
     args = parser.parse_args()
