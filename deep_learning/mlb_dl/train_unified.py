@@ -65,6 +65,44 @@ _COMPETITIVE_GAME_TYPES: tuple[str, ...] = ("R", "F", "D", "L", "W")
 log = logging.getLogger(__name__)
 
 
+def _seed_everything(seed: int) -> torch.Generator:
+    """Seed every RNG the training path draws from; returns the DataLoader generator.
+
+    Three phase-1 runs at the same nominal config landed at best_val 4.9330, 5.0289 and
+    4.9521 because nothing here was seeded. The weather A/B is decided on differences of
+    a few hundredths of a nat, which is the same size as that spread, so the arms have to
+    be a paired comparison rather than two independent draws.
+
+    cudnn is deliberately left in autotune mode: forcing deterministic algorithms costs
+    throughput and raises on some ops, and bit-exactness is not what the comparison
+    needs — identical batch order and init draws are.
+    """
+    import random
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return g
+
+
+def _seed_worker(worker_id: int) -> None:
+    """Re-seed numpy/random inside each DataLoader worker.
+
+    Workers are forked after the parent seeded itself, so torch gives each a distinct
+    seed but numpy and random inherit the parent's state — identical across workers, and
+    unrelated to `--seed` on a respawn (persistent_workers=True is set on the prepared
+    path). Anything sampling from numpy in __getitem__ would otherwise repeat per worker.
+    """
+    import random
+
+    s = torch.initial_seed() % 2**32
+    np.random.seed(s)
+    random.seed(s)
+
+
 def _log_memory(label: str = "") -> None:
     """Log current RAM and GPU memory usage."""
     import psutil
@@ -1490,6 +1528,9 @@ def _cmd_fit_unified(args) -> None:
     """Train the unified GameTransformer with phased protocol."""
     _setup_logging()
     t_start = time.time()
+    seed = getattr(args, "seed", 42)
+    loader_gen = _seed_everything(seed)
+    log.info("Seeded all RNGs with %d (paired A/B arms require this)", seed)
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -1548,7 +1589,8 @@ def _cmd_fit_unified(args) -> None:
         loader_kwargs["persistent_workers"] = True
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
-        collate_fn=collate, num_workers=nw, **loader_kwargs,
+        collate_fn=collate, num_workers=nw, generator=loader_gen,
+        worker_init_fn=_seed_worker if nw > 0 else None, **loader_kwargs,
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size, shuffle=False,
@@ -1690,6 +1732,7 @@ def _cmd_learning_curves(args) -> None:
 def _cmd_evaluate(args) -> None:
     """Evaluate a trained model checkpoint."""
     _setup_logging()
+    _seed_everything(getattr(args, "seed", 42))
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -1863,6 +1906,8 @@ def main() -> None:
                      help="Path to pre-collated tensors (skips all per-batch assembly)")
     fit.add_argument("--no-asof-weather", action="store_true",
                      help="Serve the LEGACY weather geometry even when the prepared manifest says as-of weather was appended. The A/B control arm and the weather ablation both need this: the append patches the manifest in place, so without it the control could only be run from a different directory.")
+    fit.add_argument("--seed", type=int, default=42,
+                     help="Seed for init and shuffle order. The A/B arms must share it; see _seed_everything.")
     fit.set_defaults(func=_cmd_fit_unified)
 
     # learning-curves
@@ -1899,6 +1944,8 @@ def main() -> None:
     ev.add_argument("--num-workers", type=int, default=0)
     ev.add_argument("--no-asof-weather", action="store_true",
                     help="Serve the LEGACY weather geometry even when the prepared manifest says as-of weather was appended. The A/B control arm and the weather ablation both need this: the append patches the manifest in place, so without it the control could only be run from a different directory.")
+    ev.add_argument("--seed", type=int, default=42,
+                     help="Seed for init and shuffle order. The A/B arms must share it; see _seed_everything.")
     ev.set_defaults(func=_cmd_evaluate)
 
     args = parser.parse_args()
