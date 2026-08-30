@@ -76,8 +76,15 @@ DIM_NAMES = list(WEATHER_TEMPORAL_COLUMNS) + list(OBS_EXTRA_NAMES)
 #       unusual. Imported rather than restated so the gate cannot drift from the builder.
 #   12 precip: hourly accumulation; 150 mm/h is past any world hourly record for a
 #       populated area.
-#   13 surface pressure: STATION pressure, so elevation dominates — measured 2015
-#       minimum is 826.8 hPa at Coors. Global sea-level record high is 1084 hPa.
+#   13 surface pressure: STATION pressure, so elevation dominates. The floor is set by the
+#       highest station in the venue map, not by a pressure record: Estadio Alfredo Harp
+#       Helú maps to a station at 2,309 m with a 2,576 m backup at Toluca, where the 2023
+#       archive carries 2,503 real reports at 748-750 hPa all year. Standard atmosphere at
+#       2,576 m is 742 hPa, and synoptic variability reaches a few percent below that, so
+#       700 clears every venue with margin while still catching a Pa-for-hPa fault by three
+#       orders of magnitude. The original 750 floor was derived from 2015, whose highest
+#       venue was Coors at 1,724 m (measured minimum 826.8 hPa), and it failed a real game
+#       the moment Mexico City entered the population. Global sea-level record high 1084.
 #   14-15 PBL height, shortwave: 6000 m clears any convective boundary layer; the solar
 #       constant is 1361 W/m², so 1500 covers surface max plus cloud enhancement. The
 #       shortwave FLOOR is -1.0, not 0: downward flux cannot physically be negative, but
@@ -111,7 +118,7 @@ PHYSICAL_RANGES = (
     (0.0, 100.5),        # 10 cloud_cover %
     (0.0, VIS_CEILING_M + 1.0),  # 11 visibility m — censored, see note
     (0.0, 150.0),        # 12 precip mm
-    (750.0, 1080.0),     # 13 surface_pressure hPa
+    (700.0, 1080.0),     # 13 surface_pressure hPa (floor = highest venue station, see note)
     (0.0, 6000.0),       # 14 boundary_layer_height m
     (-1.0, 1500.0),      # 15 shortwave_radiation W/m2 (see note on the floor)
     (0.0, 1.0),          # 16 soil_moisture m3/m3

@@ -76,10 +76,12 @@ ASOF_CHANNELS = OFF_LEAD + 1               # 99
 # soil, AQI, lapse, shear) have no station observation — obs_mask is 0 forever.
 OBS_OBSERVABLE_DIMS = list(range(14))
 
-# The era5 columns each observable obs dim is computed from. The mask may claim a dim only
-# when every input the physics needs was actually reported.
+# The era5 columns each dim is computed from. A mask may claim a dim only when every input
+# the physics needs was actually present in the source row. Both channels read the same
+# era5 schema, so one table serves both -- the obs channel uses the subset a station can
+# observe, the forecast channel uses all of it.
 #
-# This is needed because the obs channel has no per-field mask and the shared feature layer
+# This is needed because neither channel has a per-field mask and the shared feature layer
 # renders a missing input as 0.0 (weather_context._safe), so an omitted METAR group becomes
 # a legal-looking measurement that the mask then vouches for. IMPOSSIBLE_ZERO_OBS_DIMS
 # catches only the dims where 0 cannot physically occur; for the rest, 0 IS real weather
@@ -108,10 +110,17 @@ OBS_OBSERVABLE_DIMS = list(range(14))
 # winds are light (mean 3.90 kt) so 0 is nearly right -- is the reasoning that lets a
 # market-making model price confidently on an observation nobody made.
 #
-# Dims 14-21 have no station counterpart and are masked out wholesale; the 5 D2b extras
-# (22-26) are deliberately absent, since for those absence is the signal -- no wxcodes
-# group means no thunder and no precipitation type, which 0 encodes correctly.
-OBS_DIM_SOURCES: dict[int, tuple[str, ...]] = {
+# The forecast channel had no such rule at all: it set fcst_mask = ones and disclaimed only
+# soil (16) and AQI (17-19), which ride other frames. Building 2021 surfaced 2 of 120,834
+# forecast entries carrying surface_pressure = 0 hPa with mask = 1 -- the same defect, from
+# an HRRR row missing a field rather than a METAR missing a group. Rare, but a 0 hPa
+# pressure lands near -50 sigma, and the audit gate blocks the season until it is honest.
+#
+# Dims 16-19 are deliberately absent from this table: they come from the soil and CAMS
+# persistence frames, not the era5 row, and already have their own checks at the call site.
+# The 5 D2b extras (22-26) are excluded on purpose too -- there absence IS the reading, so
+# no wxcodes group means no thunder and no precipitation type, which 0 encodes correctly.
+DIM_SOURCES: dict[int, tuple[str, ...]] = {
     0: ("temperature_2m", "dew_point_2m", "surface_pressure"),   # moist-air density
     1: ("temperature_2m", "dew_point_2m", "surface_pressure"),
     2: ("wind_u_10m", "wind_v_10m"),                             # need a bearing
@@ -126,18 +135,30 @@ OBS_DIM_SOURCES: dict[int, tuple[str, ...]] = {
     11: ("visibility",),
     12: ("precipitation",),
     13: ("surface_pressure",),
+    # Forecast-only dims. 20-21 already coerced an absent pressure level to 0, which is
+    # legal weather -- an isothermal layer, no shear -- and therefore invisible to a
+    # range check, so only the mask can report the absence.
+    14: ("boundary_layer_height",),
+    15: ("shortwave_radiation",),
+    20: ("temperature_1000hPa", "temperature_850hPa",
+         "geopotential_height_1000hPa", "geopotential_height_850hPa"),
+    21: ("wind_speed_850hPa", "wind_direction_850hPa", "wind_u_10m", "wind_v_10m"),
+}
+OBS_DIM_SOURCES: dict[int, tuple[str, ...]] = {
+    d: DIM_SOURCES[d] for d in OBS_OBSERVABLE_DIMS
 }
 assert set(OBS_DIM_SOURCES) == set(OBS_OBSERVABLE_DIMS)
 
 
-def _obs_source_mask(row: pd.Series) -> np.ndarray:
-    """(N_DIMS,) 1.0 where every era5 input the dim needs was reported.
+def _source_mask(row: pd.Series, table: dict[int, tuple[str, ...]]) -> np.ndarray:
+    """(N_DIMS,) 1.0 where every era5 input the dim needs was present in `row`.
 
-    A column absent from the frame entirely is treated as unreported: the alternative is
-    to claim a dim built from data that was never there.
+    Dims absent from `table` are left claimed, so the caller keeps whatever rule it
+    already applies to them. A column absent from the frame entirely is treated as
+    unreported: the alternative is to claim a dim built from data that was never there.
     """
     m = np.ones(N_DIMS, dtype=np.float32)
-    for d, cols in OBS_DIM_SOURCES.items():
+    for d, cols in table.items():
         for c in cols:
             if c not in row.index or pd.isna(row[c]):
                 m[d] = 0.0
@@ -225,6 +246,13 @@ METAR_PHYSICAL_LIMITS = {
     "p01i": (0.0, 12.0),
 }
 
+# A METAR omits the gust group only when the peak gust is under 10 kt above the mean wind.
+# The gust factor for a 3-second peak over a 2-minute mean is at least ~1.2 over open
+# airport terrain, so a 50 kt mean already implies a >=60 kt peak -- exactly that reporting
+# threshold. At or above this speed, saying nothing about gusts contradicts the wind speed
+# in the same report, and the field-at-a-time limits above can never notice.
+GUST_REPORT_FLOOR_KT = 50.0
+
 
 def _drop_impossible_reports(df: pd.DataFrame) -> pd.DataFrame:
     """Discard reports carrying a physically impossible value in a consumed field.
@@ -246,6 +274,22 @@ def _drop_impossible_reports(df: pd.DataFrame) -> pd.DataFrame:
             continue
         v = pd.to_numeric(df[col], errors="coerce")
         keep &= v.isna() | ((v >= lo) & (v <= hi))
+
+    # Cross-field wind consistency. The limits above are world records widened, one field
+    # at a time, so they admit a 150 kt sustained wind and can never catch it -- building
+    # 2023 surfaced 15 such reports, which then failed the artifact's own range gate. Both
+    # rules here compare fields against each other, so neither is a threshold fitted to
+    # the data and neither caps how hard the wind is allowed to blow. Measured over the
+    # whole 13,708,338-report archive they cost 95 and 221 reports (0.002% together),
+    # concentrated in a handful of stations that misreport across many seasons.
+    if "sknt" in df:
+        sk = pd.to_numeric(df["sknt"], errors="coerce")
+        gu = pd.to_numeric(df["gust"], errors="coerce") if "gust" in df else pd.Series(
+            np.nan, index=df.index)
+        # A gust is the maximum over the averaging period; it cannot be below the mean.
+        keep &= ~(gu.notna() & sk.notna() & (gu < sk))
+        keep &= ~(sk.notna() & (sk >= GUST_REPORT_FLOOR_KT) & gu.isna())
+
     n_bad = int((~keep).sum())
     if n_bad:
         log.warning("dropped %d of %d METAR report(s) carrying physically impossible "
@@ -538,7 +582,7 @@ def assemble_asof_tensor(
                 row = select_asof_forecast(fcst_era5, decision_time, hour_start)
                 if row is not None:
                     fcst_vec = _features_22(row, venue_id, cf_azimuth, aq_row)
-                    fcst_mask = np.ones(N_DIMS, dtype=np.float32)
+                    fcst_mask = _source_mask(row, DIM_SOURCES)
                     # The mask must not claim dims the source cannot populate:
                     # soil (16) rides ERA5 persistence merged into the fcst row;
                     # AQI (17-19) rides CAMS persistence via air_quality_by_hour.
@@ -569,7 +613,7 @@ def assemble_asof_tensor(
                     # where 0 is legal weather and no value-based rule could tell a
                     # reported calm from an unreported wind. The impossible-zero
                     # sweep stays as a second line for anything the table misses.
-                    obs_mask[:N_DIMS] *= _obs_source_mask(row)
+                    obs_mask[:N_DIMS] *= _source_mask(row, OBS_DIM_SOURCES)
                     obs_mask[_IMPOSSIBLE_ZERO_MASK & (obs_vec == 0.0)] = 0.0
 
             T[di, hi, OFF_FCST:OFF_FCST_MASK] = _standardize_masked(fcst_vec, fcst_mask, fm, fs)

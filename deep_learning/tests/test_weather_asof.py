@@ -344,9 +344,16 @@ def test_a_merely_missing_field_does_not_drop_the_report():
 def test_real_weather_extremes_are_never_dropped():
     """The filter must clear the record book. The coldest MLB game on record is ~18 F
     and the hottest ~115 F; Coors Field altimeter runs far below sea-level values;
-    hurricane-edge gusts and a torrential inch of rain are all real."""
+    hurricane-edge gusts and a torrential inch of rain are all real.
+
+    The 60 kt case carries a gust because these fixtures assert one field at a time and
+    inherit NaN for the rest: a 60 kt sustained wind reported with no gust group at all is
+    a contradiction the archive shows to be corruption, not an extreme (see
+    GUST_REPORT_FLOOR_KT), and it is dropped on purpose. The record-book claim being made
+    here -- that 60 kt is not too fast to be real -- is unchanged.
+    """
     for kw in (dict(tmpf=18.0, dwpf=10.0), dict(tmpf=115.0, dwpf=70.0),
-               dict(alti=24.9 + 0.2), dict(alti=31.0), dict(sknt=60.0),
+               dict(alti=24.9 + 0.2), dict(alti=31.0), dict(sknt=60.0, gust=75.0),
                dict(gust=95.0), dict(p01i=3.0), dict(drct=360.0), dict(relh=100.0)):
         out = metar_to_era5(_one_metar(**kw), station_elev_m=6.0)
         assert len(out) == 1, f"{kw} wrongly dropped"
@@ -817,3 +824,139 @@ def test_an_omitted_gust_group_still_claims_the_gust_dim():
     conversion, not the raw gust column."""
     m = _obs_mask_for(gust=np.nan, sknt=8.0)
     assert m[5] == 1.0 and m[4] == 1.0
+
+
+# --- the same honesty rule on the FORECAST channel -----------------------------
+# The forecast branch set fcst_mask = ones and disclaimed only soil (16) and AQI (17-19),
+# so an HRRR row with a missing field was claimed in full. Found by building 2021, where
+# 2 of 120,834 forecast entries carried surface_pressure = 0 hPa with mask = 1 -- reaching
+# the model near -50 sigma. Rare, but the fix costs nothing and the audit gate blocks the
+# season build until it is honest.
+def _fcst_frame_with_missing(**overrides):
+    """One HRRR issue/valid pair, with chosen raw fields omitted."""
+    base = dict(venue_id=VENUE, model="hrrr", t2m_k=290.0, d2m_k=280.0, sp_pa=101000.0,
+                u10_ms=2.0, v10_ms=1.0, gust_ms=5.0, tcc_pct=50.0, vis_m=16000.0,
+                apcp_mm=0.0, hpbl_m=800.0, dswrf_wm2=100.0, t850_k=285.0, t1000_k=293.0,
+                z850_m=1500.0, z1000_m=100.0, u850_ms=5.0, v850_ms=2.0)
+    base.update(overrides)
+    rows = []
+    for issue_h in range(14, 30):
+        issue = GH.normalize() + pd.Timedelta(hours=issue_h)
+        for fxx in range(1, 10):
+            rows.append(dict(issue_time_utc=issue,
+                             available_time_utc=issue + pd.Timedelta(minutes=75),
+                             valid_time_utc=issue + pd.Timedelta(hours=fxx),
+                             lead_hours=fxx, **base))
+    return hrrr_to_era5(pd.DataFrame(rows))
+
+
+def _fcst_mask_for(**overrides):
+    """-> fcst_mask (22,) at a decision/hour where a forecast exists."""
+    fcst = _fcst_frame_with_missing(**overrides)
+    T = assemble_asof_tensor(None, fcst, GH, VENUE, CF_AZ)
+    live = T[:, :, OFF_FCST_MASK:OFF_OBS].reshape(-1, N_DIMS)
+    claimed = live[live.sum(axis=1) > 0]
+    assert len(claimed), "fixture produced no forecast hour"
+    return claimed[0]
+
+
+def test_a_complete_forecast_claims_every_dim_it_owns():
+    """Baseline: soil and AQI ride other frames and stay disclaimed, but every dim the
+    HRRR row itself populates must survive."""
+    m = _fcst_mask_for()
+    for d in list(range(16)) + [20, 21]:
+        assert m[d] == 1.0, f"fcst dim {d} lost from a complete forecast row"
+
+
+def test_forecast_missing_pressure_disclaims_pressure_and_density():
+    """The 2021 defect, reproduced: dims 0, 1 and 13 all need surface pressure, and
+    temperature is unaffected."""
+    m = _fcst_mask_for(sp_pa=np.nan)
+    assert m[13] == 0.0 and m[0] == 0.0 and m[1] == 0.0
+    assert m[9] == 1.0, "temperature was forecast and must not be discarded with pressure"
+
+
+def test_forecast_missing_visibility_is_masked_not_reported_as_dense_fog():
+    m = _fcst_mask_for(vis_m=np.nan)
+    assert m[11] == 0.0
+
+
+def test_forecast_missing_wind_disclaims_the_wind_dims():
+    m = _fcst_mask_for(u10_ms=np.nan, v10_ms=np.nan)
+    assert m[2] == 0.0 and m[3] == 0.0
+
+
+def test_forecast_missing_pressure_levels_disclaim_lapse_and_shear():
+    """Dims 20-21 already coerced an absent pressure level to 0, which is legal weather
+    (an isothermal layer, no shear) and so invisible to a range check."""
+    m = _fcst_mask_for(t850_k=np.nan, u850_ms=np.nan)
+    assert m[20] == 0.0 and m[21] == 0.0
+
+
+def test_forecast_missing_boundary_layer_and_radiation_are_masked():
+    m = _fcst_mask_for(hpbl_m=np.nan, dswrf_wm2=np.nan)
+    assert m[14] == 0.0 and m[15] == 0.0
+
+
+def test_the_obs_table_is_the_forecast_table_restricted_to_observables():
+    """One table, two channels: the obs and forecast schemas are both era5, so a dim must
+    not be allowed to declare different sources depending on which channel reads it."""
+    from mlb_dl.weather_asof import DIM_SOURCES, OBS_DIM_SOURCES
+    for d, cols in OBS_DIM_SOURCES.items():
+        assert DIM_SOURCES[d] == cols, f"dim {d} declares different sources per channel"
+
+
+# --- wind reports that contradict themselves -----------------------------------
+# METAR_PHYSICAL_LIMITS is deliberately "world records widened", one field at a time, so it
+# admits a 150 kt sustained wind and cannot ever catch it. Building 2023 surfaced 15 such
+# reports, which then failed the artifact's own dim-4 range gate. Measured over the whole
+# 13,708,338-report archive, the entire sustained tail at or above 50 kt is 320 reports and
+# 221 of them carry no gust group at all -- 69%, where a real windstorm would essentially
+# always report one. Both rules below are cross-field, so neither needs a new threshold
+# fitted to the data, and together they cost 0.002% of the archive.
+def _wind_report(**overrides):
+    base = dict(vsby=10.0, tmpf=75.0, dwpf=60.0, relh=60.0, drct=180.0, sknt=8.0,
+                gust=np.nan, alti=29.92, p01i=0.0, skyc1="FEW", wxcodes=None,
+                peak_wind_gust=np.nan)
+    base.update(overrides)
+    return pd.DataFrame([dict(station="TST", valid_utc=GH, available_time_utc=GH, **base)])
+
+
+def test_a_gust_below_the_sustained_wind_is_dropped():
+    """Definitional: a gust is the maximum over the averaging period, so it cannot be less
+    than the mean. Real case from 2023 -- 145 kt sustained reported with a 20 kt gust."""
+    assert len(metar_to_era5(_wind_report(sknt=145.0, gust=20.0), 6.0)) == 0
+
+
+def test_a_gust_above_the_sustained_wind_is_kept():
+    assert len(metar_to_era5(_wind_report(sknt=25.0, gust=40.0), 6.0)) == 1
+
+
+def test_a_gust_equal_to_the_sustained_wind_is_kept():
+    """Steady wind gusting exactly to the mean is legal, if unusual."""
+    assert len(metar_to_era5(_wind_report(sknt=25.0, gust=25.0), 6.0)) == 1
+
+
+def test_a_high_sustained_wind_with_no_gust_group_is_dropped():
+    """A METAR omits the gust group only when the peak is under 10 kt above the mean. The
+    3-second-peak-over-2-minute-mean gust factor over open airport terrain is at least
+    ~1.2, so a 50 kt mean already implies a >=60 kt peak -- exactly the reporting
+    threshold. Above that, silence about gusts contradicts the wind speed itself."""
+    assert len(metar_to_era5(_wind_report(sknt=150.0, gust=np.nan), 6.0)) == 0
+
+
+def test_a_high_sustained_wind_WITH_a_gust_group_is_kept():
+    """The rule must not become a wind-speed ceiling: a severe but self-consistent
+    windstorm is real weather and has to survive."""
+    assert len(metar_to_era5(_wind_report(sknt=60.0, gust=85.0), 6.0)) == 1
+
+
+def test_a_moderate_wind_with_no_gust_group_is_kept():
+    """Below the floor, an absent gust group is the normal case and must not be touched --
+    this is the branch that protects the other 13.7M reports."""
+    assert len(metar_to_era5(_wind_report(sknt=30.0, gust=np.nan), 6.0)) == 1
+
+
+def test_the_gust_floor_is_not_applied_to_a_missing_wind_speed():
+    """A report with no wind group at all is absence, not contradiction."""
+    assert len(metar_to_era5(_wind_report(sknt=np.nan, gust=np.nan), 6.0)) == 1

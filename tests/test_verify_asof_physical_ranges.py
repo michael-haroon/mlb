@@ -326,3 +326,30 @@ def test_dense_fog_still_passes():
     T[..., OFF_FCST + 11] = 0.0
     T[..., OFF_OBS + 11] = 100.0
     assert _fails_for(T) == []
+
+
+def test_mexico_city_station_pressure_passes():
+    """Estadio Alfredo Harp Helu (venue 5340) maps to a station at 2,309 m, and its backup
+    Toluca sits at 2,576 m. The 2023 archive carries 2,503 reports there between 748 and
+    750 hPa, all year, which is real weather -- the original 750 hPa floor was derived from
+    2015 data, whose highest venue was Coors Field at 1,724 m, and so failed a real game.
+    A gate that fires on real weather is a gate that gets disabled."""
+    T = clean_tensor()
+    T[..., OFF_OBS + 13] = 748.3
+    T[..., OFF_FCST + 13] = 748.3
+    assert _fails_for(T) == []
+
+
+def test_a_pascals_for_hectopascals_fault_still_fails():
+    """The floor exists to catch unit faults, and lowering it must not cost that: a
+    surface pressure in Pa lands three orders of magnitude away."""
+    T = clean_tensor()
+    T[0, 0, 0, OFF_OBS + 13] = 74830.0
+    assert any("surface_pressure" in f for f in _fails_for(T))
+
+
+def test_a_vacuum_pressure_still_fails():
+    """No MLB venue is above ~2,600 m, so anything near half an atmosphere is a fault."""
+    T = clean_tensor()
+    T[0, 0, 0, OFF_OBS + 13] = 500.0
+    assert any("surface_pressure" in f for f in _fails_for(T))
