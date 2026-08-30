@@ -35,16 +35,87 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "deep_lea
 
 from mlb_dl.weather_asof import (  # noqa: E402
     ASOF_CHANNELS,
+    IMPOSSIBLE_ZERO_OBS_DIMS,
     N_DIMS,
     N_OBS_DIMS,
     N_DECISIONS,
     N_TARGET_HOURS,
+    OBS_EXTRA_NAMES,
+    OFF_FCST,
     OFF_FCST_MASK,
     OFF_OBS,
     OFF_OBS_MASK,
     OFF_LEAD,
     TARGET_HOURS,
 )
+from mlb_dl.weather_context import WEATHER_TEMPORAL_COLUMNS  # noqa: E402
+
+DIM_NAMES = list(WEATHER_TEMPORAL_COLUMNS) + list(OBS_EXTRA_NAMES)
+
+# Outer plausibility bounds per dim, in the artifact's RAW units (mph, °F, hPa, m, mm,
+# kPa, m³/m³, K/km — the builder calls assemble_asof_tensor with no norm_stats, so
+# nothing here is standardized). Checked only where the mask says the entry is real.
+#
+# These are tripwires for order-of-magnitude faults, not distribution checks. Each bound
+# clears the record book by a wide margin, because a gate that fires on a real game is a
+# gate that gets disabled. Derivations:
+#   0-1 density, ratio: ρ = p/(R_d·T_v), R_d = 287.05. The MLB extremes are Coors Field
+#       hot (826 hPa, 311 K → 0.926) and sea-level cold (1035 hPa, 265 K → 1.359);
+#       ratio divides by the 1.225 standard. Bounds sit ~10% outside both.
+#   2-5 winds: signed components cannot exceed the speed; the strongest sustained wind
+#       in a played game is ~40 mph, so 80 is 2x, and gusts get 120.
+#   6 vpd: 0 at saturation; 115 °F at 5% RH gives es−ea ≈ 9.9 kPa.
+#   7,10 humidity, cloud: definitionally percentages, +0.5 for float slack.
+#   8,9 wet bulb, temperature: Tw ≤ T always. Coldest MLB game on record ~18 °F,
+#       hottest ~115 °F, world-record wet bulb ~95 °F.
+#   11 visibility: 0 in dense fog; HRRR saturates at 60000 m (measured), METAR encodes
+#       unlimited well below 100000.
+#   12 precip: hourly accumulation; 150 mm/h is past any world hourly record for a
+#       populated area.
+#   13 surface pressure: STATION pressure, so elevation dominates — measured 2015
+#       minimum is 826.8 hPa at Coors. Global sea-level record high is 1084 hPa.
+#   14-15 PBL height, shortwave: 6000 m clears any convective boundary layer; the solar
+#       constant is 1361 W/m², so 1500 covers surface max plus cloud enhancement.
+#   16 soil moisture: volumetric fraction, definitionally [0,1].
+#   17-19 AQ: EPA AQI tops out at 500 on the published scale but wildfire episodes are
+#       reported beyond it; PM2.5 and O₃ get loose µg/m³ ceilings. Permanently masked
+#       in this artifact (v1 decision), so these bounds are dormant by design.
+#   20 lapse rate: SIGNED across 1000-850 hPa. Superadiabatic layers exceed the 9.8 K/km
+#       dry adiabat and nocturnal inversions run strongly negative, hence the wide,
+#       asymmetric window — a ≥0 floor here would fail a large share of night games.
+#   21 shear: vector wind difference to 850 hPa; low-level jets reach ~100 mph.
+#   22,24,25 wx flags: indicators. 23 wx_precip_intensity: ordinal 0-3 codebook.
+#   26 peak gust: PK WND group, mph.
+PHYSICAL_RANGES = (
+    (0.80, 1.45),        # 0  air_density kg/m3
+    (0.60, 1.25),        # 1  air_density_ratio
+    (-80.0, 80.0),       # 2  wind_toward_cf mph (signed)
+    (-80.0, 80.0),       # 3  wind_crossfield mph (signed)
+    (0.0, 80.0),         # 4  wind_speed mph
+    (0.0, 120.0),        # 5  wind_gusts mph
+    (0.0, 15.0),         # 6  vpd kPa
+    (0.0, 100.5),        # 7  humidity %
+    (0.0, 100.0),        # 8  wet_bulb_f
+    (0.0, 130.0),        # 9  temperature_f
+    (0.0, 100.5),        # 10 cloud_cover %
+    (0.0, 100000.0),     # 11 visibility m
+    (0.0, 150.0),        # 12 precip mm
+    (750.0, 1080.0),     # 13 surface_pressure hPa
+    (0.0, 6000.0),       # 14 boundary_layer_height m
+    (0.0, 1500.0),       # 15 shortwave_radiation W/m2
+    (0.0, 1.0),          # 16 soil_moisture m3/m3
+    (0.0, 1000.0),       # 17 us_aqi
+    (0.0, 2000.0),       # 18 pm2_5 ug/m3
+    (0.0, 1000.0),       # 19 ozone ug/m3
+    (-40.0, 30.0),       # 20 lapse_rate_1000_850 K/km (signed)
+    (0.0, 200.0),        # 21 wind_shear_sfc_850
+    (0.0, 1.0),          # 22 wx_thunder
+    (0.0, 3.0),          # 23 wx_precip_intensity (ordinal codebook)
+    (0.0, 1.0),          # 24 wx_frozen_precip
+    (0.0, 1.0),          # 25 wx_obstruction
+    (0.0, 150.0),        # 26 wx_peak_gust mph
+)
+assert len(PHYSICAL_RANGES) == N_OBS_DIMS
 
 S3_BUCKET = "mlb-265753586044-us-east-1-an"
 CHANNEL_COLS = [f"wx_c{i:02d}" for i in range(ASOF_CHANNELS)]
@@ -68,6 +139,55 @@ def fail(msg):
 
 def ok(msg):
     print(f"ok    {msg}")
+
+
+def check_physical_ranges(T: np.ndarray) -> list[str]:
+    """Are the populated entries actually weather? Returns failure strings.
+
+    The rest of this audit is structural, and the spot recomputation re-runs the very
+    function that wrote the artifact, so it is bit-identical by construction and would
+    confirm a tensor full of Kelvin. This is the only check that looks at the values
+    themselves. It takes a tensor rather than a season so it can be unit-tested against
+    deliberately corrupted input; see tests/test_verify_asof_physical_ranges.py.
+
+    Masked entries are skipped: they are exactly 0 by design, and inspecting them would
+    flag every not-yet-elapsed hour in the window.
+    """
+    fails: list[str] = []
+    channels = (("fcst", OFF_FCST, OFF_FCST_MASK, OFF_OBS, N_DIMS),
+                ("obs", OFF_OBS, OFF_OBS_MASK, OFF_LEAD, N_OBS_DIMS))
+    for label, v0, m0, m1, n_dims in channels:
+        vals = T[..., v0:m0]
+        mask = T[..., m0:m1]
+        for d in range(n_dims):
+            live = mask[..., d] == 1.0
+            if not live.any():
+                continue
+            x = vals[..., d][live]
+            lo, hi = PHYSICAL_RANGES[d]
+            bad = (x < lo) | (x > hi)
+            if bad.any():
+                worst = x[bad][np.argmax(np.abs(x[bad] - np.clip(x[bad], lo, hi)))]
+                fails.append(
+                    f"{label} {DIM_NAMES[d]} (dim {d}): {int(bad.sum())} of {x.size} "
+                    f"populated entries outside [{lo:g}, {hi:g}] — worst {worst:.4g}, "
+                    f"observed range [{x.min():.4g}, {x.max():.4g}]")
+
+        # The mask must not claim a dim the source never populated. Measured defect
+        # (season=2015, before the fix): a METAR omitting its altimeter group stored
+        # surface_pressure = 0 hPa with mask = 1, which the loader then z-scores to
+        # roughly -50 sigma. A range check cannot see this on its own -- 0 is outside no
+        # bound that would also admit real pressure -- so it is checked against the mask.
+        for d in IMPOSSIBLE_ZERO_OBS_DIMS:
+            if d >= n_dims:
+                continue
+            n = int(((mask[..., d] == 1.0) & (vals[..., d] == 0.0)).sum())
+            if n:
+                fails.append(
+                    f"{label} {DIM_NAMES[d]} (dim {d}): {n} entries are exactly 0 with "
+                    f"mask=1, but zero is physically impossible there — the mask is "
+                    f"claiming a field the source did not populate")
+    return fails
 
 
 def audit_season(season: int, n_spot: int = 3) -> None:
@@ -96,6 +216,13 @@ def audit_season(season: int, n_spot: int = 3) -> None:
             fail(f"{season}: {name} values outside {{0,1}}: {vals[:5]}")
     if lead.min() < 0 or lead.max() > 1.0 + 1e-6:
         fail(f"{season}: lead_norm outside [0,1]")
+
+    range_fails = check_physical_ranges(T)
+    for f in range_fails:
+        fail(f"{season}: {f}")
+    if not range_fails:
+        ok(f"{season}: all populated values physically plausible, no masked-in "
+           f"impossible zeros")
 
     # THE leakage invariant: obs only at elapsed hours
     future = obs_mask.any(axis=3) & (h_idx >= d_idx)[None, :, :]
