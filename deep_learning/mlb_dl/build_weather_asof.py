@@ -150,13 +150,54 @@ def load_obs_for_venues(venue_ids: list[int], year: int, vmap: dict) -> dict[int
     return out
 
 
-def load_hrrr_for_dates(dates: list[pd.Timestamp]) -> pd.DataFrame:
+# A complete season still misses a few HRRR dates for reasons no rerun can fix: genuine
+# era gaps where the GRIB was never published (1 date in 2015, 2 in 2017) and dates whose
+# only venue is outside the CONUS domain (the Tokyo and Seoul openers — 2 dates each in
+# 2019, 2024, 2025). Worst observed legitimate absence is 4 of ~200 dates, or 2%. The
+# floor sits well above that and far below the 38.5% shortfall that actually shipped, so
+# it cannot block a real season and cannot miss a stale build.
+MIN_FCST_DATE_COVERAGE = 0.95
+
+
+def assert_fcst_dates_complete(season: int, dates: list, missing: list) -> None:
+    """Refuse to build a season whose HRRR archive is still filling in.
+
+    weather_asof/season=2015.parquet was written while 77 of 200 date files did not yet
+    exist. The build logged a warning per absence and wrote anyway, producing an artifact
+    that was correct in shape and covered every population game while carrying only 59%
+    of its forecast signal. That is the worst kind of defect for an A/B: it trains
+    without complaining and quietly understates the treatment arm.
+    """
+    if not dates:
+        return
+    cov = 1.0 - (len(missing) / len(dates))
+    if cov < MIN_FCST_DATE_COVERAGE:
+        tags = [f"{pd.Timestamp(d):%Y-%m-%d}" for d in missing[:8]]
+        raise SystemExit(
+            f"REFUSING to build {season}: only {cov:.1%} of the season's "
+            f"{len(dates)} HRRR dates are archived ({len(missing)} missing, floor "
+            f"{MIN_FCST_DATE_COVERAGE:.0%}). The extraction is probably still running. "
+            f"Missing e.g. {tags}. Rerun the backfill for those ranges, confirm with "
+            f"verify_weather_archives.py coverage --year {season}, then rebuild."
+        )
+
+
+def load_hrrr_for_dates(dates: list[pd.Timestamp],
+                        missing_out: list | None = None) -> pd.DataFrame:
+    """`missing_out`, when given, collects the dates that had no archive object.
+
+    Absences used to be logged and nothing more, which is exactly how a 61%-complete
+    archive produced a full-looking artifact. Callers that want the old behaviour can
+    still ignore it; the two verifier scripts call this positionally.
+    """
     frames = []
     for d in dates:
         try:
             frames.append(_read_parquet(f"data/weather/source=hrrr_asissued/date={d:%Y-%m-%d}.parquet"))
         except Exception:
             logger.warning(f"hrrr date file missing: {d:%Y-%m-%d}")
+            if missing_out is not None:
+                missing_out.append(d)
     if not frames:
         return pd.DataFrame()
     return hrrr_to_era5_with_soil_placeholder(pd.concat(frames, ignore_index=True))
@@ -232,7 +273,11 @@ def build_season(season: int, workers: int = 8) -> None:
     venue_ids = sorted(pop["venue_id"].unique())
     dates = sorted(pop["game_date"].dt.normalize().unique())
     obs = load_obs_for_venues(venue_ids, season, vmap)
-    fcst = load_hrrr_for_dates([pd.Timestamp(d) for d in dates])
+    fcst_missing: list = []
+    fcst = load_hrrr_for_dates([pd.Timestamp(d) for d in dates], missing_out=fcst_missing)
+    # Before any expensive assembly: an incomplete archive yields a normal-looking
+    # artifact, so this has to be a refusal rather than a warning.
+    assert_fcst_dates_complete(season, dates, fcst_missing)
     soil_years = {season, season - 1}
     soil = load_soil_for_venues(venue_ids, soil_years)
     if not fcst.empty:
