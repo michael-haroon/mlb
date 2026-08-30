@@ -78,6 +78,21 @@ HERBIE_SAVE_DIR = Path(f"/tmp/herbie_nwp_{os.getpid()}")
 FETCH_ATTEMPTS = 3
 FETCH_RETRY_SLEEP_S = 2.0
 
+# Retries alone do not close the hazard named in the comment above. The shared-/tmp
+# purge race described at HERBIE_SAVE_DIR exhausted all 3 attempts on many tasks and
+# wrote 25 dates at fill 0.17-0.81 between 07:43-08:23Z on 2026-08-30; the existence-
+# keyed resume then skipped them permanently, and they were only recovered by a
+# separate verifier sweep plus a --force rerun. PID-scoping fixed that particular
+# cause, but ANY sustained transient-failure source reproduces the same permanent
+# damage, so the write itself has to refuse. A date whose shortfall is due to
+# TransientFetchError is not written
+# at all, leaving the key absent for the next run to retry. Set to the verifier's
+# DATE_FILL_REPORT_FLOOR so the writer refuses exactly what the completeness gate
+# would reject — any gap between the two floors is a date that gets persisted and then
+# flagged forever. Leaving a date absent is only recoverable because
+# verify_weather_archives.py check_coverage() fails on a population date with no object.
+MIN_WRITE_FILL = 0.98
+
 
 class TransientFetchError(Exception):
     """Download or GRIB decode failed — retryable, unlike an archive gap."""
@@ -389,7 +404,7 @@ def run_backfill(start: str, end: str, workers: int = 6, force: bool = False,
     logger.info(f"Backfill {start}..{end}: {len(games)} games over {len(dates)} dates, "
                 f"{workers} workers")
 
-    n_done = n_skip = n_empty = 0
+    n_done = n_skip = n_empty = n_incomplete = 0
     for date in dates:
         key = _date_key(pd.Timestamp(date))
         if not force and not local and _s3_key_exists(key):
@@ -424,6 +439,22 @@ def run_backfill(start: str, end: str, workers: int = 6, force: bool = False,
             logger.warning(f"{pd.Timestamp(date):%Y-%m-%d}: no data for any of {len(tasks)} tasks")
             n_empty += 1
             continue
+
+        # Refuse to persist a shortfall we caused. n_fail counts tasks whose data
+        # EXISTS upstream but which we failed to retrieve after every retry; n_gap
+        # counts tasks the archive never published. Only the former is recoverable, so
+        # only the former justifies withholding the write — withholding an unfillable
+        # date would leave check_coverage alarming with no way to clear it.
+        fill = len(frames) / max(len(tasks), 1)
+        if n_fail and fill < MIN_WRITE_FILL:
+            logger.error(
+                f"{pd.Timestamp(date):%Y-%m-%d}: NOT WRITING — fill {fill:.2f} "
+                f"({len(frames)}/{len(tasks)} tasks) with {n_fail} transient failures "
+                f"and {n_gap} archive gaps. Leaving the key absent so a rerun retries "
+                f"it; persisting it would make the loss permanent."
+            )
+            n_incomplete += 1
+            continue
         out = pd.concat(frames, ignore_index=True).sort_values(
             ["venue_id", "issue_time_utc", "valid_time_utc"])
         if local:
@@ -446,7 +477,13 @@ def run_backfill(start: str, end: str, workers: int = 6, force: bool = False,
         # is live, so purging the save dir is safe.
         shutil.rmtree(HERBIE_SAVE_DIR, ignore_errors=True)
         HERBIE_SAVE_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Backfill complete: {n_done} written, {n_skip} skipped (exist), {n_empty} empty")
+    logger.info(f"Backfill complete: {n_done} written, {n_skip} skipped (exist), "
+                f"{n_empty} empty, {n_incomplete} withheld (transient loss)")
+    if n_incomplete:
+        # Loud, because these dates look identical to "never attempted" and are
+        # only recoverable by rerunning this command.
+        logger.error(f"{n_incomplete} date(s) were NOT written due to transient "
+                     f"fetch loss — rerun this range to fill them")
 
 
 # ── Live path ─────────────────────────────────────────────────────────────────

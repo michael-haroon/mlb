@@ -37,6 +37,8 @@ import random
 import sys
 from pathlib import Path
 
+from concurrent.futures import ThreadPoolExecutor
+
 import boto3
 import numpy as np
 import pandas as pd
@@ -235,7 +237,96 @@ def _upstream_exists(issue: pd.Timestamp, fxx: int) -> bool:
         return False
 
 
-def check_completeness(sample_n: int = 60, year: int | None = None) -> None:
+def check_coverage(year: int | None = None, workers: int = 16,
+                   repair_out: str | None = None) -> None:
+    """Every population date must HAVE an archive object, or provably not need one.
+
+    check_completeness only inspects dates that exist, so a date the extraction never
+    wrote is invisible to it — including a whole season lost to a dead shard. This is
+    also what makes it safe for the fetcher to refuse to persist a partial date
+    (fetch_nwp_asissued.MIN_WRITE_FILL): withholding a write is only recoverable if
+    something notices the absence.
+
+    A missing date is NOT automatically a failure. run_backfill writes nothing when
+    every planned task is an upstream archive gap (`n_empty`), which genuinely happens
+    in the 2015-2016 era. So each missing date is classified against the upstream
+    bucket exactly as check_completeness classifies an under-filled one: recoverable
+    (tasks exist upstream) fails, unobtainable passes. Without this, a hard coverage
+    gate would block those seasons' builds forever.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from fetch_nwp_asissued import load_population_games, plan_game_tasks
+
+    games = load_population_games()
+    games["d"] = games["game_date"].dt.normalize()
+    hours_by_date = {d: g["game_hour_utc"].unique() for d, g in games.groupby("d")}
+    expected = {f"{d:%Y-%m-%d}" for d in games["d"].unique()}
+    have = {k.split("date=")[1].replace(".parquet", "")
+            for k, _ in _list("data/weather/source=hrrr_asissued/")}
+    if year is not None:
+        expected = {t for t in expected if t.startswith(f"{year}-")}
+        have = {t for t in have if t.startswith(f"{year}-")}
+
+    missing = sorted(expected - have)
+    extra = sorted(have - expected)
+    scope = f"{year}" if year is not None else "all seasons"
+
+    if not missing:
+        ok(f"coverage {scope}: all {len(expected)} population dates present")
+    else:
+        def classify(tag: str):
+            planned: set = set()
+            for gh in hours_by_date.get(pd.Timestamp(tag), []):
+                planned |= plan_game_tasks(pd.Timestamp(gh))
+            probe = sorted(planned)[:UPSTREAM_PROBES_PER_DATE]
+            present = [(i, x) for i, x in probe
+                       if _upstream_exists(pd.Timestamp(i), int(x))]
+            return tag, len(probe), present
+
+        recoverable: list[str] = []
+        unobtainable: list[str] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for tag, n_probe, present in pool.map(classify, missing):
+                (recoverable if present else unobtainable).append(tag)
+
+        if recoverable:
+            by_season: dict[str, int] = {}
+            for t in recoverable:
+                by_season[t[:4]] = by_season.get(t[:4], 0) + 1
+            fail(f"coverage {scope}: {len(recoverable)}/{len(expected)} population dates "
+                 f"have NO archive object though their tasks EXIST upstream — per season "
+                 f"{by_season}; first {recoverable[:5]}; rerun those ranges")
+        if unobtainable:
+            ok(f"coverage {scope}: {len(unobtainable)} population date(s) absent because "
+               f"no planned task exists upstream (genuine era gap), e.g. "
+               f"{unobtainable[:5]}")
+        if not recoverable:
+            ok(f"coverage {scope}: {len(have)} present + {len(unobtainable)} provably "
+               f"unobtainable = all {len(expected)} population dates accounted for")
+        if repair_out:
+            Path(repair_out).write_text(
+                "\n".join(recoverable) + ("\n" if recoverable else ""))
+            ok(f"coverage {scope}: wrote {len(recoverable)} missing date(s) to {repair_out}")
+
+    if extra:
+        # Not fatal: a date can be archived and later drop out of the population if
+        # game_meta is rebuilt. Worth surfacing because it also means the population
+        # shrank, which would silently shrink training data.
+        ok(f"coverage {scope}: {len(extra)} archived dates not in the population "
+           f"(stale or population shrank), e.g. {extra[:5]}")
+
+
+def check_completeness(sample_n: int = 60, year: int | None = None,
+                       workers: int = 16, repair_out: str | None = None) -> None:
+    """Compare each archived date's task set against the planned task set.
+
+    `sample_n <= 0` means EVERY date, which is the only setting that can serve as a
+    release gate: a sample can estimate the loss rate but cannot enumerate the dates
+    to repair, and a lost date is invisible to a normal rerun (run_backfill skips any
+    date whose S3 key exists, and a partial object looks identical to a complete one
+    through head_object). Reads are I/O-bound S3 GETs, so they are threaded --
+    serially, a full 12-season sweep takes over an hour.
+    """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from fetch_nwp_asissued import load_population_games, plan_game_tasks
 
@@ -253,27 +344,45 @@ def check_completeness(sample_n: int = 60, year: int | None = None) -> None:
         if not by_date:
             fail(f"completeness: no hrrr date files for {year}")
             return
-    random.seed(3)
-    sample = random.sample(sorted(by_date), min(sample_n, len(by_date)))
-    fills: dict[int, list[float]] = {}
-    low: list[tuple[str, float, set]] = []
-    for tag in sample:
+    if sample_n <= 0:
+        sample = sorted(by_date)
+        ok(f"completeness: FULL sweep over all {len(sample)} archived dates")
+    else:
+        random.seed(3)
+        sample = random.sample(sorted(by_date), min(sample_n, len(by_date)))
+
+    def one(tag: str):
+        """Returns (year, fill, missing_tasks) or None if the date has no planned tasks."""
         d = pd.Timestamp(tag)
         hrs = hours_by_date.get(d)
         if hrs is None or len(hrs) == 0:
-            continue
+            return None
         planned = set()
         for gh in hrs:
             planned |= plan_game_tasks(pd.Timestamp(gh))
         if not planned:
-            continue
-        df = _read(by_date[tag])
+            return None
+        try:
+            df = _read(by_date[tag])
+        except Exception as exc:            # unreadable object is itself a failure
+            return (d.year, -1.0, set(), f"unreadable: {exc}")
         got = set(zip(pd.to_datetime(df["issue_time_utc"], utc=True),
                       df["lead_hours"].astype(int)))
-        f = len(got & planned) / len(planned)
-        fills.setdefault(d.year, []).append(f)
-        if f < DATE_FILL_REPORT_FLOOR:
-            low.append((tag, f, planned - got))
+        return (d.year, len(got & planned) / len(planned), planned - got, None)
+
+    fills: dict[int, list[float]] = {}
+    low: list[tuple[str, float, set]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for tag, res in zip(sample, pool.map(one, sample)):
+            if res is None:
+                continue
+            yr, f, missing, err = res
+            if err is not None:
+                fail(f"completeness {tag}: {err}")
+                continue
+            fills.setdefault(yr, []).append(f)
+            if f < DATE_FILL_REPORT_FLOOR:
+                low.append((tag, f, missing))
 
     if not fills:
         fail("completeness: no sampled date had planned tasks — population mismatch")
@@ -283,17 +392,31 @@ def check_completeness(sample_n: int = 60, year: int | None = None) -> None:
         ok(f"completeness {yr}: task fill median {np.median(v):.3f} min {v.min():.3f} "
            f"over {len(v)} dates")
 
-    # Classify every suspect date against the upstream bucket.
-    for tag, f, missing in sorted(low):
+    # Classify every suspect date against the upstream bucket. Threaded for the same
+    # reason as the reads: UPSTREAM_PROBES_PER_DATE head_objects per suspect date.
+    def classify(item):
+        tag, f, missing = item
         probe = sorted(missing)[:UPSTREAM_PROBES_PER_DATE]
         present = [(i, x) for i, x in probe if _upstream_exists(pd.Timestamp(i), int(x))]
-        if present:
-            fail(f"completeness {tag}: fill {f:.2f} and {len(present)}/{len(probe)} probed "
-                 f"missing tasks EXIST upstream (e.g. {present[0][0]} f{present[0][1]:02d}) "
-                 f"— our extraction lost them; rerun this date with --force")
-        else:
-            ok(f"completeness {tag}: fill {f:.2f} but 0/{len(probe)} probed missing tasks "
-               f"exist upstream — genuine archive gap, fallback planning covers it")
+        return tag, f, probe, present
+
+    repairable: list[str] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for tag, f, probe, present in pool.map(classify, sorted(low)):
+            if present:
+                repairable.append(tag)
+                fail(f"completeness {tag}: fill {f:.2f} and {len(present)}/{len(probe)} probed "
+                     f"missing tasks EXIST upstream (e.g. {present[0][0]} f{present[0][1]:02d}) "
+                     f"— our extraction lost them; rerun this date with --force")
+            else:
+                ok(f"completeness {tag}: fill {f:.2f} but 0/{len(probe)} probed missing tasks "
+                   f"exist upstream — genuine archive gap, fallback planning covers it")
+
+    # Machine-readable handoff to repair_hrrr_dates.sh. Written even when empty so a
+    # consumer can tell "gate ran, nothing to repair" from "gate never ran".
+    if repair_out:
+        Path(repair_out).write_text("\n".join(sorted(repairable)) + ("\n" if repairable else ""))
+        ok(f"completeness: wrote {len(repairable)} repairable date(s) to {repair_out}")
 
 
 # ── Cross-source realism ──────────────────────────────────────────────────────
@@ -402,19 +525,35 @@ def check_persistence() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["asos", "hrrr", "completeness", "cross",
+    ap.add_argument("what", choices=["asos", "hrrr", "coverage", "completeness", "cross",
                                      "persistence", "all"])
     ap.add_argument("--sample", type=int, default=30)
     ap.add_argument("--dates", type=int, default=8)
     ap.add_argument("--year", type=int, default=None,
                     help="restrict the completeness gate to one season")
+    ap.add_argument("--workers", type=int, default=16,
+                    help="thread count for the completeness sweep's S3 reads/probes")
+    ap.add_argument("--repair-out", default=None,
+                    help="write the under-filled dates needing a --force refetch, one "
+                         "per line, for repair_hrrr_dates.sh to consume")
+    ap.add_argument("--coverage-repair-out", default=None,
+                    help="write the entirely-absent population dates, one per line "
+                         "(these need a plain rerun, not --force — there is no key yet)")
     args = ap.parse_args()
     if args.what in ("asos", "all"):
         check_asos(args.sample)
     if args.what in ("hrrr", "all"):
         check_hrrr(args.sample)
+    if args.what in ("coverage", "completeness", "all"):
+        check_coverage(year=args.year, workers=args.workers,
+                       repair_out=args.coverage_repair_out)
     if args.what in ("completeness", "all"):
-        check_completeness(max(args.sample, 60), year=args.year)
+        # `--sample 0` must survive as 0 (= full sweep); only a positive sample gets
+        # floored to 60, which is the smallest sample the per-year medians are worth
+        # reading. A max() over 0 here would silently downgrade the release gate.
+        n = args.sample if args.sample <= 0 else max(args.sample, 60)
+        check_completeness(n, year=args.year, workers=args.workers,
+                           repair_out=args.repair_out)
     if args.what in ("cross", "all"):
         check_cross(args.dates)
     if args.what in ("persistence", "all"):
