@@ -149,6 +149,25 @@ def test_density_computed_from_pascals_collapses_and_is_caught():
     assert any("air_density" in f for f in fails), fails
 
 
+def test_trace_negative_shortwave_flux_is_tolerated():
+    """Measured on season=2015: 9 of 118,869 populated entries at exactly -0.1 W/m2.
+    Downward flux cannot be negative, but HRRR's DSWRF is a time-averaged packed GRIB
+    field and decoding leaves trace negatives. A floor that failed on this would fail
+    every season, so the floor admits it -- and the next test proves that widening did
+    not cost the check its teeth."""
+    T = clean_tensor()
+    T[0, 0, 0, OFF_FCST + 15] = -0.1
+    assert _fails_for(T) == []
+
+
+def test_a_sign_inverted_shortwave_channel_is_still_caught():
+    """The reason the widened floor is safe: a real fault is orders of magnitude away
+    from decoding noise, so -1.0 still separates them."""
+    T = clean_tensor()
+    T[..., OFF_FCST + 15] = -250.0
+    assert any("shortwave" in f for f in _fails_for(T))
+
+
 def test_humidity_above_100_percent_is_caught():
     """Relative humidity is definitionally bounded above; anything past it means the
     dim is not RH. The lower end is deliberately left at 0 -- see the module docstring

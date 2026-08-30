@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from mlb_dl.weather_asof import (
+    MI_TO_M,
     ASOF_CHANNELS,
     N_DIMS,
     N_OBS_DIMS,
@@ -273,6 +274,69 @@ def test_metar_sky_cover_max_of_layers():
     assert out["cloud_cover"].iloc[0] == 75.0
     assert out["precipitation"].iloc[0] == pytest.approx(1.27)  # 0.05 in -> mm
     assert out["visibility"].iloc[0] == pytest.approx(16093.4)
+
+
+def test_metar_visibility_is_capped_at_the_reporting_ceiling():
+    """Raw ASOS vsby carries values that are not measurements.
+
+    Measured on the raw 2015 asos_obs feed (2026-08-30, 1,225,768 reports): 1.45% of
+    reports exceed 10 SM, the 99.99th percentile is 70 SM, and the MAXIMUM is 34,006 SM
+    -- 54,700 km, further than the circumference of the Earth. The offending stations are
+    the non-US ones in the venue map: CYQG (Windsor, serving Comerica Park), MMMX/MMMY/
+    MMTO (Mexico City, Monterrey, Toluca -- all real MLB series venues) and BJC near
+    Coors. 70 SM reached the built 2015 tensor as 112,700 m.
+
+    A "10SM" METAR means "10 statute miles OR MORE", so the sensor's information
+    saturates at the ceiling and everything above it means the same thing: clear. Nothing
+    meteorologically relevant to a baseball -- fog, haze, precipitation -- lives above
+    10 SM, so clamping keeps every bit of real signal while removing an outlier that
+    z-scores to tens of sigma against a ~15 km mean.
+
+    Clamping rather than masking is the weaker, safer claim: a corrupt-high parse can
+    only have come from a large raw token, so "at least 10 SM" is still true of it,
+    whereas masking would discard a genuine clear-air observation.
+    """
+    df = pd.DataFrame([dict(
+        station="CYQG", valid_utc=GH, available_time_utc=GH,
+        tmpf=70.0, dwpf=55.0, relh=60.0, drct=0.0, sknt=0.0, gust=np.nan,
+        alti=29.92, mslp=np.nan, vsby=v,
+        skyc1="CLR", skyl1=np.nan, skyc2=None, skyl2=None, skyc3=None, skyl3=None,
+        p01i=0.0) for v in (10.0, 15.0, 70.0, 34006.0)])
+    out = metar_to_era5(df, 190.0)
+    ceiling = 10.0 * MI_TO_M
+    assert out["visibility"].max() == pytest.approx(ceiling)
+    # The in-range report must be untouched, not merely under the cap.
+    assert out["visibility"].iloc[0] == pytest.approx(ceiling)
+    assert (out["visibility"] <= ceiling + 1e-6).all()
+
+
+def test_metar_visibility_below_the_ceiling_is_preserved_exactly():
+    """The clamp must not flatten the range that carries the signal: fog, mist and
+    light-rain visibilities are the whole reason the dim exists."""
+    df = pd.DataFrame([dict(
+        station="BOS", valid_utc=GH, available_time_utc=GH,
+        tmpf=70.0, dwpf=68.0, relh=90.0, drct=0.0, sknt=0.0, gust=np.nan,
+        alti=29.92, mslp=np.nan, vsby=v,
+        skyc1="OVC", skyl1=200.0, skyc2=None, skyl2=None, skyc3=None, skyl3=None,
+        p01i=0.0) for v in (0.0, 0.25, 1.5, 7.0)])
+    out = metar_to_era5(df, 6.0)
+    np.testing.assert_allclose(out["visibility"].to_numpy(),
+                               np.array([0.0, 0.25, 1.5, 7.0]) * MI_TO_M, rtol=1e-6)
+
+
+def test_metar_missing_visibility_stays_missing_not_clamped():
+    """A clamp implemented with np.minimum would turn NaN into NaN (fine) but one
+    implemented with a comparison could turn it into the ceiling, inventing a clear-air
+    reading for a report that had none."""
+    df = pd.DataFrame([dict(
+        station="BOS", valid_utc=GH, available_time_utc=GH,
+        tmpf=70.0, dwpf=55.0, relh=60.0, drct=0.0, sknt=0.0, gust=np.nan,
+        alti=29.92, mslp=np.nan, vsby=np.nan,
+        skyc1="CLR", skyl1=np.nan, skyc2=None, skyl2=None, skyc3=None, skyl3=None,
+        p01i=0.0)])
+    out = metar_to_era5(df, 6.0)
+    v = out["visibility"].iloc[0]
+    assert not (v == pytest.approx(10.0 * MI_TO_M)), "invented a clear-air reading"
 
 
 def test_metar_missing_gust_means_calm_not_missing():

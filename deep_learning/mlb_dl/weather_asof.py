@@ -112,6 +112,10 @@ MAX_LEAD_HOURS = 18.0
 KT_TO_MPH = 1.15078
 MS_TO_MPH = 2.23694
 MI_TO_M = 1609.34
+
+# US METAR visibility reporting ceiling: "10SM" means 10 statute miles or more, so the
+# observation saturates here and larger raw values are either redundant or corrupt.
+METAR_VIS_CEILING_MI = 10.0
 IN_TO_MM = 25.4
 INHG_TO_HPA = 33.8639
 
@@ -243,7 +247,18 @@ def metar_to_era5(df: pd.DataFrame, station_elev_m: float) -> pd.DataFrame:
         [df[c].map(SKY_COVER_PCT) for c in ("skyc1", "skyc2", "skyc3", "skyc4") if c in df],
         axis=1)
     out["cloud_cover"] = covers.max(axis=1)
-    out["visibility"] = df["vsby"].astype(float) * MI_TO_M
+    # A "10SM" METAR means "10 statute miles OR MORE", so the reading saturates at the
+    # ceiling and every larger value carries the same information: clear. The raw feed's
+    # larger values are not measurements at all — across the 1,225,768 reports in the
+    # 2015 asos_obs archive the 99.99th percentile is 70 SM and the maximum is 34,006 SM
+    # (54,700 km, past the circumference of the Earth), all from the non-US stations in
+    # the venue map (CYQG for Comerica, MMMX/MMMY/MMTO for the Mexico series). 70 SM
+    # reached the built 2015 tensor as 112,700 m, which z-scores to tens of sigma against
+    # a ~15 km mean. Clamping is the weaker claim than masking: a corrupt-high parse can
+    # only have started from a large token, so "at least 10 SM" remains true of it, while
+    # masking would discard a real clear-air observation. Nothing relevant to a batted
+    # ball — fog, haze, precipitation — lives above the ceiling, so no signal is lost.
+    out["visibility"] = np.minimum(df["vsby"].astype(float), METAR_VIS_CEILING_MI) * MI_TO_M
     out["precipitation"] = df["p01i"].astype(float) * IN_TO_MM
     # Raw fields the D2b extras derive from — carried through, not converted.
     out["wxcodes"] = df["wxcodes"] if "wxcodes" in df else None

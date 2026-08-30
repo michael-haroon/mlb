@@ -75,7 +75,14 @@ DIM_NAMES = list(WEATHER_TEMPORAL_COLUMNS) + list(OBS_EXTRA_NAMES)
 #   13 surface pressure: STATION pressure, so elevation dominates — measured 2015
 #       minimum is 826.8 hPa at Coors. Global sea-level record high is 1084 hPa.
 #   14-15 PBL height, shortwave: 6000 m clears any convective boundary layer; the solar
-#       constant is 1361 W/m², so 1500 covers surface max plus cloud enhancement.
+#       constant is 1361 W/m², so 1500 covers surface max plus cloud enhancement. The
+#       shortwave FLOOR is -1.0, not 0: downward flux cannot physically be negative, but
+#       HRRR's DSWRF is a time-averaged packed GRIB field and decoding leaves trace
+#       negatives. Measured on season=2015: 9 of 118,869 populated entries, all at
+#       exactly -0.1 W/m², against an observed maximum of 1106. Widened rather than
+#       clamped upstream because -0.1 W/m² is indistinguishable from 0 after
+#       standardization, so clamping would edit data for no model benefit — and a real
+#       sign inversion or unit fault lands orders of magnitude away, still caught.
 #   16 soil moisture: volumetric fraction, definitionally [0,1].
 #   17-19 AQ: EPA AQI tops out at 500 on the published scale but wildfire episodes are
 #       reported beyond it; PM2.5 and O₃ get loose µg/m³ ceilings. Permanently masked
@@ -102,7 +109,7 @@ PHYSICAL_RANGES = (
     (0.0, 150.0),        # 12 precip mm
     (750.0, 1080.0),     # 13 surface_pressure hPa
     (0.0, 6000.0),       # 14 boundary_layer_height m
-    (0.0, 1500.0),       # 15 shortwave_radiation W/m2
+    (-1.0, 1500.0),      # 15 shortwave_radiation W/m2 (see note on the floor)
     (0.0, 1.0),          # 16 soil_moisture m3/m3
     (0.0, 1000.0),       # 17 us_aqi
     (0.0, 2000.0),       # 18 pm2_5 ug/m3
