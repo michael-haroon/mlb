@@ -117,6 +117,20 @@ MI_TO_M = 1609.34
 # observation saturates here and larger raw values are either redundant or corrupt.
 METAR_VIS_CEILING_MI = 10.0
 
+# Both channels censor visibility at the SAME point, and it has to be this one. HRRR VIS
+# runs to 60 km while a METAR stops at 10 SM, so leaving each at its native ceiling made
+# the same clear sky a different number depending on which channel reported it -- and the
+# as-of tensor exists so the model can compare a forecast against what was observed, a
+# comparison that is only meaningful when "clear" agrees. Measured on season=2015:
+# uncensored, 48% of forecast entries sat above 10 SM and a 1-mile fog event was 1.23 sigma
+# below the channel median, against 4.38 sigma in the obs channel; censored here, the
+# forecast channel gives 4.36 sigma. Standardization cannot substitute for this, being
+# linear and leaving the ratio unchanged. No information is given up: above 10 SM there is
+# no baseball mechanism (37 miles does not play differently from 10) and no observational
+# counterpart to compare against, and visibility as a dry-clear-air proxy is redundant with
+# the humidity, VPD, cloud-cover and density dims that measure it directly.
+VIS_CEILING_M = METAR_VIS_CEILING_MI * MI_TO_M
+
 # Physical limits of each METAR group the as-of tensor reads, in raw feed units. A value
 # outside these is not a measurement, so the whole report is discarded (see
 # _drop_impossible_reports for why the report and not just the field).
@@ -346,7 +360,7 @@ def hrrr_to_era5(df: pd.DataFrame) -> pd.DataFrame:
     out["wind_gusts_10m"] = df["gust_ms"].astype(float) * MS_TO_MPH
 
     out["cloud_cover"] = df["tcc_pct"].astype(float)
-    out["visibility"] = df["vis_m"].astype(float)
+    out["visibility"] = np.minimum(df["vis_m"].astype(float), VIS_CEILING_M)
     out["precipitation"] = df["apcp_mm"].astype(float)
     out["boundary_layer_height"] = df["hpbl_m"].astype(float)
     out["shortwave_radiation"] = df["dswrf_wm2"].astype(float)

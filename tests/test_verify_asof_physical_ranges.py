@@ -297,3 +297,32 @@ def test_failure_messages_name_the_dim_and_show_a_value():
     msg = _fails_for(T)[0]
     assert "fcst" in msg and "temperature_f" in msg
     assert "298" in msg
+
+
+# --- visibility censoring is a designed invariant, not a plausibility bound ---
+def test_uncensored_forecast_visibility_is_caught():
+    """Both channels are censored at the METAR 10 SM ceiling so that "clear" is the same
+    number in each. HRRR VIS natively runs to 60 km, so a regression that dropped the
+    clamp would silently restore a channel where a real fog event is 1.23 sigma instead of
+    4.36 -- invisible to every structural check, which is why the bound is tight here.
+    """
+    T = clean_tensor()
+    T[0, 0, 0, OFF_FCST + 11] = 60000.0
+    assert any("visibility" in f for f in _fails_for(T))
+
+
+def test_visibility_exactly_at_the_ceiling_passes():
+    """The censored value IS the common case -- 86% of obs entries sit exactly here -- so
+    a bound that excluded it would fail every clear night."""
+    from mlb_dl.weather_asof import VIS_CEILING_M
+    T = clean_tensor()
+    T[..., OFF_FCST + 11] = VIS_CEILING_M
+    T[..., OFF_OBS + 11] = VIS_CEILING_M
+    assert _fails_for(T) == []
+
+
+def test_dense_fog_still_passes():
+    T = clean_tensor()
+    T[..., OFF_FCST + 11] = 0.0
+    T[..., OFF_OBS + 11] = 100.0
+    assert _fails_for(T) == []

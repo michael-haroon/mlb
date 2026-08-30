@@ -12,6 +12,7 @@ import pytest
 
 from mlb_dl.weather_asof import (
     MI_TO_M,
+    METAR_VIS_CEILING_MI,
     ASOF_CHANNELS,
     N_DIMS,
     N_OBS_DIMS,
@@ -593,3 +594,78 @@ def test_obs_channel_never_carries_nonfinite_values():
     for miss in ({"alti": np.nan}, {"tmpf": np.nan}, {"vsby": np.nan}, {"p01i": np.nan}):
         vec, _ = _obs_row(_obs_frame_with(**miss))
         assert np.isfinite(vec).all(), miss
+
+
+# ── Cross-channel visibility commensurability ─────────────────────────────────
+# Measured on the rebuilt season=2015 artifact (118,869 populated fcst entries, 68,999
+# obs). HRRR VIS is censored at 60,000 m while a METAR censors at 10 SM = 16,093 m, so
+# before this fix the same clear sky produced very different numbers in the two channels:
+#
+#   channel   std        1 mi fog vs median   above 10 SM
+#   fcst      11,330 m   1.23 sigma           47.98%
+#   obs        3,310 m   4.38 sigma            0.00%
+#   fcst clamped 3,206 m 4.36 sigma            0.00%
+#
+# Two consequences, both of which the clamp removes. First, nearly half the forecast
+# channel's spread is consumed by a distinction with no baseball mechanism behind it --
+# there is no way 37 miles of visibility plays differently from 10 -- which pushes a real
+# fog event down to 1.23 sigma where the observation channel puts it at 4.38. Z-scoring
+# cannot recover this: it is linear, so it leaves the ratio untouched. Second, the whole
+# point of the as-of tensor is to let the model compare a forecast against what was
+# actually observed, and that comparison is only meaningful if "clear" is the same number
+# in both channels.
+#
+# Nothing informative is lost. Detail above 10 SM has no observational counterpart to be
+# compared against (the obs channel is already censored there), and visibility as a proxy
+# for dry/clear air is redundant with the dedicated humidity, VPD, cloud-cover and
+# air-density dims, all of which measure it directly.
+def test_hrrr_visibility_is_censored_at_the_same_ceiling_as_metar():
+    src = pd.DataFrame([dict(
+        venue_id=VENUE, model="hrrr",
+        issue_time_utc=GH, available_time_utc=GH, valid_time_utc=GH, lead_hours=1,
+        t2m_k=290.0, d2m_k=280.0, sp_pa=101000.0,
+        u10_ms=2.0, v10_ms=1.0, gust_ms=5.0,
+        tcc_pct=50.0, vis_m=60000.0, apcp_mm=0.0,
+        hpbl_m=800.0, dswrf_wm2=100.0,
+        t850_k=285.0, t1000_k=293.0, z850_m=1500.0, z1000_m=100.0,
+        u850_ms=5.0, v850_ms=2.0,
+    )])
+    out = hrrr_to_era5(src)
+    assert out["visibility"].iloc[0] == pytest.approx(METAR_VIS_CEILING_MI * MI_TO_M)
+
+
+def test_hrrr_visibility_below_the_ceiling_is_preserved_exactly():
+    """The fog-to-clear range is the whole reason the dim exists; the clamp must not
+    touch it."""
+    for raw in (0.0, 400.0, 1609.34, 8046.7, 16000.0):
+        src = pd.DataFrame([dict(
+            venue_id=VENUE, model="hrrr",
+            issue_time_utc=GH, available_time_utc=GH, valid_time_utc=GH, lead_hours=1,
+            t2m_k=290.0, d2m_k=280.0, sp_pa=101000.0,
+            u10_ms=2.0, v10_ms=1.0, gust_ms=5.0,
+            tcc_pct=50.0, vis_m=raw, apcp_mm=0.0,
+            hpbl_m=800.0, dswrf_wm2=100.0,
+            t850_k=285.0, t1000_k=293.0, z850_m=1500.0, z1000_m=100.0,
+            u850_ms=5.0, v850_ms=2.0,
+        )])
+        assert hrrr_to_era5(src)["visibility"].iloc[0] == pytest.approx(raw)
+
+
+def test_a_clear_sky_is_the_same_number_in_both_channels():
+    """Commensurability is the property the model actually consumes: forecast-vs-observed
+    is only a meaningful comparison if both censor at the same point. Asserted across the
+    converters rather than on a constant, so a change to either one breaks this."""
+    hrrr = pd.DataFrame([dict(
+        venue_id=VENUE, model="hrrr",
+        issue_time_utc=GH, available_time_utc=GH, valid_time_utc=GH, lead_hours=1,
+        t2m_k=290.0, d2m_k=280.0, sp_pa=101000.0,
+        u10_ms=2.0, v10_ms=1.0, gust_ms=5.0,
+        tcc_pct=50.0, vis_m=45000.0, apcp_mm=0.0,
+        hpbl_m=800.0, dswrf_wm2=100.0,
+        t850_k=285.0, t1000_k=293.0, z850_m=1500.0, z1000_m=100.0,
+        u850_ms=5.0, v850_ms=2.0,
+    )])
+    metar = _one_metar(vsby=25.0)   # "clear" reported past the 10SM ceiling
+    assert (hrrr_to_era5(hrrr)["visibility"].iloc[0]
+            == pytest.approx(
+                metar_to_era5(metar, station_elev_m=6.0)["visibility"].iloc[0]))

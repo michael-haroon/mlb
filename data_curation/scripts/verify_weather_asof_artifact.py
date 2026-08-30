@@ -47,6 +47,7 @@ from mlb_dl.weather_asof import (  # noqa: E402
     OFF_OBS_MASK,
     OFF_LEAD,
     TARGET_HOURS,
+    VIS_CEILING_M,
 )
 from mlb_dl.weather_context import WEATHER_TEMPORAL_COLUMNS  # noqa: E402
 
@@ -68,8 +69,11 @@ DIM_NAMES = list(WEATHER_TEMPORAL_COLUMNS) + list(OBS_EXTRA_NAMES)
 #   7,10 humidity, cloud: definitionally percentages, +0.5 for float slack.
 #   8,9 wet bulb, temperature: Tw ≤ T always. Coldest MLB game on record ~18 °F,
 #       hottest ~115 °F, world-record wet bulb ~95 °F.
-#   11 visibility: 0 in dense fog; HRRR saturates at 60000 m (measured), METAR encodes
-#       unlimited well below 100000.
+#   11 visibility: 0 in dense fog. This is the one bound that is not an outer tripwire —
+#       both channels are deliberately censored at the METAR 10 SM ceiling so that "clear"
+#       is the same number in the forecast and observation channels (see VIS_CEILING_M),
+#       so anything above it means the censoring regressed, not that the weather was
+#       unusual. Imported rather than restated so the gate cannot drift from the builder.
 #   12 precip: hourly accumulation; 150 mm/h is past any world hourly record for a
 #       populated area.
 #   13 surface pressure: STATION pressure, so elevation dominates — measured 2015
@@ -105,7 +109,7 @@ PHYSICAL_RANGES = (
     (0.0, 100.0),        # 8  wet_bulb_f
     (0.0, 130.0),        # 9  temperature_f
     (0.0, 100.5),        # 10 cloud_cover %
-    (0.0, 100000.0),     # 11 visibility m
+    (0.0, VIS_CEILING_M + 1.0),  # 11 visibility m — censored, see note
     (0.0, 150.0),        # 12 precip mm
     (750.0, 1080.0),     # 13 surface_pressure hPa
     (0.0, 6000.0),       # 14 boundary_layer_height m
