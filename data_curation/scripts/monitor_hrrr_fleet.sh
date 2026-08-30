@@ -66,7 +66,16 @@ pass() {
     local n=${spec%%:*} ip=${spec##*:} out
     nbox=$((nbox + 1))
     out=$($SSH "ec2-user@$ip" '
-        echo "procs=$(pgrep -fc "fetch_nwp_asissued.py backfill" 2>/dev/null || echo 0)"
+        # The bracket in "[f]etch" is load-bearing, and the rest of this command must
+        # never contain the unbracketed literal. pgrep -f scans full command lines
+        # including the remote shell evaluating THIS string, so a plain pattern matches
+        # itself: every box reported procs=1 forever, which pinned `active` at 6 and --
+        # once the archive legitimately stopped growing at the end of the run -- turned
+        # the STALL alarm into a permanent false positive that could never reach DONE.
+        # The class [f] does not match the two literal characters "[f", so the probe
+        # excludes itself. (Bracketing is also why watch_chains.sh read the same fleet
+        # correctly at the same moment.)
+        echo "procs=$(pgrep -fc "[f]etch_nwp_asissued.py backfill" 2>/dev/null || echo 0)"
         echo "withheld=$(grep -hc "NOT WRITING" ~/*.log 2>/dev/null | paste -sd+ - | bc 2>/dev/null || echo 0)"
         echo "repairfail=$(grep -hc "^REPAIR FAILED" ~/hrrr_repair.log 2>/dev/null || echo 0)"
       ' 2>/dev/null)

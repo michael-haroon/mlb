@@ -16,9 +16,12 @@ Every tensor entry goes through weather_asof.assemble_asof_tensor — the SAME
 function the live path calls — so train/live parity holds by construction.
 
 Obs frames concatenate the venue's primary and backup stations (each converted
-with its own elevation): select_asof_obs picks the freshest report regardless
-of station, so a dark primary (DMH 2021) degrades to the backup per-hour
-instead of masking the whole season.
+with its own elevation) and tag each with `station_role`, so a dark primary
+(DMH 2021) degrades to the backup per-hour instead of masking the whole season
+WITHOUT the backup preempting a healthy primary. The tag is required for that:
+ASOS files at a fixed minute past the hour, so selecting on recency alone gave
+the later-filing station every hour of every season regardless of how far it
+sits from the park — see select_asof_obs.
 
 Run on EC2 (never locally):
   python3.11 -m mlb_dl.build_weather_asof build --season 2015 [--workers 8]
@@ -49,6 +52,8 @@ from .weather_asof import (
     OFF_FCST_MASK,
     OFF_OBS,
     OFF_OBS_MASK,
+    STATION_ROLE_BACKUP,
+    STATION_ROLE_PRIMARY,
     TARGET_HOURS,
     assemble_asof_tensor,
     hrrr_to_era5,
@@ -134,8 +139,10 @@ def load_obs_for_venues(venue_ids: list[int], year: int, vmap: dict) -> dict[int
         if m is None:
             continue
         frames = []
-        for st, elev in ((m["primary_station"], m.get("primary_elev_m")),
-                         (m["backup_station"], m.get("backup_elev_m"))):
+        for role, st, elev in ((STATION_ROLE_PRIMARY, m["primary_station"],
+                                m.get("primary_elev_m")),
+                               (STATION_ROLE_BACKUP, m["backup_station"],
+                                m.get("backup_elev_m"))):
             ck = f"{st}:{year}:{elev}"
             if ck not in cache:
                 try:
@@ -145,7 +152,14 @@ def load_obs_for_venues(venue_ids: list[int], year: int, vmap: dict) -> dict[int
                     logger.debug(f"obs {st} {year}: {exc}")
                     cache[ck] = pd.DataFrame()
             if len(cache[ck]):
-                frames.append(cache[ck])
+                # Copy before tagging: role is a property of the (venue, station) pair, not
+                # of the station, and the cache is shared across venues. LGA is primary for
+                # Citi Field and backup for Yankee Stadium; MDW and OAK each serve two
+                # venues. Tagging the cached frame in place would relabel it for whichever
+                # venue was built second.
+                tagged = cache[ck].copy()
+                tagged["station_role"] = role
+                frames.append(tagged)
         out[vid] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return out
 

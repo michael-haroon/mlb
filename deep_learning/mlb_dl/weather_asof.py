@@ -277,6 +277,14 @@ GUST_RATIO_FLOOR_KT = 60.0
 PRECIP_NO_CODE_MAX_IN = 0.75
 PRECIP_CLEAR_VIS_MI = 9.0
 
+# Values for the optional `station_role` column on an obs frame. Obs frames concatenate a
+# venue's two mapped stations, and select_asof_obs prefers the primary; see its docstring
+# for why recency alone was the wrong cross-station tiebreak. The column is optional so a
+# caller that never tagged roles keeps the old pure-recency behaviour rather than silently
+# selecting nothing.
+STATION_ROLE_PRIMARY = "primary"
+STATION_ROLE_BACKUP = "backup"
+
 
 def _drop_impossible_reports(df: pd.DataFrame) -> pd.DataFrame:
     """Discard reports carrying a physically impossible value in a consumed field.
@@ -553,12 +561,36 @@ def select_asof_obs(obs: pd.DataFrame, decision_time: pd.Timestamp,
 
     Callers only invoke this for elapsed hours (h < d — the gate lives in
     assemble_asof_tensor), and the availability filter still applies: a
-    late-disseminated METAR must not appear before it existed."""
+    late-disseminated METAR must not appear before it existed.
+
+    Recency decides only WITHIN a station. Across stations the venue's designated
+    primary wins, because ASOS files at a fixed minute past the hour, which made a
+    pure valid_utc.idxmax() resolve station choice on reporting convention rather than
+    on anything about the data: a backup at :56 beat a primary at :53 in every hour of
+    every season. Measured over 2018, that handed 28.6% of all selections to the backup
+    and the majority at 10 of 33 venues — 98.8% at Chase Field, whose backup sits 24.5 km
+    out and 123 m higher than the 5.3 km primary, feeding a wrong station pressure
+    straight into air density. It also put both known sensor faults into the artifact
+    (MCF's precip gauge at Tropicana, NZY's thermometer at Petco), each a backup
+    outranking a healthy nearer primary. The map is distance-ranked (primary_km <
+    backup_km), so the primary is the more representative sensor by construction, and
+    the two reports describe the same clock hour — the preference costs 3 minutes of
+    recency and nothing else.
+
+    Concatenating both stations still does what it was added for: when the primary has
+    no legal report for this hour (a dark primary, DMH 2021) the backup is used, per
+    hour, rather than masking the season. The preference is applied AFTER the
+    availability filter, so a primary that has not disseminated yet cannot win —
+    preferring it earlier would reintroduce the leakage this module exists to remove."""
     rows = obs[(obs["valid_utc"] >= hour_start - pd.Timedelta(hours=1))
                & (obs["valid_utc"] < hour_start + pd.Timedelta(hours=1))
                & (obs["available_time_utc"] <= decision_time)]
     if rows.empty:
         return None
+    if "station_role" in rows.columns:
+        primary = rows[rows["station_role"] == STATION_ROLE_PRIMARY]
+        if not primary.empty:
+            rows = primary
     return rows.loc[rows["valid_utc"].idxmax()]
 
 
@@ -736,14 +768,22 @@ def fetch_live_asof(
         log.warning(f"venue {venue_id} not in station map — no live weather")
         return None
 
-    # Obs: today + yesterday (late-night games cross the UTC date line)
+    # Obs: today + yesterday (late-night games cross the UTC date line).
+    # station_role must be tagged here exactly as build_weather_asof.load_obs_for_venues
+    # tags it. select_asof_obs only prefers the primary when the column is present, so
+    # tagging on one side alone would leave live selecting by recency while train selects
+    # by role — a train/live skew invisible to every existing check.
     obs_frames = []
-    for st, elev in ((m["primary_station"], m.get("primary_elev_m")),
-                     (m["backup_station"], m.get("backup_elev_m"))):
+    for role, st, elev in ((STATION_ROLE_PRIMARY, m["primary_station"],
+                            m.get("primary_elev_m")),
+                           (STATION_ROLE_BACKUP, m["backup_station"],
+                            m.get("backup_elev_m"))):
         for day in (now.normalize(), now.normalize() - pd.Timedelta(days=1)):
             raw = _read_parquet_s3(f"{OBS_LIVE_PREFIX}/station={st}/date={day:%Y-%m-%d}.parquet")
             if raw is not None and len(raw):
-                obs_frames.append(metar_to_era5(raw, float(elev or 0.0)))
+                df = metar_to_era5(raw, float(elev or 0.0))
+                df["station_role"] = role
+                obs_frames.append(df)
     obs = pd.concat(obs_frames, ignore_index=True) if obs_frames else None
 
     fcst_frames = []

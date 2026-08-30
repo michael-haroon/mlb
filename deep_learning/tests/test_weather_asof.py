@@ -29,6 +29,7 @@ from mlb_dl.weather_asof import (
     metar_to_era5,
     relative_humidity_pct,
     select_asof_forecast,
+    select_asof_obs,
     station_pressure_hpa,
     vapour_pressure_deficit_kpa,
     wet_bulb_f,
@@ -1057,3 +1058,141 @@ def test_the_precip_rule_is_not_applied_without_a_visibility_reading():
     """No visibility to contradict is absence, not contradiction."""
     assert len(metar_to_era5(
         _wind_report(p01i=6.78, wxcodes=None, vsby=np.nan), 6.0)) == 1
+
+
+# ── Station-role preference ───────────────────────────────────────────────────
+# The station map ranks by distance (primary_km < backup_km), so the primary is the more
+# representative sensor for the venue. Concatenating primary+backup exists to degrade
+# per-hour when the primary goes dark (the DMH 2021 case), NOT to let the backup preempt a
+# healthy primary. But ASOS files at a FIXED minute past the hour, so a backup at :56
+# outranked a primary at :53 in every hour of every season: measured 28.6% of all 2018
+# selections, and 98.8% at Chase Field, where the winner was 24.5 km away and 123 m higher
+# than the 5.3 km primary — straight into surface pressure and air density.
+
+def _two_station_frame(primary_min=53, backup_min=56, primary_avail_min=10,
+                       backup_avail_min=10, drop_primary=False):
+    """One elapsed hour, both stations reporting, distinguishable by temperature."""
+    rows = []
+    base = GH.normalize() + pd.Timedelta(hours=20)
+    specs = [] if drop_primary else [("primary", "SPG", primary_min, primary_avail_min, 70.0)]
+    specs.append(("backup", "MCF", backup_min, backup_avail_min, 90.0))
+    for role, st, minute, avail, tmpf in specs:
+        valid = base + pd.Timedelta(minutes=minute)
+        rows.append(dict(
+            station=st, station_role=role, valid_utc=valid,
+            available_time_utc=valid + pd.Timedelta(minutes=avail),
+            tmpf=tmpf, dwpf=55.0, relh=np.nan, drct=180.0, sknt=10.0, gust=np.nan,
+            alti=29.92, mslp=np.nan, vsby=10.0, skyc1="SCT", skyl1=5000.0,
+            skyc2=None, skyl2=None, skyc3=None, skyl3=None, p01i=0.0,
+        ))
+    df = metar_to_era5(pd.DataFrame(rows), station_elev_m=6.0)
+    df["station_role"] = [r[0] for r in specs]
+    return df
+
+
+def _select(df, decision_offset_h=3):
+    return select_asof_obs(df, GH.normalize() + pd.Timedelta(hours=20 + decision_offset_h),
+                           GH.normalize() + pd.Timedelta(hours=20))
+
+
+def test_the_nearer_primary_station_wins_over_a_later_filing_backup():
+    """The real Tropicana case: SPG at :53 (2.5 km) must beat MCF at :56 (15.9 km)."""
+    row = _select(_two_station_frame())
+    assert row is not None and row["station_role"] == "primary"
+
+
+def test_a_dark_primary_still_degrades_to_the_backup():
+    """The documented reason the frames are concatenated at all (DMH 2021)."""
+    row = _select(_two_station_frame(drop_primary=True))
+    assert row is not None and row["station_role"] == "backup"
+
+
+def test_role_preference_applies_after_the_availability_filter_not_before():
+    """A primary that has not disseminated yet is not a legal choice.
+
+    Preferring the primary BEFORE the availability filter would resurrect exactly the
+    leakage this module exists to remove: at the decision hour the primary's report does
+    not yet exist, so the backup is the only lawful answer.
+    """
+    # Primary lands 10 h late; backup disseminates in 2 min, so at the 21:00Z decision the
+    # backup exists and the primary does not.
+    df = _two_station_frame(primary_avail_min=600, backup_avail_min=2)
+    row = _select(df, decision_offset_h=1)
+    assert row is not None and row["station_role"] == "backup"
+
+
+def test_recency_still_decides_within_the_chosen_station():
+    """Preferring the primary must not also discard the primary's freshest report."""
+    df = _two_station_frame()
+    extra = df[df["station_role"] == "primary"].copy()
+    extra["valid_utc"] = extra["valid_utc"] + pd.Timedelta(minutes=-30)
+    extra["temperature_2m"] = -99.0
+    row = _select(pd.concat([df, extra], ignore_index=True))
+    assert row["station_role"] == "primary" and row["temperature_2m"] != -99.0
+
+
+def test_selection_is_unchanged_when_no_role_column_is_present():
+    """Backwards compatibility: callers that never tagged roles keep pure-recency."""
+    # metar_to_era5 does not carry `station` through, so identify the winner by its
+    # reporting minute: :56 is the backup, and pure recency must still pick it.
+    df = _two_station_frame().drop(columns=["station_role"])
+    row = _select(df)
+    assert row is not None and row["valid_utc"].minute == 56
+
+
+def test_the_live_retrieval_path_tags_station_roles_too(monkeypatch):
+    """Role preference is opt-in per frame, so tagging on one side alone is a silent skew.
+
+    select_asof_obs prefers the primary only when the column exists. The training builder
+    tags it in load_obs_for_venues; if fetch_live_asof does not, live keeps resolving by
+    recency while train resolves by role, and the two paths disagree on which sensor
+    represents the venue. Nothing else catches it: assemble_asof_tensor is shared, so every
+    physics test still passes, and the parity replay needs a populated feature store.
+    """
+    import mlb_dl.weather_asof as wx
+
+    raw_by_station = {}
+    for st, minute, tmpf in (("SPG", 53, 70.0), ("MCF", 56, 90.0)):
+        valid = GH.normalize() + pd.Timedelta(hours=20, minutes=minute)
+        raw_by_station[st] = pd.DataFrame([dict(
+            station=st, valid_utc=valid,
+            available_time_utc=valid + pd.Timedelta(minutes=10),
+            tmpf=tmpf, dwpf=55.0, relh=np.nan, drct=180.0, sknt=10.0, gust=np.nan,
+            alti=29.92, mslp=np.nan, vsby=10.0, skyc1="SCT", skyl1=5000.0,
+            skyc2=None, skyl2=None, skyc3=None, skyl3=None, p01i=0.0,
+        )])
+
+    def fake_read(key: str):
+        # Only the obs prefix is served: no live HRRR and no soil, which is a legal live
+        # state (fcst stays None) and keeps the test on the obs retrieval layer.
+        for st, raw in raw_by_station.items():
+            if f"station={st}/" in key and wx.OBS_LIVE_PREFIX in key:
+                return raw
+        return None
+
+    seen = {}
+
+    def spy_assemble(obs, fcst, *a, **k):
+        seen["obs"] = obs
+        return np.zeros((N_DECISIONS, N_TARGET_HOURS, ASOF_CHANNELS), dtype=np.float32)
+
+    monkeypatch.setattr(wx, "_read_parquet_s3", fake_read)
+    monkeypatch.setattr(wx, "assemble_asof_tensor", spy_assemble)
+
+    out = wx.fetch_live_asof(
+        VENUE, GH, CF_AZ, now=GH + pd.Timedelta(hours=6),
+        station_map={str(VENUE): dict(primary_station="SPG", backup_station="MCF",
+                                      primary_elev_m=6.0, backup_elev_m=6.0)},
+        norm_stats={"fcst_mean": np.zeros(N_DIMS, np.float32),
+                    "fcst_std": np.ones(N_DIMS, np.float32),
+                    "obs_mean": np.zeros(N_OBS_DIMS, np.float32),
+                    "obs_std": np.ones(N_OBS_DIMS, np.float32)})
+
+    assert out is not None
+    obs = seen["obs"]
+    assert "station_role" in obs.columns, "live obs frame reached the assembler untagged"
+    assert set(obs["station_role"]) == {"primary", "backup"}
+    # And the tag actually changes the outcome on the frame the live path built.
+    row = select_asof_obs(obs, GH + pd.Timedelta(hours=3),
+                          GH.normalize() + pd.Timedelta(hours=20))
+    assert row is not None and row["station_role"] == "primary"
