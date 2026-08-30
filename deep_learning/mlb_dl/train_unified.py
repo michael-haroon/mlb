@@ -847,6 +847,15 @@ def _train_phase(
     """Train a single phase with early stopping."""
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    # `--phase2-epochs 0` is how a phase-1-only run is requested (the weather A/B is
+    # decided on phase-1 best_val, so running all three would double each arm's ~5h).
+    # The phases are called unconditionally, and the restore below is unguarded, so
+    # without this the run raises FileNotFoundError on a best.pt no epoch ever wrote —
+    # at the START of phase 2, discarding five hours of completed phase-1 training.
+    if max_epochs <= 0:
+        log.info("[%s] skipped — %d epochs requested", phase_name, max_epochs)
+        return {"best_val_loss": None, "epochs_trained": 0, "history": []}
+
     best_val = float("inf")
     epochs_no_improve = 0
     epoch_history = []
