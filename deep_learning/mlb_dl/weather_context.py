@@ -82,8 +82,13 @@ _DEFAULT_CF_AZIMUTH = 0.0
 # Coast games, and stays inside the 3-day horizon _fetch_forecast_ecmwf writes.
 _MAX_FORECAST_STALENESS_DAYS = 2
 
-# Rogers Centre — the only non-CONUS park, so HRRR pressure levels (dims 20-21)
-# are absent in both training and inference. Consistent, not a shift.
+# MISNAMED — 2523 is George M. Steinbrenner Field (Tampa FL), not Rogers Centre (which is
+# venue 14). Verified against statsapi /api/v1/venues 2026-08-30. See the long note on
+# TORONTO_VENUE_ID in data_curation/scripts/fetch_weather.py for why the value is deliberately
+# left wrong until the weather artifacts are rebuilt.
+# The original claim still holds for whichever venue this id selects: HRRR pressure levels
+# (dims 20-21) are absent for it in BOTH training and inference, so it is consistent, not a
+# train/serve shift. That is exactly why flipping the id alone would introduce one.
 _TORONTO_VENUE_ID = 2523
 
 # ERA5 surface columns needed for feature computation

@@ -301,11 +301,21 @@ class TestYearGuards:
 
 
 class TestHRRRConus:
-    """HRRR is CONUS-only — Toronto must be excluded."""
+    """HRRR is CONUS-only, so the excluded venue must not be fetched from it.
 
-    def test_toronto_excluded_from_hrrr(self):
+    NOTE: this class does NOT prove anything about Toronto, despite its history. The guard
+    keys on venue_id alone, and TORONTO_VENUE_ID is 2523 = Steinbrenner Field (Tampa), not
+    Rogers Centre (venue 14). Passing Rogers Centre's coordinates alongside the wrong id made
+    the test read as a Toronto test while exercising a Tampa id — which is how the mislabel
+    survived. Kept green deliberately: it pins the CURRENT routing, which the already-built
+    weather artifacts depend on.
+    """
+
+    def test_excluded_venue_not_fetched_from_hrrr(self):
+        # Coords are inert here — the CONUS guard compares venue_id only. Left at Rogers
+        # Centre's to document the original (mistaken) intent rather than hide it.
         result = _fetch_historical_forecast(
-            TORONTO_VENUE_ID, 43.6414, -79.3894,  # Rogers Centre coords
+            TORONTO_VENUE_ID, 43.6414, -79.3894,
             "gfs_hrrr", HRRR_START_YEAR,
         )
         assert result is None

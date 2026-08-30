@@ -623,7 +623,11 @@ def build_weather_frame(
     venue_ids = meta["venue_id"].unique().tolist()
     years = sorted(meta["game_dt"].dt.year.unique().tolist())
 
-    # Toronto (venue 2523) uses ECMWF instead of HRRR (CONUS-only)
+    # MISNAMED: 2523 is Steinbrenner Field (Tampa FL); Rogers Centre is venue 14 (verified
+    # against statsapi 2026-08-30). So this splits off a CONUS park as "non-CONUS" and leaves
+    # the actual non-US park in the HRRR group. Left as-is on purpose — every weather artifact
+    # was built with this split, and changing it without rebuilding them creates a train/serve
+    # skew. Full rationale: TORONTO_VENUE_ID in data_curation/scripts/fetch_weather.py.
     toronto_id = 2523
     conus_venues = [v for v in venue_ids if v != toronto_id]
     non_conus_venues = [v for v in venue_ids if v == toronto_id]

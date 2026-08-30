@@ -71,15 +71,28 @@ REQUEST_TIMEOUT  = 120     # seconds; pressure-level multi-year JSON can be very
 OPENMETEO_API_HOST = os.environ.get("OPENMETEO_API_HOST", "").rstrip("/")
 
 # ── Historical forecast source configuration ─────────────────────────────────
-# venue_id 2523 = Rogers Centre (Toronto) — only non-US MLB park
-# HRRR only covers CONUS; ecmwf_ifs_hres_forecast covers all venues globally
+# HRRR only covers CONUS; ecmwf_ifs_hres_forecast covers all venues globally.
+# See TORONTO_VENUE_ID below — the id in that constant is NOT Rogers Centre.
 HRRR_START_YEAR    = 2018   # HRRR historical forecast available from 2018-01-01
 ECMWF_HRES_START_YEAR = 2017  # ECMWF IFS HRES historical forecast from 2017-01-01
 GFS_START_YEAR     = 2021   # GFS historical forecast from 2021-03-23
 MARINE_START_YEAR  = 1940   # ERA5-Ocean available from 1940
 FLOOD_START_YEAR   = 1984   # GloFAS v4 reanalysis from 1984
 
-# Toronto Rogers Centre venue_id — excluded from HRRR (CONUS only)
+# WRONG VALUE, KNOWINGLY LEFT IN PLACE — do not "fix" this in isolation. Verified against
+# statsapi /api/v1/venues on 2026-08-30:
+#   2523 = George M. Steinbrenner Field, Tampa FL  (27.980, -82.507)
+#   14   = Rogers Centre, Toronto ON               (43.642, -79.389)
+# So this constant routes a Tampa park to ECMWF and leaves Rogers Centre on HRRR. The
+# exclusion is doubly wrong: the id is wrong, AND the HRRR CONUS grid does cover Toronto
+# at 43.6N anyway, so no exclusion was ever needed.
+#
+# Why it stays 2523 for now: every weather artifact in the feature store was BUILT with this
+# routing. Train and inference must draw each dim from the same NWP model, so flipping this
+# to 14 without rebuilding those artifacts would silently create a train/serve skew — a worse
+# bug than the mislabel. Change it only together with a weather_asof/weather_features rebuild.
+# Blast radius to measure first: 2523 is a real regular-season venue (the Rays played 2025
+# home games there), so games are genuinely affected, not just spring training.
 TORONTO_VENUE_ID = 2523
 
 # ── Pressure level variable generation ───────────────────────────────────────
