@@ -276,6 +276,115 @@ def test_metar_sky_cover_max_of_layers():
     assert out["visibility"].iloc[0] == pytest.approx(16093.4)
 
 
+# ── Physically impossible raw METAR values ────────────────────────────────────
+# Swept over the whole raw asos_obs archive (2026-08-30, 1,079 station-season files,
+# 13.6M reports). Every column the tensor consumes carries values that are not
+# measurements:
+#   tmpf  66 out of range, observed [-80, 149] F
+#   dwpf   6 out of range, observed min -268.6 F
+#   sknt   5 out of range, max 910 kt (1,047 mph)
+#   gust   7 out of range, max 525 kt
+#   alti 319 out of range, observed [0, 99.99] inHg -- 0 and 99.99 are missing-data
+#         sentinels; 99.99 renders as 3,386 hPa and, unlike 0, is NOT caught by the
+#         impossible-zero mask correction
+#   p01i  44 out of range, max 24 in/h (world record hourly is ~12 in)
+# relh, drct and peak_wind_gust swept clean. mslp and skyl* are out of bounds too
+# (221 and 1,711) but neither is read anywhere in the as-of path, so they cannot reach
+# a tensor and are deliberately not filtered.
+#
+# Why DROP the report rather than NaN the field. _safe() in weather_context renders NaN
+# as 0.0 and there is no per-field obs mask, so NaN-ing one column silently fabricates a
+# real reading in the dims where zero is legitimate -- a NaN dew point becomes 0% RH and
+# a zero VPD (saturated air), both masked in as measured. Dropping the report is the only
+# representation the existing mask machinery renders honestly: select_asof_obs falls
+# through to the next report for that hour, or the hour is left genuinely unobserved with
+# every dim masked 0. The cost is 447 reports of 13.6M (0.003%).
+#
+# vsby is deliberately handled the other way, by clamping: "10SM" means "10 or more", so
+# the reading saturates and the excess carries no information. Dropping its 95,547
+# out-of-ceiling reports (0.71%) would forfeit real coverage for nothing.
+IMPOSSIBLE_RAW = [
+    ("tmpf", 149.0), ("tmpf", -80.0), ("dwpf", -268.6), ("sknt", 910.0),
+    ("gust", 525.0), ("alti", 99.99), ("alti", 0.0), ("p01i", 24.0),
+]
+
+
+def _one_metar(**overrides):
+    row = dict(station="BOS", valid_utc=GH, available_time_utc=GH,
+               tmpf=70.0, dwpf=55.0, relh=60.0, drct=180.0, sknt=10.0, gust=np.nan,
+               alti=29.92, mslp=np.nan, vsby=10.0,
+               skyc1="SCT", skyl1=5000.0, skyc2=None, skyl2=None,
+               skyc3=None, skyl3=None, p01i=0.0)
+    row.update(overrides)
+    return pd.DataFrame([row])
+
+
+@pytest.mark.parametrize("col,value", IMPOSSIBLE_RAW)
+def test_a_report_with_an_impossible_value_is_dropped(col, value):
+    """Measured values, not invented ones -- each pair is an extreme actually present
+    in the raw archive."""
+    out = metar_to_era5(_one_metar(**{col: value}), station_elev_m=6.0)
+    assert len(out) == 0, f"{col}={value} survived into the era5 frame"
+
+
+def test_a_clean_report_is_never_dropped():
+    out = metar_to_era5(_one_metar(), station_elev_m=6.0)
+    assert len(out) == 1
+
+
+def test_a_merely_missing_field_does_not_drop_the_report():
+    """A METAR omits the groups it has nothing to report; absence is normal and must
+    not be confused with corruption, or coverage would collapse."""
+    for col in ("tmpf", "dwpf", "relh", "drct", "sknt", "gust", "alti", "p01i", "vsby"):
+        out = metar_to_era5(_one_metar(**{col: np.nan}), station_elev_m=6.0)
+        assert len(out) == 1, f"{col}=NaN wrongly dropped the report"
+
+
+def test_real_weather_extremes_are_never_dropped():
+    """The filter must clear the record book. The coldest MLB game on record is ~18 F
+    and the hottest ~115 F; Coors Field altimeter runs far below sea-level values;
+    hurricane-edge gusts and a torrential inch of rain are all real."""
+    for kw in (dict(tmpf=18.0, dwpf=10.0), dict(tmpf=115.0, dwpf=70.0),
+               dict(alti=24.9 + 0.2), dict(alti=31.0), dict(sknt=60.0),
+               dict(gust=95.0), dict(p01i=3.0), dict(drct=360.0), dict(relh=100.0)):
+        out = metar_to_era5(_one_metar(**kw), station_elev_m=6.0)
+        assert len(out) == 1, f"{kw} wrongly dropped"
+
+
+def test_dropping_preserves_the_surviving_rows_intact():
+    """A filter that reindexed or reordered would silently corrupt the as-of selection,
+    which matches reports to hours by valid_utc."""
+    df = pd.concat([_one_metar(tmpf=70.0), _one_metar(tmpf=149.0), _one_metar(tmpf=72.0)],
+                   ignore_index=True)
+    df["valid_utc"] = [GH, GH + pd.Timedelta(hours=1), GH + pd.Timedelta(hours=2)]
+    out = metar_to_era5(df, station_elev_m=6.0)
+    assert len(out) == 2
+    np.testing.assert_allclose(out["temperature_2m"].to_numpy(), [70.0, 72.0])
+    assert out["valid_utc"].tolist() == [GH, GH + pd.Timedelta(hours=2)]
+
+
+def test_an_impossible_altimeter_never_reaches_the_pressure_dim():
+    """alti=99.99 is the case the impossible-zero mask correction cannot catch: it
+    renders 3,386 hPa, which is a number, not a zero, so the mask would call it
+    measured. End-to-end through the tensor, not just the frame.
+    """
+    rows = []
+    for hh in range(20, 31):
+        valid = GH.normalize() + pd.Timedelta(hours=hh, minutes=53)
+        rows.append(dict(station="BOS", valid_utc=valid,
+                         available_time_utc=valid + pd.Timedelta(minutes=10),
+                         tmpf=70.0, dwpf=55.0, relh=np.nan, drct=180.0, sknt=10.0,
+                         gust=np.nan, alti=99.99, mslp=np.nan, vsby=10.0,
+                         skyc1="SCT", skyl1=5000.0, skyc2=None, skyl2=None,
+                         skyc3=None, skyl3=None, p01i=0.0))
+    T = assemble_asof_tensor(metar_to_era5(pd.DataFrame(rows), 6.0), _hrrr_frame(),
+                             GH, VENUE, CF_AZ)
+    pressure = T[:, :, OFF_OBS + 13]
+    mask = T[:, :, OFF_OBS_MASK + 13]
+    assert not (mask == 1.0).any(), "claimed a measured pressure from a sentinel altimeter"
+    assert np.abs(pressure).max() == 0.0
+
+
 def test_metar_visibility_is_capped_at_the_reporting_ceiling():
     """Raw ASOS vsby carries values that are not measurements.
 

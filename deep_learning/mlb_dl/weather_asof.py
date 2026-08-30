@@ -116,6 +116,59 @@ MI_TO_M = 1609.34
 # US METAR visibility reporting ceiling: "10SM" means 10 statute miles or more, so the
 # observation saturates here and larger raw values are either redundant or corrupt.
 METAR_VIS_CEILING_MI = 10.0
+
+# Physical limits of each METAR group the as-of tensor reads, in raw feed units. A value
+# outside these is not a measurement, so the whole report is discarded (see
+# _drop_impossible_reports for why the report and not just the field).
+#
+# Swept over the entire raw asos_obs archive (2026-08-30; 1,079 station-season files,
+# 13.6M reports): tmpf 66 violations spanning [-80, 149] °F, dwpf 6 down to -268.6 °F,
+# sknt 5 up to 910 kt, gust 7 up to 525 kt, alti 319 spanning [0, 99.99] inHg, p01i 44 up
+# to 24 in/h. relh, drct and peak_wind_gust swept clean. 447 reports total, 0.003%.
+#
+# Bounds are world records widened, never distribution percentiles, so no real weather can
+# be dropped: the temperature range brackets the -128/134 °F global records, the altimeter
+# range brackets the 25.69/32.06 inHg records (Coors Field sits far below sea-level
+# values), gusts clear the 220 kt Barrow Island record, and 12 in/h is the world hourly
+# rainfall record. mslp and skyl* are also corrupt in the archive but are read nowhere in
+# this path, so filtering on them would drop reports for no benefit.
+METAR_PHYSICAL_LIMITS = {
+    "tmpf": (-60.0, 135.0),
+    "dwpf": (-80.0, 100.0),
+    "relh": (0.0, 100.5),
+    "drct": (0.0, 360.0),
+    "sknt": (0.0, 200.0),
+    "gust": (0.0, 250.0),
+    "alti": (25.0, 32.5),
+    "p01i": (0.0, 12.0),
+}
+
+
+def _drop_impossible_reports(df: pd.DataFrame) -> pd.DataFrame:
+    """Discard reports carrying a physically impossible value in a consumed field.
+
+    The report, not the field, because there is no per-field obs mask and _safe() renders
+    NaN as 0.0: nulling one column would fabricate a real reading wherever zero is
+    legitimate -- a nulled dew point becomes 0% relative humidity and zero VPD (saturated
+    air), both then masked in as measured. Dropping is the only outcome the existing mask
+    machinery represents honestly, because select_asof_obs falls through to the next
+    report for that hour and, failing that, leaves the hour genuinely unobserved with
+    every dim masked 0.
+
+    Absence is NOT corruption: a METAR omits the groups it has nothing to report, so NaN
+    must survive the filter or coverage would collapse.
+    """
+    keep = pd.Series(True, index=df.index)
+    for col, (lo, hi) in METAR_PHYSICAL_LIMITS.items():
+        if col not in df:
+            continue
+        v = pd.to_numeric(df[col], errors="coerce")
+        keep &= v.isna() | ((v >= lo) & (v <= hi))
+    n_bad = int((~keep).sum())
+    if n_bad:
+        log.warning("dropped %d of %d METAR report(s) carrying physically impossible "
+                    "values in a consumed field", n_bad, len(df))
+    return df[keep]
 IN_TO_MM = 25.4
 INHG_TO_HPA = 33.8639
 
@@ -221,6 +274,7 @@ def wx_extra_features(wxcodes, peak_gust_kt, fallback_gust_mph) -> np.ndarray:
 # ── Source-schema -> era5-schema conversion ──────────────────────────────────
 def metar_to_era5(df: pd.DataFrame, station_elev_m: float) -> pd.DataFrame:
     """fetch_asos_obs rows (raw METAR units) -> era5-schema columns."""
+    df = _drop_impossible_reports(df)
     out = pd.DataFrame(index=df.index)
     out["valid_utc"] = df["valid_utc"]
     out["available_time_utc"] = df["available_time_utc"]
