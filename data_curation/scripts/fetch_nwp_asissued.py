@@ -116,6 +116,49 @@ DECISION_HOURS = range(0, 7)
 # outside the CONUS domain (international games) — no forecast rows emitted.
 MAX_GRID_DISTANCE_KM = 5.0
 
+# Outer bounds of the HRRR CONUS domain, used ONLY as a definitely-outside test.
+# A venue beyond these bounds is thousands of km from any grid cell, so no rerun can
+# ever produce rows for it; a venue inside them is still subject to the exact
+# MAX_GRID_DISTANCE_KM nearest-cell test above. The asymmetry is deliberate and is the
+# safe direction: the verifier may only use this to excuse an absence it can PROVE is
+# structural, never to excuse a real extraction failure as a domain gap.
+HRRR_CONUS_BOUNDS = (21.0, 53.0, -135.0, -60.0)  # lat_min, lat_max, lon_min, lon_max
+
+
+def venue_in_hrrr_domain(lat: float, lon: float) -> bool:
+    """Could HRRR ever supply a forecast for this venue?
+
+    Six real population dates have no in-domain venue: the Tokyo Dome openers
+    (2019-03-20/21, 2025-03-18/19) and the Seoul series (2024-03-20/21). Those were the
+    only games played on those days, so no CONUS game created an archive object and the
+    date is absent from S3 permanently and correctly. Coverage must be able to tell that
+    apart from a dropped extraction, because the upstream GRIBs for those hours plainly
+    do exist.
+    """
+    lat_min, lat_max, lon_min, lon_max = HRRR_CONUS_BOUNDS
+    return lat_min <= float(lat) <= lat_max and lon_min <= float(lon) <= lon_max
+
+
+def dates_without_in_domain_venue(games: pd.DataFrame) -> set[str]:
+    """Population dates on which no venue lies inside the HRRR domain.
+
+    A date with even one in-domain venue yields rows and an object, so only dates where
+    EVERY venue is out of domain are structurally unfillable.
+    """
+    pts = load_venue_points().set_index("venue_id")
+    in_domain = {
+        int(vid): venue_in_hrrr_domain(r["latitude"], r["longitude"])
+        for vid, r in pts.iterrows()
+    }
+    out: set[str] = set()
+    for d, grp in games.groupby(games["game_date"].dt.normalize()):
+        vids = [int(x) for x in grp["venue_id"].unique()]
+        # An unknown venue is treated as IN domain: assuming otherwise would let a
+        # missing venue_points row silently excuse a genuine gap.
+        if vids and not any(in_domain.get(v, True) for v in vids):
+            out.add(f"{d:%Y-%m-%d}")
+    return out
+
 # One byte-range subset per (issue, fxx): every raw field the 22-dim layout
 # needs, verified present in the cheap `sfc` product back to 2015-04.
 # APCP is appended per-fxx because its bucket string embeds the lead hour.

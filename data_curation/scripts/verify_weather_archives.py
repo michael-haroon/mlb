@@ -255,9 +255,15 @@ def check_coverage(year: int | None = None, workers: int = 16,
     gate would block those seasons' builds forever.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from fetch_nwp_asissued import load_population_games, plan_game_tasks
+    from fetch_nwp_asissued import (dates_without_in_domain_venue,
+                                    load_population_games, plan_game_tasks)
 
     games = load_population_games()
+    # HRRR is CONUS-only. A date whose every venue is out of domain yields no rows and
+    # therefore no object, no matter how many times it is refetched, even though its
+    # upstream GRIBs exist. Without this, the six international-opener dates would fail
+    # coverage forever and block the 2019, 2024 and 2025 builds.
+    out_of_domain = dates_without_in_domain_venue(games)
     games["d"] = games["game_date"].dt.normalize()
     hours_by_date = {d: g["game_hour_utc"].unique() for d, g in games.groupby("d")}
     expected = {f"{d:%Y-%m-%d}" for d in games["d"].unique()}
@@ -284,10 +290,24 @@ def check_coverage(year: int | None = None, workers: int = 16,
             return tag, len(probe), present
 
         recoverable: list[str] = []
-        unobtainable: list[str] = []
+        era_gap: list[str] = []
+        no_domain = sorted(d for d in missing if d in out_of_domain)
+        # Settled before probing: an out-of-domain date's GRIBs exist, so the upstream
+        # probe would call it recoverable and demand a rerun that can never succeed.
+        probe_set = [d for d in missing if d not in out_of_domain]
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for tag, n_probe, present in pool.map(classify, missing):
-                (recoverable if present else unobtainable).append(tag)
+            for tag, n_probe, present in pool.map(classify, probe_set):
+                (recoverable if present else era_gap).append(tag)
+        # Two distinct reasons an absence is permanent, kept apart because they are
+        # reported separately: conflating them would claim the international dates have
+        # no upstream GRIB, which is false and would send the next reader hunting for a
+        # nonexistent archive gap.
+        unobtainable = sorted(era_gap + no_domain)
+
+        if no_domain:
+            ok(f"coverage {scope}: {len(no_domain)} population date(s) absent because no "
+               f"venue is inside the HRRR CONUS domain (international games — HRRR "
+               f"cannot cover them at any lead), e.g. {no_domain[:5]}")
 
         if recoverable:
             by_season: dict[str, int] = {}
@@ -296,10 +316,10 @@ def check_coverage(year: int | None = None, workers: int = 16,
             fail(f"coverage {scope}: {len(recoverable)}/{len(expected)} population dates "
                  f"have NO archive object though their tasks EXIST upstream — per season "
                  f"{by_season}; first {recoverable[:5]}; rerun those ranges")
-        if unobtainable:
-            ok(f"coverage {scope}: {len(unobtainable)} population date(s) absent because "
+        if era_gap:
+            ok(f"coverage {scope}: {len(era_gap)} population date(s) absent because "
                f"no planned task exists upstream (genuine era gap), e.g. "
-               f"{unobtainable[:5]}")
+               f"{era_gap[:5]}")
         if not recoverable:
             ok(f"coverage {scope}: {len(have)} present + {len(unobtainable)} provably "
                f"unobtainable = all {len(expected)} population dates accounted for")
