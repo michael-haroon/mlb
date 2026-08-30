@@ -1,0 +1,100 @@
+{
+  "purpose": "A/B control for the as-of weather retrain (plan T0.3). The weather run must change ONLY the weather channel vs this config.",
+  "locked_at": "2026-08-30",
+  "git_commit": "0031e2d",
+  "instance": "i-05b5114c32744b47b",
+  "data": {
+    "population": "2015-01-01+, game_types R/F/D/L/W",
+    "splits": {
+      "train": 314953,
+      "val": 41358,
+      "test": 41365
+    },
+    "prepared_dir": "/mnt/fast/prepared_tensors",
+    "weather": "old [4,22] Open-Meteo historical-forecast snapshot (lead-leaky) - the thing the A/B replaces"
+  },
+  "cli": "fit-unified --d-model 384 --n-layers 6 --n-heads 12 --dropout 0.15 --batch-size 32 --learning-rate 4e-4 --weight-decay 0.01 --patience 5 --num-workers 8",
+  "results": {
+    "wall_clock_minutes": 588.9,
+    "phase1": {
+      "best_val": 4.95209,
+      "best_epoch": 7,
+      "stopped_epoch": 12,
+      "final_train": 4.83189,
+      "final_val": 5.02503,
+      "epoch_seconds": 1528
+    },
+    "phase2": {
+      "best_val": 5.80036,
+      "best_epoch": 2,
+      "stopped_epoch": 7,
+      "final_train": 5.4643,
+      "final_val": 5.86927
+    },
+    "phase3": {
+      "best_val": 5.80015,
+      "best_epoch": 1,
+      "stopped_epoch": 6,
+      "final_train": 5.68666,
+      "final_val": 5.81516
+    },
+    "test_metrics": {
+      "home_win_brier": 0.1592113971710205,
+      "home_win_n": 41365,
+      "home_win_brier_constant": 0.24956,
+      "home_win_bss": 0.362,
+      "yrfi_brier": 0.18484917283058167,
+      "yrfi_base_rate": 0.5172247290611267,
+      "yrfi_brier_constant": 0.2497,
+      "yrfi_bss": 0.2597,
+      "extra_innings_brier": 0.06812132894992828,
+      "extra_innings_base_rate": 0.10184939205646515,
+      "extra_innings_pred_mean": 0.09848969429731369,
+      "extra_innings_brier_constant": 0.09148,
+      "extra_innings_bss": 0.2553,
+      "total_runs_mae": 2.447333335876465,
+      "total_runs_rmse": 3.4476232528686523,
+      "negbin_nll_home": 1.78416,
+      "negbin_nll_away": 1.766,
+      "player_hr_brier": 0.19762803614139557,
+      "player_hr_base_rate": 0.12085302919149399,
+      "player_hr_pred_mean": 0.4272204041481018,
+      "player_hr_n": 717723,
+      "player_hr_brier_constant": 0.10625,
+      "player_hr_bss": -0.8601,
+      "player_hits_ce": 1.48013,
+      "player_hits_accuracy": 0.4215,
+      "player_hits_n": 717723,
+      "player_so_nll": 1.18975,
+      "player_so_pred_mean": 0.892,
+      "player_so_actual_mean": 0.894,
+      "player_so_n": 717723,
+      "player_hrbi_nll": 1.80018,
+      "player_hrbi_pred_mean": 1.808,
+      "player_hrbi_actual_mean": 1.852,
+      "player_sb_brier": 0.14648692309856415,
+      "player_sb_base_rate": 0.06490247696638107,
+      "player_sb_pred_mean": 0.3581843376159668,
+      "player_sb_n": 717723,
+      "player_sb_brier_constant": 0.06069,
+      "player_sb_bss": -1.4137,
+      "classical_baseline": {
+        "home_win_brier": 0.2733,
+        "yrfi_brier": 0.2502,
+        "extra_innings_brier": 0.0677,
+        "source": "memory:calibration-metrics-post-fix (2026-07-06)"
+      },
+      "_vs_classical_removed": "The vs_classical block was dropped: it compared this model's in-game-state home_win Brier (0.15921, conditioned on live game state) against the pregame classical Brier (0.2733, conditioned on pregame info only). Different information sets, so the 41.74% 'improvement' is not a model comparison. Use extra_innings, where both are pregame-comparable: DL 0.06812 vs classical 0.0677 -- the DL head is marginally WORSE."
+    },
+    "checkpoints_s3": "s3://mlb-265753586044-us-east-1-an/deep_learning/checkpoints/baseline_large_fixed/"
+  },
+  "comparison_metric": "phase1 best_val. Cross-phase losses are NOT comparable (different head composition), so the A/B must compare phase-for-phase.",
+  "notes": [
+    "Run crashed once at Val E2 (transient DataLoader worker death, no OOM); relaunch survived the same point.",
+    "Every phase reaches best val within 1-7 epochs and then diverges (phase1 train-val gap goes -0.004 -> -0.193). At d_model=384/6 layers on 314,953 train samples the model saturates early, so a LARGER model is contraindicated; a size study should go down and/or up-regularize.",
+    "test_metrics regenerated 2026-08-30 from the saved checkpoint (not re-trained) after three eval defects were fixed: the hits clamp(0,4); scoring player heads on padding slots (y>=0 admits them because padding is stored as 0, not -1); and scoring the P(1+ event) HR/SB heads against COUNT targets with a p(1-p) baseline that is only valid for binary y.",
+    "The treatment arm ALSO contains a training-side fix (HR/SB focal-BCE targets are now binarised, game_transformer.py), so phase2/phase3 losses are no longer comparable to this control. phase1 best_val remains the A/B metric, which is what comparison_metric already designates -- phase1 trains game-level heads only, so the player-head fix cannot touch it.",
+    "Two heads had NO held-out metric at all before 2026-08-30: extra_innings (never computed) and the strikeout head (eval read all_targets['player_pitcher_k'], but the dataset emits 'player_so', so the isinstance guard skipped the block silently). Guarded by deep_learning/tests/test_eval_metric_coverage.py.",
+    "Skill scores vs the constant quote on this control: home_win BSS +0.362, yrfi +0.2597, extra_innings +0.2553. player_hr -0.860 and player_sb -1.414 RAW, but both carry real signal (AUC 0.640 / 0.713) and reach +0.026 / +0.038 after a 2-parameter Platt map fit on val; the raw heads are 3.5x/5.5x hot because focal loss is not a proper scoring rule. A calibration layer is required before quoting these two."
+  ]
+}

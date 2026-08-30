@@ -174,6 +174,18 @@ def save_dataset(ds, output_dir: Path, split_name: str) -> None:
         for gpk, arr in ds._weather_temporal_by_pk.items():
             np.save(wt_dir / f"{gpk}.npy", arr)
 
+    # As-of weather + per-pitch decision offsets (stacked single files — one
+    # .npy per game at [7,7,99] would mean ~26k tiny files per split)
+    if getattr(ds, "_weather_asof_by_pk", None):
+        pks = np.array(sorted(ds._weather_asof_by_pk), dtype=np.int64)
+        np.savez(split_dir / "weather_asof.npz", pks=pks,
+                 tensors=np.stack([ds._weather_asof_by_pk[int(p)] for p in pks]))
+    if getattr(ds, "_wx_offsets_by_pk", None):
+        pks = np.array(sorted(ds._wx_offsets_by_pk), dtype=np.int64)
+        np.savez(split_dir / "wx_offsets.npz", pks=pks,
+                 offsets=np.array([ds._wx_offsets_by_pk[int(p)] for p in pks],
+                                  dtype=object))
+
     # Rating temporal
     if ds._rating_by_game_side:
         rt_dir = split_dir / "rating_temporal"
@@ -380,6 +392,20 @@ class CachedGameTransformerDataset:
                 gpk = int(f.stem)
                 self._weather_temporal_by_pk[gpk] = np.load(f)
 
+        # As-of weather + per-pitch decision offsets
+        self._weather_asof_by_pk = {}
+        asof_file = split_dir / "weather_asof.npz"
+        if asof_file.exists():
+            z = np.load(asof_file)
+            self._weather_asof_by_pk = {
+                int(p): z["tensors"][i] for i, p in enumerate(z["pks"])}
+        self._wx_offsets_by_pk = {}
+        off_file = split_dir / "wx_offsets.npz"
+        if off_file.exists():
+            z = np.load(off_file, allow_pickle=True)
+            self._wx_offsets_by_pk = {
+                int(p): z["offsets"][i] for i, p in enumerate(z["pks"])}
+
         # Rating temporal
         self._rating_by_game_side = {}
         self._rating_dim = 0
@@ -464,6 +490,7 @@ def _bind_methods():
         "_load_game_pitches", "_empty_history_context",
         "_select_lineup_overlap", "_get_opposing_sp",
         "_compute_matchup_summary", "_get_weather_temporal",
+        "_get_weather_asof_full", "_get_weather_asof_row", "_get_wx_decision_hour",
         "_get_rating_temporal",
     ]
     for name in methods_to_bind:

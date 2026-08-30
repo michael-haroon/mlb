@@ -117,8 +117,10 @@ class _GameContextDataset(Dataset):
         # Flat features
         flat_features = self.ds._get_flat_features(meta)
 
-        # Weather
+        # Weather (legacy snapshot + full as-of tensor; the as-of per-sample
+        # d-slice happens at PreparedDataset.__getitem__ via wx_decision_hour)
         weather = self.ds._get_weather_temporal(game_pk)
+        weather_asof = self.ds._get_weather_asof_full(game_pk)
 
         # Ratings
         rating_home = self.ds._get_rating_temporal(game_pk, "home")
@@ -145,6 +147,7 @@ class _GameContextDataset(Dataset):
             "player_matchup": player_ctx["matchup"].numpy(),
             "flat_features": flat_features.numpy(),
             "weather": weather.numpy(),
+            "weather_asof": weather_asof,
             "rating_home": rating_home.numpy(),
             "rating_away": rating_away.numpy(),
             # Game-level targets (constant across prefixes)
@@ -260,6 +263,14 @@ def prepare_split(
     np.save(split_dir / "sample_to_game.npy", sample_to_game)
     np.save(split_dir / "game_pks.npy", np.array(game_pks, dtype=np.int64))
 
+    # Per-sample as-of decision hour: which wx_asof[d] row this sample's cut
+    # pitch is allowed to see. Cheap dict lookups — no loader needed.
+    wx_decision_hour = np.array(
+        [dataset._get_wx_decision_hour(gpk, plen) for gpk, plen in dataset.samples],
+        dtype=np.int8,
+    )
+    np.save(split_dir / "wx_decision_hour.npy", wx_decision_hour)
+
     # --- Phase 2: Compute per-game context (expensive, parallelized) ---
     log.info("[%s] Computing per-game context (%d games, %d workers)...",
              split_name, n_games, num_workers)
@@ -301,6 +312,9 @@ def prepare_split(
     player_matchup_all = _mmap_create("player_matchup.npy", (n_games, MAX_PLAYERS, matchup_dim), np.float32)
     flat_features_all = _mmap_create("flat_features.npy", (n_games, FLAT_DIM), np.float32)
     weather_all = _mmap_create("weather.npy", (n_games, WEATHER_HOURS, WEATHER_DIM), np.float32)
+    from .weather_asof import ASOF_CHANNELS, N_DECISIONS, N_TARGET_HOURS
+    weather_asof_all = _mmap_create(
+        "weather_asof.npy", (n_games, N_DECISIONS, N_TARGET_HOURS, ASOF_CHANNELS), np.float32)
     rating_home_all = _mmap_create("rating_home.npy", (n_games, 10, max(rating_dim, 1)), np.float32)
     rating_away_all = _mmap_create("rating_away.npy", (n_games, 10, max(rating_dim, 1)), np.float32)
     targets_game_all = _mmap_create("targets_game.npy", (n_games, 4), np.float32)
@@ -329,6 +343,7 @@ def prepare_split(
         player_matchup_all[i, :, :game_data["player_matchup"].shape[-1]] = game_data["player_matchup"]
         flat_features_all[i] = game_data["flat_features"]
         weather_all[i] = game_data["weather"]
+        weather_asof_all[i] = game_data["weather_asof"]
         rh = game_data["rating_home"]
         ra = game_data["rating_away"]
         if rh.ndim == 2 and rh.shape[-1] > 0:
@@ -351,7 +366,8 @@ def prepare_split(
     for arr in [ctx_seqs_all, ctx_obs_all, ctx_mask_all, ctx_lengths_all,
                 ctx_weights_all, ctx_similarity_all, player_hashes_all,
                 player_history_all, player_history_mask_all, player_matchup_all,
-                flat_features_all, weather_all, rating_home_all, rating_away_all,
+                flat_features_all, weather_all, weather_asof_all,
+                rating_home_all, rating_away_all,
                 targets_game_all, targets_player_all, player_mask_all, sample_weight_all]:
         arr.flush()
 
@@ -440,6 +456,15 @@ def prepare_split(
         "max_ctx_len": MAX_CTX_LEN,
         "prefix_len": PREFIX_LEN,
         "n_continuous": N_CONTINUOUS,
+        # As-of weather: presence gates PreparedDataset's weather source and
+        # the model's weather_tokens/weather_dim config. has_weather_asof is
+        # only true when the dataset actually carried tensors — an all-zero
+        # weather_asof.npy from a run without the artifact must not silently
+        # train a masked-out weather channel.
+        "has_weather_asof": bool(dataset._weather_asof_by_pk),
+        "asof_channels": int(ASOF_CHANNELS),
+        "asof_decisions": int(N_DECISIONS),
+        "asof_target_hours": int(N_TARGET_HOURS),
     }
     with open(split_dir / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
@@ -511,6 +536,11 @@ class PreparedDataset(Dataset):
         self._player_matchup = np.load(split_dir / "player_matchup.npy", mmap_mode="r")
         self._flat_features = np.load(split_dir / "flat_features.npy", mmap_mode="r")
         self._weather = np.load(split_dir / "weather.npy", mmap_mode="r")
+        # As-of weather (manifest-gated): per-game [7,7,99] + per-sample d
+        self._has_weather_asof = bool(self.manifest.get("has_weather_asof"))
+        if self._has_weather_asof:
+            self._weather_asof = np.load(split_dir / "weather_asof.npy", mmap_mode="r")
+            self._wx_decision_hour = np.load(split_dir / "wx_decision_hour.npy", mmap_mode="r")
         self._rating_home = np.load(split_dir / "rating_home.npy", mmap_mode="r")
         self._rating_away = np.load(split_dir / "rating_away.npy", mmap_mode="r")
         self._targets_game = np.load(split_dir / "targets_game.npy", mmap_mode="r")
@@ -566,7 +596,11 @@ class PreparedDataset(Dataset):
         np.nan_to_num(player_matchup, **_nan)
         flat_features = self._flat_features[g].copy()
         np.nan_to_num(flat_features, **_nan)
-        weather = self._weather[g].copy()
+        if self._has_weather_asof:
+            d = int(self._wx_decision_hour[idx])
+            weather = self._weather_asof[g, d].copy()   # [7, 99] decision row
+        else:
+            weather = self._weather[g].copy()           # legacy [4, 22]
         np.nan_to_num(weather, **_nan)
         rating_home = self._rating_home[g].copy()
         np.nan_to_num(rating_home, **_nan)

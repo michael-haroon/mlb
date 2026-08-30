@@ -513,6 +513,8 @@ class GameTransformerDataset(Dataset):
         weather_temporal: Optional[pd.DataFrame] = None,
         venue_dimensions: Optional[pd.DataFrame] = None,
         daily_stats: Optional[pd.DataFrame] = None,
+        weather_asof: Optional[dict] = None,
+        wx_hour_offsets: Optional[dict] = None,
     ):
         self.standardizer = standardizer
         self.ablation = ablation or AblationConfig()
@@ -833,6 +835,19 @@ class GameTransformerDataset(Dataset):
                     arr = arr[:WEATHER_TEMPORAL_HOURS]
                 self._weather_temporal_by_pk[gpk] = arr
 
+        # --- As-of weather: game_pk -> [7, 7, 99] (standardized upstream) and
+        # game_pk -> int8 per-pitch decision-hour offsets. When present, the
+        # "weather_temporal" batch key becomes the [7, 99] decision row for the
+        # sample's cut pitch instead of the legacy [4, 22] snapshot.
+        self._weather_asof_by_pk: dict[int, np.ndarray] = {
+            int(k): v for k, v in (weather_asof or {}).items()
+            if int(k) in self.target_by_game
+        }
+        self._wx_offsets_by_pk: dict[int, np.ndarray] = {
+            int(k): v for k, v in (wx_hour_offsets or {}).items()
+            if int(k) in self.target_by_game
+        }
+
         # --- Venue dimensions indexed by venue_id ---
         self._venue_dims_by_id: dict[int, pd.Series] = {}
         if venue_dimensions is not None and not venue_dimensions.empty:
@@ -1008,8 +1023,12 @@ class GameTransformerDataset(Dataset):
             "team_away_similarity": team_away_ctx["similarity"],
             # Flat context
             "flat_features": flat_features,
-            # Weather temporal context [4, 22]
-            "weather_temporal": self._get_weather_temporal(game_pk),
+            # Weather: as-of [7, 99] decision row when the artifact is loaded,
+            # legacy [4, 22] snapshot otherwise (single-keyed interface — the
+            # model's weather_dim/weather_tokens config must match the source).
+            "weather_temporal": (self._get_weather_asof_row(game_pk, prefix_len)
+                                 if self._weather_asof_by_pk
+                                 else self._get_weather_temporal(game_pk)),
             # Rating temporal context [K, N_RATINGS] per side
             "rating_home": self._get_rating_temporal(game_pk, "home"),
             "rating_away": self._get_rating_temporal(game_pk, "away"),
@@ -1289,6 +1308,33 @@ class GameTransformerDataset(Dataset):
         if data is not None:
             return torch.from_numpy(data)
         return torch.zeros(WEATHER_TEMPORAL_HOURS, WEATHER_TOKEN_DIM, dtype=torch.float32)
+
+    def _get_wx_decision_hour(self, game_pk: int, prefix_len: int) -> int:
+        """Decision hour d for a sample = the cut pitch's elapsed-hour offset.
+
+        prefix_len == 0 is the pregame sample -> d=0 by definition. A game with
+        no offsets (missing raw pitch_start_time artifact) also falls to 0 —
+        the only decision row that can never look ahead."""
+        if prefix_len <= 0:
+            return 0
+        offs = self._wx_offsets_by_pk.get(game_pk)
+        if offs is None or len(offs) == 0:
+            return 0
+        i = min(prefix_len - 1, len(offs) - 1)
+        return int(np.clip(offs[i], 0, 6))
+
+    def _get_weather_asof_full(self, game_pk: int) -> np.ndarray:
+        """[7, 7, 99] as-of tensor; zeros (= fully masked/unknown) when absent."""
+        from .weather_asof import ASOF_CHANNELS, N_DECISIONS, N_TARGET_HOURS
+        data = self._weather_asof_by_pk.get(game_pk)
+        if data is not None:
+            return data
+        return np.zeros((N_DECISIONS, N_TARGET_HOURS, ASOF_CHANNELS), dtype=np.float32)
+
+    def _get_weather_asof_row(self, game_pk: int, prefix_len: int) -> torch.Tensor:
+        """[7, 99] decision row for the sample's cut pitch."""
+        d = self._get_wx_decision_hour(game_pk, prefix_len)
+        return torch.from_numpy(np.ascontiguousarray(self._get_weather_asof_full(game_pk)[d]))
 
     # ------------------------------------------------------------------
     # Rating temporal context

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 
@@ -197,8 +198,19 @@ class GameInferenceState:
     score_home: int = 0
     score_away: int = 0
     innings_completed: float = 0.0
-    # Weather context: [4, 22] tensor fetched at game registration
+    # Weather context: [4, 22] tensor fetched at game registration (legacy)
     weather_context: Optional[torch.Tensor] = None
+    # As-of weather: [7, 7, 99] living-window tensor (weather_asof geometry).
+    # Refreshed on decision-hour boundaries; _build_batch slices row d.
+    weather_asof: Optional[torch.Tensor] = None
+    venue_id: Optional[int] = None
+    game_hour_utc: Optional[pd.Timestamp] = None
+    cf_azimuth: float = 0.0
+    # Last decision hour a refresh succeeded for; d > this triggers a re-fetch.
+    wx_last_decision_hour: int = -1
+    # Bumped on every weather refresh so a future KV-cached serving path knows
+    # the encoded prefix is stale (the current engine re-encodes per pitch).
+    context_version: int = 0
 
 
 class LiveInferenceEngine:
@@ -250,6 +262,19 @@ class LiveInferenceEngine:
         self.feature_mean = checkpoint.get("feature_mean", {})
         self.feature_std = checkpoint.get("feature_std", {})
 
+        # As-of weather mode: the checkpoint's weather geometry decides which
+        # live tensor register_game fetches and _build_batch emits. Norm stats
+        # and the station map load once (S3) and are reused per game.
+        from .weather_asof import ASOF_CHANNELS
+        self._asof_mode = config.get("weather_dim") == ASOF_CHANNELS
+        self._asof_norm_stats = None
+        self._asof_station_map = None
+        if self._asof_mode:
+            from .weather_asof import load_norm_stats, load_station_map
+            self._asof_norm_stats = load_norm_stats()
+            self._asof_station_map = load_station_map()
+            log.info("As-of weather mode: live [7,7,%d] tensor with hourly refresh", ASOF_CHANNELS)
+
         # Loaded once: register_game fetches weather per game and the azimuth
         # table is static across a season.
         self.park_azimuths = _load_park_azimuths(_PARK_AZIMUTHS_URI)
@@ -281,7 +306,24 @@ class LiveInferenceEngine:
         first pitch + 4 hours, so it already covers the whole game, and the 6-hourly
         refresh cadence means a mid-game re-read would return the same rows.
         """
-        if weather_context is None and venue_id is not None and game_hour_utc is not None:
+        weather_asof_tensor = None
+        cf_azimuth = float(self.park_azimuths.get(int(venue_id), 0.0)) if venue_id is not None else 0.0
+        game_hour_ts = (pd.Timestamp(game_hour_utc, tz="UTC") if game_hour_utc is not None
+                        and pd.Timestamp(game_hour_utc).tzinfo is None
+                        else (pd.Timestamp(game_hour_utc) if game_hour_utc is not None else None))
+        if self._asof_mode and venue_id is not None and game_hour_ts is not None:
+            try:
+                from .weather_asof import fetch_live_asof
+                arr = fetch_live_asof(int(venue_id), game_hour_ts, cf_azimuth,
+                                      station_map=self._asof_station_map,
+                                      norm_stats=self._asof_norm_stats)
+                if arr is not None:
+                    weather_asof_tensor = torch.from_numpy(arr)
+            except Exception:
+                log.warning(f"Game {game_pk}: live as-of weather fetch failed "
+                            f"(venue={venue_id}) — zero-mask tensor until refresh",
+                            exc_info=True)
+        elif weather_context is None and venue_id is not None and game_hour_utc is not None:
             try:
                 arr = fetch_live_weather(
                     venue_id=int(venue_id),
@@ -312,6 +354,11 @@ class LiveInferenceEngine:
                 pregame_prior=pregame_prior,
                 game_start_time=time.time(),
                 weather_context=weather_context,
+                weather_asof=weather_asof_tensor,
+                venue_id=int(venue_id) if venue_id is not None else None,
+                game_hour_utc=game_hour_ts,
+                cf_azimuth=cf_azimuth,
+                wx_last_decision_hour=0 if weather_asof_tensor is not None else -1,
             )
             log.info(f"Registered game {game_pk} for live inference")
 
@@ -353,7 +400,13 @@ class LiveInferenceEngine:
             # 5. Compute innings completed (for time-based features)
             state.innings_completed = pitch_event.inning - 1 + (0.5 if pitch_event.is_top_inning else 1.0)
 
-        # 6. Run inference (release lock during computation)
+        # 6. As-of weather refresh on decision-hour boundary — outside the lock
+        # (an S3 round-trip must not block other games' pitch events). On any
+        # failure the stale tensor keeps serving: its masks are still honest
+        # for the decision hour they were built at.
+        self._maybe_refresh_weather(state)
+
+        # 7. Run inference (release lock during computation)
         start = time.time()
         market_prices = self._run_inference(state)
         elapsed_ms = (time.time() - start) * 1000
@@ -488,6 +541,40 @@ class LiveInferenceEngine:
         std = self.feature_std.get(feature_name, 1.0)
         return float((value - mean) / std) if std > 1e-6 else 0.0
 
+    def _current_decision_hour(self, state: GameInferenceState) -> int:
+        if state.game_hour_utc is None:
+            return 0
+        elapsed = (pd.Timestamp.now(tz="UTC") - state.game_hour_utc) / pd.Timedelta(hours=1)
+        return int(np.clip(np.floor(elapsed), 0, 6))
+
+    def _maybe_refresh_weather(self, state: GameInferenceState) -> None:
+        """Re-assemble the as-of tensor when the clock crosses a decision hour.
+
+        A refresh at hour d unlocks the hour d-1 observation and the freshest
+        forecast issue — exactly the living-window update the model trained on."""
+        if not self._asof_mode or state.venue_id is None or state.game_hour_utc is None:
+            return
+        d = self._current_decision_hour(state)
+        if d <= state.wx_last_decision_hour:
+            return
+        try:
+            from .weather_asof import fetch_live_asof
+            arr = fetch_live_asof(state.venue_id, state.game_hour_utc, state.cf_azimuth,
+                                  station_map=self._asof_station_map,
+                                  norm_stats=self._asof_norm_stats)
+        except Exception:
+            log.warning(f"Game {state.game_pk}: weather refresh at d={d} failed — "
+                        f"keeping tensor from d={state.wx_last_decision_hour}",
+                        exc_info=True)
+            return
+        if arr is not None:
+            with self._lock:
+                state.weather_asof = torch.from_numpy(arr)
+                state.wx_last_decision_hour = d
+                state.context_version += 1
+            log.info(f"Game {state.game_pk}: weather refreshed at decision hour {d} "
+                     f"(context v{state.context_version})")
+
     def _build_batch(self, state: GameInferenceState) -> dict[str, torch.Tensor]:
         """Construct a full model batch from the accumulated pitch tensors.
 
@@ -553,7 +640,11 @@ class LiveInferenceEngine:
         }
 
         # Weather temporal context: [1, 4, 22] for GameTransformer's ContextCompiler
-        if state.weather_context is not None:
+        if self._asof_mode and state.weather_asof is not None:
+            # The decision row for "now" — same slice training used per sample
+            d = self._current_decision_hour(state)
+            batch["weather_temporal"] = state.weather_asof[d].unsqueeze(0).to(self.device)
+        elif state.weather_context is not None:
             batch["weather_temporal"] = state.weather_context.unsqueeze(0).to(self.device)
 
         return batch

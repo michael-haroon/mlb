@@ -7,6 +7,9 @@ Responsibilities:
   3. On game Final: call download_history.run_ingestion() to persist to S3/parquet.
   4. Daily enrichment at 08:00 UTC: fetch_weather.run_daily_weather() archive refresh.
   5. Forecast refresh loop: fetch_weather.run_forecast_refresh() every 6h (dedicated thread).
+  6. As-of weather loop (hourly, dedicated thread): live_weather_asof.run_once() —
+     AWC METARs + freshest HRRR issue appended to daily S3 files for the DL
+     engine's living-window tensor.
 
 download_history.py owns ALL persistent storage and checkpoint tracking.
 If this daemon crashes mid-game, run download_history.py standalone —
@@ -444,6 +447,24 @@ class LiveDaemon:
                 logger.warning("[weather] Forecast refresh failed — daemon continues", exc_info=True)
 
     # ------------------------------------------------------------------ #
+    #  AS-OF WEATHER LOOP (hourly)                                         #
+    # ------------------------------------------------------------------ #
+    def _asof_weather_loop(self):
+        """Hourly AWC obs + freshest HRRR issue for the DL living-window tensor.
+
+        HRRR issues hourly (unlike ECMWF's 6-hourly cycles above), and the
+        engine re-slices its decision row on every hour boundary — a stale
+        feed would silently freeze the obs channel mid-game."""
+        while not self._shutdown.is_set():
+            try:
+                import live_weather_asof as lwa
+                lwa.run_once()
+            except Exception:
+                logger.warning("[asof-weather] refresh failed — daemon continues", exc_info=True)
+            if self._shutdown.wait(timeout=3600):
+                return
+
+    # ------------------------------------------------------------------ #
     #  SCHEDULE RESET LOOP                                                 #
     # ------------------------------------------------------------------ #
     def _schedule_loop(self):
@@ -486,10 +507,12 @@ class LiveDaemon:
         poll_thread     = threading.Thread(target=self._polling_loop,  name="PollLoop",     daemon=True)
         schedule_thread = threading.Thread(target=self._schedule_loop, name="ScheduleLoop", daemon=True)
         weather_thread  = threading.Thread(target=self._forecast_refresh_loop, name="WeatherLoop", daemon=True)
+        asof_wx_thread  = threading.Thread(target=self._asof_weather_loop, name="AsofWxLoop", daemon=True)
 
         poll_thread.start()
         schedule_thread.start()
         weather_thread.start()
+        asof_wx_thread.start()
 
         logger.info("Daemon threads launched. Waiting for shutdown signal (SIGTERM / SIGINT).")
         self._shutdown.wait()
@@ -498,6 +521,7 @@ class LiveDaemon:
         poll_thread.join(timeout=30)
         schedule_thread.join(timeout=5)
         weather_thread.join(timeout=5)
+        asof_wx_thread.join(timeout=5)
 
         remaining = list(self._matrix.keys())
         if remaining:

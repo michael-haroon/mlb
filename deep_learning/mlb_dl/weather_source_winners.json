@@ -1,0 +1,141 @@
+{
+  "built_at": "2026-08-30T06:20:50.706309+00:00",
+  "hrrr_vs_asos": {
+    "temperature_c": {
+      "winner": "hrrr",
+      "lead_buckets": {
+        "1-2h": {
+          "bias": -0.399,
+          "mae": 1.548,
+          "n": 20149
+        },
+        "3-5h": {
+          "bias": -0.298,
+          "mae": 1.66,
+          "n": 25504
+        },
+        "6-9h": {
+          "bias": -0.298,
+          "mae": 1.728,
+          "n": 16038
+        }
+      }
+    },
+    "dewpoint_c": {
+      "winner": "hrrr",
+      "lead_buckets": {
+        "1-2h": {
+          "bias": 0.504,
+          "mae": 1.656,
+          "n": 20127
+        },
+        "3-5h": {
+          "bias": 0.496,
+          "mae": 1.839,
+          "n": 25474
+        },
+        "6-9h": {
+          "bias": 0.495,
+          "mae": 1.909,
+          "n": 16016
+        }
+      }
+    },
+    "wind_speed_ms": {
+      "winner": "hrrr",
+      "lead_buckets": {
+        "1-2h": {
+          "bias": -0.539,
+          "mae": 1.432,
+          "n": 19529
+        },
+        "3-5h": {
+          "bias": -0.412,
+          "mae": 1.414,
+          "n": 24722
+        },
+        "6-9h": {
+          "bias": -0.334,
+          "mae": 1.413,
+          "n": 15563
+        }
+      }
+    },
+    "gust_ms": {
+      "winner": "hrrr",
+      "lead_buckets": {
+        "1-2h": {
+          "bias": -1.334,
+          "mae": 2.592,
+          "n": 3728
+        },
+        "3-5h": {
+          "bias": -1.069,
+          "mae": 2.609,
+          "n": 4321
+        },
+        "6-9h": {
+          "bias": -0.878,
+          "mae": 2.685,
+          "n": 2297
+        }
+      }
+    },
+    "pressure_hpa": {
+      "winner": "hrrr",
+      "lead_buckets": {
+        "1-2h": {
+          "bias": 0.714,
+          "mae": 3.411,
+          "n": 20163
+        },
+        "3-5h": {
+          "bias": 0.644,
+          "mae": 3.432,
+          "n": 25525
+        },
+        "6-9h": {
+          "bias": 0.613,
+          "mae": 3.436,
+          "n": 16053
+        }
+      }
+    },
+    "visibility_km": {
+      "winner": "hrrr",
+      "lead_buckets": {
+        "1-2h": {
+          "bias": 13.034,
+          "mae": 14.911,
+          "n": 19629
+        },
+        "3-5h": {
+          "bias": 12.835,
+          "mae": 14.774,
+          "n": 24834
+        },
+        "6-9h": {
+          "bias": 11.715,
+          "mae": 13.826,
+          "n": 15612
+        }
+      }
+    }
+  },
+  "asos_dissemination_lag": {
+    "n": 34,
+    "p50_min": 4.1,
+    "p95_min": 8.8,
+    "p99_min": 28.9,
+    "constant_used_min": 10,
+    "verdict": "constant too optimistic"
+  },
+  "hrrr_dissemination_lag": {
+    "n": 12,
+    "min_min": 54.8,
+    "max_min": 65.6,
+    "constant_used_min": 75,
+    "verdict": "ok"
+  },
+  "notes": "v1 is HRRR-only (Toronto in-grid; AWS GFS starts 2021 = mask-flip era regressor; ECMWF as-issued unavailable free pre-2022). Winner fields will become meaningful when a second leakage-free source spans 2015+."
+}

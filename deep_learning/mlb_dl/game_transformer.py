@@ -48,7 +48,10 @@ class ContextConfig:
     team_games: int = 10
     tokens_per_game: int = 4
     flat_feature_tokens: int = 4
-    weather_tokens: int = 4  # one per hour in the 4-hour game window
+    weather_tokens: int = 4  # one per hour in the game window (7 for as-of weather)
+    # Per-token weather width: 22 for the legacy [4,22] snapshot; 99 for the
+    # as-of tensor's [7,99] decision row (weather_asof.ASOF_CHANNELS).
+    weather_dim: int = 22
     rating_steps: int = RATING_SEQ_STEPS  # temporal steps per side for rating history
 
     @property
@@ -450,10 +453,10 @@ class ContextCompiler(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # Weather temporal tokens: 22 features per hour → d_model per token
-        from .weather_context import WEATHER_TOKEN_DIM
+        # Weather temporal tokens: weather_dim features per hour → d_model per
+        # token (22 legacy snapshot / 99 as-of channels)
         self.weather_proj = nn.Sequential(
-            nn.Linear(WEATHER_TOKEN_DIM, d_model),
+            nn.Linear(self.config.weather_dim, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -1372,7 +1375,13 @@ class GameTransformerLoss(nn.Module):
 
             # HR: focal BCE on derived P(1+ HR)
             if "player_hr" in targets and "hr_prob" in predictions:
-                hr_target = targets["player_hr"].float()
+                # The head is P(1+ HR) (see `p_1plus_hr`), but the target is a
+                # COUNT (0-4 in the real splits, 0.80% of slots > 1). BCE with a
+                # target outside [0,1] is not a probability loss: for t=2 the
+                # gradient -t/p - (1-t)/(1-p) is negative for EVERY p, so those
+                # slots push the probability to 1 without bound, and at p=0.3
+                # they carry 7x the loss of a 1-HR slot.
+                hr_target = (targets["player_hr"] > 0).float()
                 # Convert prob to logit for focal loss
                 hr_prob_clamped = predictions["hr_prob"].clamp(1e-6, 1 - 1e-6)
                 hr_logit = torch.log(hr_prob_clamped / (1 - hr_prob_clamped))
@@ -1395,8 +1404,10 @@ class GameTransformerLoss(nn.Module):
 
             # SB: focal BCE
             if "player_sb" in targets and "stolen_bases_logit" in predictions:
+                # Same count-vs-event mismatch as HR: player_sb reaches 3-4, and
+                # a target of 3 costs 24x a target of 1 while still pushing p up.
                 focal = self._focal_bce(
-                    predictions["stolen_bases_logit"], targets["player_sb"].float()
+                    predictions["stolen_bases_logit"], (targets["player_sb"] > 0).float()
                 )
                 losses["focal_sb"] = (focal * pm).sum() / n_valid
         else:

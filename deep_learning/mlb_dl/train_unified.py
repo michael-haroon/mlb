@@ -459,7 +459,71 @@ def _load_feature_store(
         log.info("  %d sequences, %d features, K=%d (%.1fs)",
                  len(rating_seqs), len(rating_cols), k_steps, time.time() - t)
 
+    asof, wx_offsets = _load_weather_asof_artifacts(fs_path)
+    if asof:
+        frames["weather_asof"] = asof
+        frames["wx_hour_offsets"] = wx_offsets
+
     return frames
+
+
+def _load_weather_asof_artifacts(fs_path: Path) -> tuple[dict, dict]:
+    """Load the as-of weather artifact (built by mlb_dl.build_weather_asof).
+
+    Returns ({game_pk: [7,7,99] float32 STANDARDIZED}, {game_pk: int8 offsets}).
+    The artifact stores raw values; z-scoring happens here with the train-only
+    sidecar stats. Masked entries are 0 raw and stay exactly 0 after
+    z*mask — standardize-then-mask (weather_asof D2).
+    """
+    from .weather_asof import (
+        ASOF_CHANNELS, N_DECISIONS, N_TARGET_HOURS, N_DIMS, N_OBS_DIMS,
+        OFF_FCST, OFF_FCST_MASK, OFF_OBS, OFF_OBS_MASK,
+    )
+
+    asof_dir = fs_path / "weather_asof"
+    if not asof_dir.exists():
+        return {}, {}
+    norm_file = fs_path / "weather_asof_norm.json"
+    stats = None
+    if norm_file.exists():
+        raw = json.loads(norm_file.read_text())
+        stats = {k: np.asarray(raw[k], dtype=np.float32)
+                 for k in ("fcst_mean", "fcst_std", "obs_mean", "obs_std")}
+    else:
+        log.warning("weather_asof artifact without norm sidecar — training on raw units")
+
+    chan_cols = [f"wx_c{i:02d}" for i in range(ASOF_CHANNELS)]
+    asof: dict[int, np.ndarray] = {}
+    t = time.time()
+    for f in sorted(asof_dir.glob("season=*.parquet")):
+        df = pd.read_parquet(f).sort_values(["game_pk", "decision_hour", "target_hour"])
+        # to_numpy can hand back a read-only zero-copy view; we mutate in place
+        arr = np.array(df[chan_cols].to_numpy(np.float32))
+        if stats is not None:
+            for off, n, mean, std in ((OFF_FCST, N_DIMS, stats["fcst_mean"], stats["fcst_std"]),
+                                      (OFF_OBS, N_OBS_DIMS, stats["obs_mean"], stats["obs_std"])):
+                mask = arr[:, off + n:off + 2 * n] if off == OFF_FCST else arr[:, OFF_OBS_MASK:OFF_OBS_MASK + n]
+                safe_std = np.where(std > 1e-8, std, 1.0)
+                arr[:, off:off + n] = (arr[:, off:off + n] - mean) / safe_std * mask
+        pks = df["game_pk"].to_numpy()
+        per_game = N_DECISIONS * N_TARGET_HOURS
+        for start in range(0, len(arr), per_game):
+            asof[int(pks[start])] = arr[start:start + per_game].reshape(
+                N_DECISIONS, N_TARGET_HOURS, ASOF_CHANNELS)
+    log.info("Loaded weather_asof: %d games (%.1fs)", len(asof), time.time() - t)
+
+    offsets: dict[int, np.ndarray] = {}
+    off_dir = fs_path / "wx_hour_offset"
+    if off_dir.exists():
+        for f in sorted(off_dir.glob("season=*.parquet")):
+            df = pd.read_parquet(f).sort_values(["game_pk", "sequence_index"])
+            for gpk, grp in df.groupby("game_pk", sort=False):
+                offsets[int(gpk)] = grp["wx_hour_offset"].to_numpy(np.int8)
+        log.info("Loaded wx_hour_offset: %d games", len(offsets))
+    else:
+        log.warning("weather_asof present but wx_hour_offset missing — "
+                    "all live samples will use the pregame decision row (d=0)")
+    return asof, offsets
 
 
 def _build_datasets(
@@ -565,6 +629,8 @@ def _build_datasets(
         "venue_dimensions": frames.get("venue_dimensions"),
         "daily_stats": frames.get("daily_stats"),
         "game_features": frames.get("rating_sequences"),
+        "weather_asof": frames.get("weather_asof"),
+        "wx_hour_offsets": frames.get("wx_hour_offsets"),
     }
 
     common_kwargs = dict(
@@ -1110,6 +1176,76 @@ def _diagnose_learning_curve(frac_results: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _hits_categorical_metrics(hits_logits: torch.Tensor,
+                              hits_actual: torch.Tensor,
+                              player_mask=None) -> dict:
+    """CE + accuracy for the 5-way hits head, where class 4 means "4 OR MORE".
+
+    The clamp is not defensive rounding — it is the head's definition, and it
+    must match game_transformer's loss exactly. Without it the first 5-hit game
+    in a split raises "Target 5 is out of bounds" and kills the whole eval pass.
+    """
+    B, P, C = hits_logits.shape
+    logits_flat = hits_logits.reshape(-1, C)
+    actual_flat = hits_actual.reshape(-1).long()
+    valid = torch.from_numpy(_player_valid(hits_actual.numpy(), player_mask))
+    if valid.sum() == 0:
+        return {}
+    target = actual_flat[valid].clamp(0, C - 1)
+    pred = logits_flat[valid]
+    return {
+        "player_hits_ce": round(F.cross_entropy(pred, target, reduction="mean").item(), 5),
+        "player_hits_accuracy": round((pred.argmax(dim=-1) == target).float().mean().item(), 4),
+        "player_hits_n": int(valid.sum()),
+    }
+
+
+def _binary_skill(name: str, p: np.ndarray, y: np.ndarray) -> dict:
+    """Brier skill against always quoting the base rate.
+
+    A raw Brier is unreadable without its baseline: 0.207 sounds bad and 0.068
+    sounds good, but the only question for a market maker is whether the number
+    beats the constant quote, whose Brier is p(1-p). That identity holds ONLY for
+    a binary y, so callers must binarise count targets first.
+    """
+    if len(y) == 0:
+        return {}
+    base = float(y.mean())
+    const = base * (1.0 - base)
+    brier = float(np.mean((p - y) ** 2))
+    return {
+        f"{name}_brier_constant": round(const, 5),
+        f"{name}_bss": round((const - brier) / const, 4) if const > 0 else None,
+    }
+
+
+def _player_valid(target, player_mask) -> np.ndarray:
+    """Which player slots count toward a held-out metric.
+
+    Must match the loss exactly. GameTransformerLoss weights every player head by
+    `targets["player_mask"]`, but evaluation used to filter on `y >= 0` — and
+    padding slots are encoded as 0, not -1, so that filter admitted all of them.
+    On the real prepared test split that is 7,076 of 54,220 slots (13.1%), and
+    they carry genuine outcomes (2.5% HR positives), so scoring them both moves
+    the p(1-p) baseline every skill score is measured against (HR base rate
+    0.12746 masked vs 0.11415 unmasked) and scores the model on rows the loss
+    deliberately excluded.
+
+    `player_mask` may be absent on the from-frames path, in which case the
+    sentinel filter is the only signal available.
+    """
+    y = np.asarray(target).reshape(-1)
+    if player_mask is None:
+        return y >= 0
+    pm = np.asarray(player_mask).reshape(-1)
+    if pm.shape != y.shape:
+        raise ValueError(
+            f"player_mask shape {pm.shape} != target shape {y.shape}; refusing to "
+            "broadcast, which would silently mask the wrong slots"
+        )
+    return (pm > 0) & (y >= 0)
+
+
 @torch.no_grad()
 def _evaluate_model(
     model: GameTransformer,
@@ -1132,8 +1268,18 @@ def _evaluate_model(
         "home_runs_remaining": [], "away_runs_remaining": [],
         "home_win": [], "yrfi": [],
         "extra_innings": [], "player_hr": [], "player_hits": [],
-        "player_pitcher_k": [], "player_hrbi": [], "player_sb": [],
+        # The pitcher-strikeout target is "player_so" (precollate row 2, and the
+        # loss at game_transformer.py:1392). Eval asked for "player_pitcher_k",
+        # which the dataset never emits, so the key stayed an empty list, the
+        # isinstance guard skipped the block, and the strikeout-props head shipped
+        # with NO held-out metric at all. Keep metric names keyed to the target so
+        # any future drift shows up in the output instead of vanishing.
+        "player_so": [], "player_hrbi": [], "player_sb": [],
     }
+
+    # player_mask rides alongside targets in the batch, not inside it (see the
+    # merge at the training call sites); collect it so eval can mask like the loss.
+    player_masks: list = []
 
     for batch in loader:
         batch = _to_device(batch, device)
@@ -1146,6 +1292,8 @@ def _evaluate_model(
         for k in all_targets:
             if k in batch["targets"]:
                 all_targets[k].append(batch["targets"][k].cpu())
+        if batch.get("player_mask") is not None:
+            player_masks.append(batch["player_mask"].cpu())
 
     # Concatenate
     for k in all_preds:
@@ -1155,6 +1303,8 @@ def _evaluate_model(
         if all_targets[k]:
             all_targets[k] = torch.cat(all_targets[k])
 
+    pmask = torch.cat(player_masks).numpy() if player_masks else None
+
     metrics = {}
 
     # Game-level metrics
@@ -1163,11 +1313,26 @@ def _evaluate_model(
         hw_actual = all_targets["home_win"].numpy()
         metrics["home_win_brier"] = float(np.mean((hw_prob - hw_actual) ** 2))
         metrics["home_win_n"] = len(hw_actual)
+        metrics.update(_binary_skill("home_win", hw_prob, hw_actual))
 
     if isinstance(all_preds.get("yrfi_logit"), torch.Tensor):
         yrfi_prob = torch.sigmoid(all_preds["yrfi_logit"]).numpy()
         yrfi_actual = all_targets["yrfi"].numpy()
         metrics["yrfi_brier"] = float(np.mean((yrfi_prob - yrfi_actual) ** 2))
+        metrics["yrfi_base_rate"] = float(yrfi_actual.mean())
+        metrics.update(_binary_skill("yrfi", yrfi_prob, yrfi_actual))
+
+    # extra_innings was trained and the classical baseline block below even carries
+    # an extra_innings_brier to compare against, but no metric was ever computed
+    # for it — the head shipped unmeasured.
+    if isinstance(all_preds.get("extra_innings_logit"), torch.Tensor) and \
+            isinstance(all_targets.get("extra_innings"), torch.Tensor):
+        xi_prob = torch.sigmoid(all_preds["extra_innings_logit"]).numpy()
+        xi_actual = all_targets["extra_innings"].numpy()
+        metrics["extra_innings_brier"] = float(np.mean((xi_prob - xi_actual) ** 2))
+        metrics["extra_innings_base_rate"] = float(xi_actual.mean())
+        metrics["extra_innings_pred_mean"] = float(xi_prob.mean())
+        metrics.update(_binary_skill("extra_innings", xi_prob, xi_actual))
 
     if isinstance(all_preds.get("mu_home"), torch.Tensor):
         # Total runs MAE
@@ -1194,48 +1359,42 @@ def _evaluate_model(
     # Player-level metrics
     if isinstance(all_preds.get("hr_prob"), torch.Tensor) and isinstance(all_targets.get("player_hr"), torch.Tensor):
         hr_prob = all_preds["hr_prob"].numpy().flatten()
-        hr_actual = all_targets["player_hr"].numpy().flatten()
-        valid = hr_actual >= 0
+        hr_count = all_targets["player_hr"].numpy().flatten()
+        valid = _player_valid(hr_count, pmask)
+        # The head is P(1+ HR); the target is a count reaching 4. Scoring a
+        # probability against a count makes Brier meaningless and its p(1-p)
+        # baseline invalid, which is what made this head look worse than a
+        # constant. Score the event the head actually predicts.
+        hr_actual = (hr_count > 0).astype(np.float32)
         if valid.sum() > 0:
             metrics["player_hr_brier"] = float(np.mean((hr_prob[valid] - hr_actual[valid]) ** 2))
             metrics["player_hr_base_rate"] = float(hr_actual[valid].mean())
             metrics["player_hr_pred_mean"] = float(hr_prob[valid].mean())
+            metrics["player_hr_n"] = int(valid.sum())
+            metrics.update(_binary_skill("player_hr", hr_prob[valid], hr_actual[valid]))
 
     # Hits categorical (CE + accuracy)
     if isinstance(all_preds.get("hits_categorical"), torch.Tensor) and isinstance(all_targets.get("player_hits"), torch.Tensor):
-        hits_logits = all_preds["hits_categorical"]  # [N, P, 5]
-        hits_actual = all_targets["player_hits"]  # [N, P]
-        # Flatten player dimension
-        B, P, C = hits_logits.shape
-        hits_logits_flat = hits_logits.reshape(-1, C)  # [N*P, 5]
-        hits_actual_flat = hits_actual.reshape(-1).long()  # [N*P]
-        valid = hits_actual_flat >= 0
-        if valid.sum() > 0:
-            ce = F.cross_entropy(
-                hits_logits_flat[valid], hits_actual_flat[valid], reduction="mean"
-            ).item()
-            metrics["player_hits_ce"] = round(ce, 5)
-            pred_class = hits_logits_flat[valid].argmax(dim=-1)
-            accuracy = (pred_class == hits_actual_flat[valid]).float().mean().item()
-            metrics["player_hits_accuracy"] = round(accuracy, 4)
-            metrics["player_hits_n"] = int(valid.sum())
+        metrics.update(_hits_categorical_metrics(all_preds["hits_categorical"],
+                                                 all_targets["player_hits"], pmask))
 
     # Pitcher K NegBin NLL
-    if "pitcher_k_mu" in all_preds and "player_pitcher_k" in all_targets:
+    if "pitcher_k_mu" in all_preds and "player_so" in all_targets:
         k_mu = all_preds["pitcher_k_mu"]
         k_alpha = all_preds["pitcher_k_alpha"]
-        k_actual = all_targets["player_pitcher_k"]
+        k_actual = all_targets["player_so"]
         if isinstance(k_mu, torch.Tensor) and isinstance(k_actual, torch.Tensor):
-            valid = k_actual.flatten() >= 0
+            valid = torch.from_numpy(_player_valid(k_actual.numpy(), pmask))
             if valid.sum() > 0:
                 nll = negbin_nll(
                     k_actual.flatten()[valid],
                     k_mu.flatten()[valid],
                     k_alpha.flatten()[valid],
                 ).mean().item()
-                metrics["player_pitcher_k_nll"] = round(nll, 5)
-                metrics["player_pitcher_k_pred_mean"] = round(k_mu.flatten()[valid].mean().item(), 3)
-                metrics["player_pitcher_k_actual_mean"] = round(k_actual.flatten()[valid].float().mean().item(), 3)
+                metrics["player_so_nll"] = round(nll, 5)
+                metrics["player_so_pred_mean"] = round(k_mu.flatten()[valid].mean().item(), 3)
+                metrics["player_so_actual_mean"] = round(k_actual.flatten()[valid].float().mean().item(), 3)
+                metrics["player_so_n"] = int(valid.sum().item())
 
     # H+R+RBI NegBin NLL
     if "h_r_rbi_mu" in all_preds and "player_hrbi" in all_targets:
@@ -1243,7 +1402,7 @@ def _evaluate_model(
         hrbi_alpha = all_preds["h_r_rbi_alpha"]
         hrbi_actual = all_targets["player_hrbi"]
         if isinstance(hrbi_mu, torch.Tensor) and isinstance(hrbi_actual, torch.Tensor):
-            valid = hrbi_actual.flatten() >= 0
+            valid = torch.from_numpy(_player_valid(hrbi_actual.numpy(), pmask))
             if valid.sum() > 0:
                 nll = negbin_nll(
                     hrbi_actual.flatten()[valid],
@@ -1260,11 +1419,15 @@ def _evaluate_model(
         sb_actual = all_targets["player_sb"]
         if isinstance(sb_logit, torch.Tensor) and isinstance(sb_actual, torch.Tensor):
             sb_prob = torch.sigmoid(sb_logit).numpy().flatten()
-            sb_true = sb_actual.numpy().flatten()
-            valid = sb_true >= 0
+            sb_count = sb_actual.numpy().flatten()
+            valid = _player_valid(sb_count, pmask)
+            sb_true = (sb_count > 0).astype(np.float32)   # head is P(1+ SB)
             if valid.sum() > 0:
                 metrics["player_sb_brier"] = float(np.mean((sb_prob[valid] - sb_true[valid]) ** 2))
                 metrics["player_sb_base_rate"] = float(sb_true[valid].mean())
+                metrics["player_sb_pred_mean"] = float(sb_prob[valid].mean())
+                metrics["player_sb_n"] = int(valid.sum())
+                metrics.update(_binary_skill("player_sb", sb_prob[valid], sb_true[valid]))
 
     return metrics
 
@@ -1272,6 +1435,32 @@ def _evaluate_model(
 # ---------------------------------------------------------------------------
 # CLI commands
 # ---------------------------------------------------------------------------
+
+
+def _resolve_weather_geometry(dataset, use_prepared: bool) -> tuple[ContextConfig, bool]:
+    """Pick the weather token geometry the DATA actually carries.
+
+    As-of weather is 7 decision-hour tokens of 99 channels; legacy is a 4x22
+    snapshot. `fit-unified` and `evaluate` must agree exactly — a checkpoint
+    trained on one geometry cannot be loaded into a model built for the other,
+    so this stays a single function rather than two copies that can drift.
+
+    Detection spans all three data paths: prepared manifest flag, or the
+    per-game dict the cached/from-frames datasets attach. An empty dict means
+    the artifact was absent, which is legacy, not as-of.
+    """
+    context_config = ContextConfig()
+    asof_active = bool(
+        (use_prepared and dataset.manifest.get("has_weather_asof"))
+        or getattr(dataset, "_weather_asof_by_pk", None)
+    )
+    if asof_active:
+        from .weather_asof import ASOF_CHANNELS, N_TARGET_HOURS
+        context_config.weather_tokens = N_TARGET_HOURS
+        context_config.weather_dim = ASOF_CHANNELS
+        log.info("As-of weather active: weather tokens %d x %d channels",
+                 context_config.weather_tokens, context_config.weather_dim)
+    return context_config, asof_active
 
 
 def _cmd_fit_unified(args) -> None:
@@ -1353,7 +1542,7 @@ def _cmd_fit_unified(args) -> None:
     log.info("Device: %s", device)
 
     # Model
-    context_config = ContextConfig()
+    context_config, _asof_active = _resolve_weather_geometry(train_ds, use_prepared)
     model = GameTransformer(
         d_model=args.d_model,
         rating_dim=rating_dim,
@@ -1480,17 +1669,37 @@ def _cmd_evaluate(args) -> None:
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
 
-    frames = _load_feature_store(args.feature_store)
-
-    # Load model
     device = torch.device(
         "cuda" if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available()
         else "cpu"
     )
 
-    rating_dim = frames.get("_rating_dim", 0)
-    context_config = ContextConfig()
+    # Prefer the pre-collated tensors when they exist. Rebuilding the test split
+    # from the feature store is the EBS-bound assembly path that dominated the
+    # baseline run's wall clock; scoring a saved checkpoint should not pay it.
+    prepared_dir = getattr(args, "prepared_dir", None)
+    use_prepared = bool(
+        prepared_dir and (Path(prepared_dir) / "manifest.json").exists()
+    )
+    if use_prepared:
+        from .precollate import load_prepared_datasets, prepared_collate_fn
+        log.info("Loading pre-collated tensors from: %s", prepared_dir)
+        _, _, test_ds = load_prepared_datasets(prepared_dir)
+        rating_dim = test_ds.manifest.get("rating_dim", 0)
+        collate = prepared_collate_fn
+        geometry_src = test_ds
+    else:
+        frames = _load_feature_store(args.feature_store)
+        rating_dim = frames.get("_rating_dim", 0)
+        train_end, val_end = temporal_split_dates(frames["game_targets"],
+                                                  min_date=_STATCAST_MIN_DATE)
+        _, _, test_ds = _build_datasets(frames, AblationConfig(), train_end, val_end)
+        collate = game_transformer_collate_fn
+        geometry_src = test_ds
+    log.info("Test split: %d games (rating_dim=%d)", len(test_ds), rating_dim)
+
+    context_config, _ = _resolve_weather_geometry(geometry_src, use_prepared)
     model = GameTransformer(
         d_model=args.d_model,
         rating_dim=rating_dim,
@@ -1501,28 +1710,42 @@ def _cmd_evaluate(args) -> None:
         d_ff=args.d_model * 4,
         dropout=0.0,  # No dropout at eval
     ).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True))
+    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    # fit-unified wraps the model in torch.compile on CUDA, which prefixes every
+    # key with "_orig_mod."; loading such a checkpoint into a bare module fails
+    # on every key at once, which reads like an architecture mismatch.
+    if any(k.startswith("_orig_mod.") for k in state):
+        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+    model.load_state_dict(state)
 
-    # Build test dataset
-    ablation = AblationConfig()
-    train_end, val_end = temporal_split_dates(frames["game_targets"], min_date=_STATCAST_MIN_DATE)
-
-    _, _, test_ds = _build_datasets(frames, ablation, train_end, val_end)
     test_loader = DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
-        collate_fn=game_transformer_collate_fn, num_workers=0,
+        collate_fn=collate, num_workers=getattr(args, "num_workers", 0),
     )
 
     metrics = _evaluate_model(model, test_loader, device, player_context_dim=args.d_model * 2)
 
-    # Classical baseline comparison
-    metrics["classical_baseline"] = _get_classical_baseline()
-    metrics["vs_classical"] = {}
-    if "home_win_brier" in metrics and "home_win_brier" in metrics.get("classical_baseline", {}):
-        dl_brier = metrics["home_win_brier"]
-        cl_brier = metrics["classical_baseline"]["home_win_brier"]
-        metrics["vs_classical"]["home_win_brier_improvement"] = round(cl_brier - dl_brier, 5)
-        metrics["vs_classical"]["home_win_brier_pct_improvement"] = round(
+    # Classical baseline comparison.
+    #
+    # Only heads whose INFORMATION SET matches the classical model may be compared.
+    # This block used to report home_win, which produced a "41.74% improvement" that
+    # is pure artefact: the DL head is conditioned on live in-game state (it sees
+    # runs already scored), the classical Brier is conditioned on pregame info only.
+    # Subtracting them measures the information set, not the model. extra_innings is
+    # the head where both sides are genuinely pregame-comparable, and there the DL
+    # model is marginally WORSE -- the opposite conclusion.
+    classical = _get_classical_baseline()
+    metrics["classical_baseline"] = classical
+    metrics["vs_classical"] = {
+        "_scope": "extra_innings only; home_win/yrfi are conditioned on live in-game "
+                  "state here and on pregame info in the classical model, so those "
+                  "comparisons are invalid and deliberately omitted.",
+    }
+    if "extra_innings_brier" in metrics and "extra_innings_brier" in classical:
+        dl_brier = metrics["extra_innings_brier"]
+        cl_brier = classical["extra_innings_brier"]
+        metrics["vs_classical"]["extra_innings_brier_improvement"] = round(cl_brier - dl_brier, 5)
+        metrics["vs_classical"]["extra_innings_brier_pct_improvement"] = round(
             (cl_brier - dl_brier) / cl_brier * 100, 2
         )
 
@@ -1642,6 +1865,9 @@ def main() -> None:
     ev.add_argument("--n-layers", type=int, default=6)
     ev.add_argument("--n-heads", type=int, default=8)
     ev.add_argument("--batch-size", type=int, default=64)
+    ev.add_argument("--prepared-dir", default=None,
+                    help="Pre-collated tensor dir; skips feature-store rebuild")
+    ev.add_argument("--num-workers", type=int, default=0)
     ev.set_defaults(func=_cmd_evaluate)
 
     args = parser.parse_args()
