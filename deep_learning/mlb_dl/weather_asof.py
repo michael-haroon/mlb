@@ -76,6 +76,74 @@ ASOF_CHANNELS = OFF_LEAD + 1               # 99
 # soil, AQI, lapse, shear) have no station observation — obs_mask is 0 forever.
 OBS_OBSERVABLE_DIMS = list(range(14))
 
+# The era5 columns each observable obs dim is computed from. The mask may claim a dim only
+# when every input the physics needs was actually reported.
+#
+# This is needed because the obs channel has no per-field mask and the shared feature layer
+# renders a missing input as 0.0 (weather_context._safe), so an omitted METAR group becomes
+# a legal-looking measurement that the mask then vouches for. IMPOSSIBLE_ZERO_OBS_DIMS
+# catches only the dims where 0 cannot physically occur; for the rest, 0 IS real weather
+# and no value-based rule can distinguish "reported calm" from "wind not reported".
+#
+# The consequence is not a harmless neutral value, because the masked-in 0 is z-scored
+# against the dim's mean. Measured over the 1,225,759 converted reports in the 2015 archive:
+#
+#   dim(s)  omitted group      rate    the 0 asserts        reaches the model as
+#   2,3     drct               4.54%   wind perpendicular   ~0 sigma
+#   10      sky cover          3.52%   clear sky            -1.01 sigma
+#   11      vsby               1.98%   DENSE FOG            -4.56 sigma
+#   4,5     sknt               1.68%   dead calm            -1.44 sigma
+#   6       dew point (VPD)    0.25%   saturated air        -1.32 sigma
+#   7       dew point (RH)     0.25%   0% humidity          -3.02 sigma
+#   12      p01i               0.14%   a dry hour           ~-0.1 sigma
+#
+# Visibility is the worst by far: 24,237 omitted readings against 101 genuine
+# zero-visibility reports, so fabricated fog outnumbers real fog 240 to 1 -- concentrated
+# in the exact tail the channel is meant to detect.
+#
+# Wind direction is the subtlest. Of the 55,686 reports missing drct, only 2 are genuinely
+# calm; 35,094 have a measured speed with an unreported (variable) direction and 20,590
+# have no wind data at all. Masking only dims 2-3 keeps the measured speed in dim 4, so
+# what is disclaimed is exactly what is unknown. The tempting defence -- that variable
+# winds are light (mean 3.90 kt) so 0 is nearly right -- is the reasoning that lets a
+# market-making model price confidently on an observation nobody made.
+#
+# Dims 14-21 have no station counterpart and are masked out wholesale; the 5 D2b extras
+# (22-26) are deliberately absent, since for those absence is the signal -- no wxcodes
+# group means no thunder and no precipitation type, which 0 encodes correctly.
+OBS_DIM_SOURCES: dict[int, tuple[str, ...]] = {
+    0: ("temperature_2m", "dew_point_2m", "surface_pressure"),   # moist-air density
+    1: ("temperature_2m", "dew_point_2m", "surface_pressure"),
+    2: ("wind_u_10m", "wind_v_10m"),                             # need a bearing
+    3: ("wind_u_10m", "wind_v_10m"),
+    4: ("wind_speed_10m",),
+    5: ("wind_gusts_10m",),
+    6: ("vapour_pressure_deficit",),
+    7: ("relative_humidity_2m",),
+    8: ("wet_bulb_temperature_2m",),
+    9: ("temperature_2m",),
+    10: ("cloud_cover",),
+    11: ("visibility",),
+    12: ("precipitation",),
+    13: ("surface_pressure",),
+}
+assert set(OBS_DIM_SOURCES) == set(OBS_OBSERVABLE_DIMS)
+
+
+def _obs_source_mask(row: pd.Series) -> np.ndarray:
+    """(N_DIMS,) 1.0 where every era5 input the dim needs was reported.
+
+    A column absent from the frame entirely is treated as unreported: the alternative is
+    to claim a dim built from data that was never there.
+    """
+    m = np.ones(N_DIMS, dtype=np.float32)
+    for d, cols in OBS_DIM_SOURCES.items():
+        for c in cols:
+            if c not in row.index or pd.isna(row[c]):
+                m[d] = 0.0
+                break
+    return m
+
 # Obs dims where an exact 0.0 cannot be a real reading, so it can only be a METAR
 # group the report omitted (the feature layer renders an absent group as 0.0).
 # Station pressure and the two densities derived from it are impossible at zero
@@ -496,6 +564,12 @@ def assemble_asof_tensor(
                     # common case) and the feature layer renders those as 0.0, so
                     # the correction has to be per-dim rather than per-report —
                     # the rest of the report is still a real observation.
+                    #
+                    # Ask the source, not the value: OBS_DIM_SOURCES covers the dims
+                    # where 0 is legal weather and no value-based rule could tell a
+                    # reported calm from an unreported wind. The impossible-zero
+                    # sweep stays as a second line for anything the table misses.
+                    obs_mask[:N_DIMS] *= _obs_source_mask(row)
                     obs_mask[_IMPOSSIBLE_ZERO_MASK & (obs_vec == 0.0)] = 0.0
 
             T[di, hi, OFF_FCST:OFF_FCST_MASK] = _standardize_masked(fcst_vec, fcst_mask, fm, fs)

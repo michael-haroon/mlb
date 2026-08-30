@@ -669,3 +669,151 @@ def test_a_clear_sky_is_the_same_number_in_both_channels():
     assert (hrrr_to_era5(hrrr)["visibility"].iloc[0]
             == pytest.approx(
                 metar_to_era5(metar, station_elev_m=6.0)["visibility"].iloc[0]))
+
+
+# ── The obs mask must be derived from the source, not from the value ───────────
+# The impossible-zero correction only rescues dims where 0 cannot occur (density, wet
+# bulb, temperature, pressure). Measured over the 1,225,759 converted 2015 reports, these
+# dims arrive NaN from an omitted METAR group and _safe() renders each as a legal-looking
+# 0.0 that the mask then claims as observed:
+#
+#   dim(s)  source omitted            rate     what the masked-in 0 asserts   enters as
+#   2,3     drct (wind direction)     4.54%    wind exactly perpendicular      ~0 sigma
+#   10      sky cover                 3.52%    clear sky                      -1.01 sigma
+#   11      vsby (visibility)         1.98%    DENSE FOG                      -4.56 sigma
+#   4,5     sknt (wind speed)         1.68%    dead calm                      -1.44 sigma
+#   6       dew point -> VPD          0.25%    saturated air                  -1.32 sigma
+#   7       dew point -> RH           0.25%    0% relative humidity           -3.02 sigma
+#   12      p01i                      0.14%    a dry hour                     ~-0.1 sigma
+#
+# The sigma column is why this matters: a masked-in 0 is not a harmless neutral value. It
+# is z-scored against the dim's mean, so a fabricated visibility 0 reaches the model as a
+# 4.56-sigma dense-fog observation. Visibility is the worst case by far -- the archive
+# holds 24,237 omitted readings against just 101 genuine 0-visibility reports, so
+# fabricated fog outnumbers real fog 240 to 1, in the exact tail the channel was just
+# sharpened to detect.
+#
+# Wind direction is the subtlest: of the 55,686 reports missing drct only 2 are genuinely
+# calm, 35,094 have a measured speed with an unreported (variable) direction, and 20,590
+# have no wind data at all. The expected-value defence -- that variable winds are light
+# (mean 3.90 kt) so 0 is close to the truth -- is exactly the reasoning that lets a
+# market-making model price confidently on data nobody observed. Speed stays in dim 4;
+# only the direction-dependent dims are disclaimed.
+def _obs_frame_with_missing(**overrides):
+    """One observed METAR hour, with chosen raw groups omitted."""
+    base = dict(vsby=10.0, tmpf=75.0, dwpf=60.0, relh=60.0, drct=180.0, sknt=8.0,
+                gust=np.nan, alti=29.92, p01i=0.0, skyc1="FEW", wxcodes=None,
+                peak_wind_gust=np.nan)
+    base.update(overrides)
+    rows = []
+    for k in range(8):
+        rows.append(dict(station="TST",
+                         valid_utc=GH - pd.Timedelta(hours=6) + pd.Timedelta(hours=k),
+                         available_time_utc=GH - pd.Timedelta(hours=6)
+                         + pd.Timedelta(hours=k), **base))
+    return metar_to_era5(pd.DataFrame(rows), station_elev_m=6.0)
+
+
+def _obs_mask_for(**overrides):
+    """-> obs_mask (27,) at a decision/hour where an observation exists."""
+    obs = _obs_frame_with_missing(**overrides)
+    T = assemble_asof_tensor(obs, None, GH, VENUE, CF_AZ)
+    live = T[:, :, OFF_OBS_MASK:OFF_LEAD].reshape(-1, N_OBS_DIMS)
+    claimed = live[live.sum(axis=1) > 0]
+    assert len(claimed), "fixture produced no observed hour"
+    return claimed[0]
+
+
+def test_a_complete_report_claims_every_observable_dim():
+    """The baseline must not regress: a full METAR still populates dims 0-13."""
+    m = _obs_mask_for()
+    for d in range(14):
+        assert m[d] == 1.0, f"dim {d} lost from a complete report"
+
+
+def test_missing_wind_direction_disclaims_only_the_direction_dims():
+    """Speed is still measured, so dim 4 must survive; only the rotated components,
+    which need a bearing, are unknown."""
+    m = _obs_mask_for(drct=np.nan)
+    assert m[2] == 0.0 and m[3] == 0.0
+    assert m[4] == 1.0, "wind speed was measured and must not be discarded with direction"
+
+
+def test_missing_visibility_is_masked_not_reported_as_dense_fog():
+    """The 240-to-1 case. A masked-in 0 here reaches the model as -4.56 sigma."""
+    assert _obs_mask_for(vsby=np.nan)[11] == 0.0
+
+
+def test_a_genuine_zero_visibility_report_is_kept():
+    """Dense fog really happens (101 reports in the 2015 archive) and is exactly the
+    signal the dim exists for, so it must not be masked away with the missing ones."""
+    m = _obs_mask_for(vsby=0.0)
+    assert m[11] == 1.0
+
+
+def test_missing_sky_cover_is_masked_not_reported_as_clear():
+    assert _obs_mask_for(skyc1=None)[10] == 0.0
+
+
+def test_missing_wind_speed_is_masked_not_reported_as_calm():
+    m = _obs_mask_for(sknt=np.nan)
+    assert m[4] == 0.0 and m[5] == 0.0
+
+
+def test_a_genuine_calm_report_is_kept():
+    """00000KT is a real and common observation."""
+    m = _obs_mask_for(sknt=0.0, drct=0.0)
+    assert m[4] == 1.0
+
+
+def test_missing_dew_point_disclaims_the_moisture_dims():
+    """One omitted group reaches four dims: VPD, RH, wet bulb and both densities."""
+    m = _obs_mask_for(dwpf=np.nan, relh=np.nan)
+    for d in (0, 1, 6, 7, 8):
+        assert m[d] == 0.0, f"dim {d} still claimed without a dew point"
+    assert m[9] == 1.0, "temperature was measured and is independent of dew point"
+
+
+def test_missing_precipitation_is_masked_not_reported_as_dry():
+    assert _obs_mask_for(p01i=np.nan)[12] == 0.0
+
+
+def test_missing_pressure_disclaims_pressure_and_density():
+    m = _obs_mask_for(alti=np.nan)
+    assert m[13] == 0.0 and m[0] == 0.0 and m[1] == 0.0
+    assert m[9] == 1.0
+
+
+def test_dims_with_no_station_observation_stay_masked():
+    """Dims 14-21 have no METAR counterpart at all and must remain 0 regardless."""
+    m = _obs_mask_for()
+    for d in range(14, N_DIMS):
+        assert m[d] == 0.0
+
+
+def test_every_observable_dim_has_a_declared_source():
+    """A dim missing from the table would silently keep the old fabricate-a-zero
+    behaviour forever."""
+    from mlb_dl.weather_asof import OBS_DIM_SOURCES
+    assert set(OBS_DIM_SOURCES) == set(OBS_OBSERVABLE_DIMS)
+    for d, cols in OBS_DIM_SOURCES.items():
+        assert cols, f"dim {d} declares no source column"
+
+
+def test_the_extras_are_not_disclaimed_by_absence():
+    """Dims 22-26 are the one place where absence IS the reading, so the source rule must
+    stop at dim 13. No wxcodes group means no thunder and no precipitation type, which is
+    a real report of quiet weather -- masking it out would throw away 77% of the extras
+    (only 22.7% of 2015 reports carry a wxcodes group) to guard against nothing."""
+    m = _obs_mask_for(wxcodes=None, peak_wind_gust=np.nan)
+    for d in range(N_DIMS, N_OBS_DIMS):
+        assert m[d] == 1.0, f"extra dim {d} disclaimed although absence is its signal"
+
+
+def test_an_omitted_gust_group_still_claims_the_gust_dim():
+    """The converter fills a missing gust from the mean wind on purpose: a METAR omits the
+    group when gusting is under 10 kt over the mean, so absence is a real "no significant
+    gust" report. The source rule must not undo that -- it reads wind_gusts_10m after the
+    conversion, not the raw gust column."""
+    m = _obs_mask_for(gust=np.nan, sknt=8.0)
+    assert m[5] == 1.0 and m[4] == 1.0
