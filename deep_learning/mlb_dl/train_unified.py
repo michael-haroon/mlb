@@ -1176,7 +1176,7 @@ def _diagnose_learning_curve(frac_results: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _hits_categorical_metrics(hits_logits: torch.Tensor,
+def _hits_categorical_metrics(hits_probs: torch.Tensor,
                               hits_actual: torch.Tensor,
                               player_mask=None) -> dict:
     """CE + accuracy for the 5-way hits head, where class 4 means "4 OR MORE".
@@ -1184,17 +1184,25 @@ def _hits_categorical_metrics(hits_logits: torch.Tensor,
     The clamp is not defensive rounding — it is the head's definition, and it
     must match game_transformer's loss exactly. Without it the first 5-hit game
     in a split raises "Target 5 is out of bounds" and kills the whole eval pass.
+
+    The input is `hits_categorical`, which is already normalized to sum to 1, so the
+    score is -log(p) directly. F.cross_entropy would log_softmax it a second time, and
+    since probabilities lie in [0, 1] that softmax is nearly uniform: measured on a head
+    putting 0.96 on the right class against one putting 0.01 there, it reported 0.93 vs
+    1.88 where the true separation is 4.56 nats. The A/B decides on this number, so a
+    metric that compresses the difference fivefold cannot be left in place.
     """
-    B, P, C = hits_logits.shape
-    logits_flat = hits_logits.reshape(-1, C)
+    B, P, C = hits_probs.shape
+    probs_flat = hits_probs.reshape(-1, C)
     actual_flat = hits_actual.reshape(-1).long()
     valid = torch.from_numpy(_player_valid(hits_actual.numpy(), player_mask))
     if valid.sum() == 0:
         return {}
     target = actual_flat[valid].clamp(0, C - 1)
-    pred = logits_flat[valid]
+    pred = probs_flat[valid]
+    log_probs = torch.log(pred.clamp_min(1e-8))  # same floor as ce_hits
     return {
-        "player_hits_ce": round(F.cross_entropy(pred, target, reduction="mean").item(), 5),
+        "player_hits_ce": round(F.nll_loss(log_probs, target, reduction="mean").item(), 5),
         "player_hits_accuracy": round((pred.argmax(dim=-1) == target).float().mean().item(), 4),
         "player_hits_n": int(valid.sum()),
     }
