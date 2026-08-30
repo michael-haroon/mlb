@@ -35,9 +35,16 @@ from mlb_dl.inference_engine import (
 # path is incompatible with the current feature set. GameTransformer is the
 # serving model; the legacy path is scheduled for repair-or-removal with the
 # Phase 5 engine changes.
+# Correction 2026-08-30: the note above said "GameTransformer is the serving model".
+# It is not — inference_engine.__init__ constructs LiveGameModel, and GameTransformer
+# is instantiated nowhere outside training and diagnostics. The drift is a genuine
+# crash on the engine's own shapes (forward() concatenates 3 embeddings onto values
+# but passes the un-widened mask to the encoder), pinned with its exact trigger in
+# deep_learning/tests/test_serving_weather_is_live.py.
 pytestmark = pytest.mark.xfail(
-    reason="legacy LiveGameModel path: values(88)/mask(40) dim drift; "
-    "engine serves GameTransformer — see Phase 5",
+    reason="legacy LiveGameModel path: values/mask dim drift crashes forward(); "
+    "engine serves LiveGameModel, NOT the GameTransformer we train, so this whole "
+    "path awaits a port decision — see tests/test_serving_weather_is_live.py",
     strict=False,
 )
 

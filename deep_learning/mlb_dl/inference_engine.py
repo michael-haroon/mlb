@@ -639,7 +639,16 @@ class LiveInferenceEngine:
             "pitch_type_hashes": ptype_hashes.to(self.device),
         }
 
-        # Weather temporal context: [1, 4, 22] for GameTransformer's ContextCompiler
+        # Weather temporal context: [1,7,99] as-of decision row, or the legacy
+        # [1,4,22] snapshot. Both are GameTransformer's `weather_temporal` contract.
+        #
+        # NOTE: this engine constructs LiveGameModel (see __init__), whose forward()
+        # never reads weather_temporal, so today this tensor is computed and then
+        # discarded -- the hourly as-of refresh feeds nothing. It is built anyway
+        # because the contract must be correct for the port to GameTransformer, which
+        # is the model train_unified.py actually trains. Tracked by
+        # tests/test_serving_weather_is_live.py (strict xfail, so it fails loudly
+        # once the port lands).
         if self._asof_mode and state.weather_asof is not None:
             # The decision row for "now" — same slice training used per sample
             d = self._current_decision_hour(state)
