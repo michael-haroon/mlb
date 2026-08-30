@@ -312,12 +312,41 @@ def build_season(season: int, workers: int = 8) -> None:
 
 # ── Norm stats (train games only, populated entries only) ────────────────────
 def build_norm_stats() -> None:
-    gm = _read_parquet(f"{FS_PREFIX}/game_meta.parquet", columns=["game_pk", "game_date"])
+    """Fit the shared standardizer on populated TRAIN entries across ALL seasons.
+
+    Refuses to run on a partial artifact. The seasons are built independently (six boxes,
+    one chain each), and this function used to accumulate whatever season parquets it
+    found: an eleven-of-twelve build produced a sidecar that looked identical to a
+    complete one, shifting every z-score in both training and live serving in the same
+    direction with nothing raised. The written JSON now also records the seasons it was
+    fit on, so a sidecar predating a repair-build is distinguishable after the fact.
+
+    The required set is the seasons that CONTRIBUTE, i.e. population seasons holding train
+    games — not every season in the artifact. A missing val/test season cannot shift a
+    train-only mean, so blocking on one would stall the standardizer on an in-progress
+    current season (2026's backfill is deliberately deferred) for no statistical gain.
+    Whole-artifact coverage is a different property, checked by
+    verify_weather_asof_artifact.py. Deriving the set from the population rather than a
+    hardcoded range keeps it correct as seasons are added.
+    """
+    gm = _read_parquet(f"{FS_PREFIX}/game_meta.parquet",
+                       columns=["game_pk", "game_date", "game_type_code"])
     gm["game_date"] = pd.to_datetime(gm["game_date"])
     train_pks = set(gm[gm["game_date"] < TRAIN_END_DATE]["game_pk"])
 
+    pop = gm[(gm["game_date"] >= POP_MIN_DATE) & gm["game_type_code"].isin(POP_GAME_TYPES)]
+    required = sorted(pop[pop["game_date"] < TRAIN_END_DATE]["game_date"].dt.year.unique())
+
     resp = s3().list_objects_v2(Bucket=S3_BUCKET, Prefix=f"{FS_PREFIX}/weather_asof/season=")
     keys = [o["Key"] for o in resp.get("Contents", [])]
+    present = sorted({int(k.split("season=")[1].split(".")[0]) for k in keys})
+    missing = [int(s) for s in required if s not in present]
+    if missing:
+        raise RuntimeError(
+            f"weather_asof is missing train seasons {missing} of {len(required)} required "
+            f"(present: {present}). Fitting the standardizer without them biases every "
+            f"z-score in training AND live serving; build them first.")
+
     sums = {"fcst": np.zeros(N_DIMS), "obs": np.zeros(N_OBS_DIMS)}
     sqs = {"fcst": np.zeros(N_DIMS), "obs": np.zeros(N_OBS_DIMS)}
     cnts = {"fcst": np.zeros(N_DIMS), "obs": np.zeros(N_OBS_DIMS)}
@@ -344,6 +373,7 @@ def build_norm_stats() -> None:
         stats[f"{ch}_std"] = np.sqrt(var).tolist()
         stats[f"{ch}_count"] = cnts[ch].tolist()
     stats["train_end_date"] = TRAIN_END_DATE
+    stats["seasons"] = present
     stats["built_at"] = datetime.now(timezone.utc).isoformat()
     s3().put_object(Bucket=S3_BUCKET, Key=f"{FS_PREFIX}/weather_asof_norm.json",
                     Body=json.dumps(stats).encode())
