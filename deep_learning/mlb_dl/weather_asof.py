@@ -76,6 +76,26 @@ ASOF_CHANNELS = OFF_LEAD + 1               # 99
 # soil, AQI, lapse, shear) have no station observation — obs_mask is 0 forever.
 OBS_OBSERVABLE_DIMS = list(range(14))
 
+# Obs dims where an exact 0.0 cannot be a real reading, so it can only be a METAR
+# group the report omitted (the feature layer renders an absent group as 0.0).
+# Station pressure and the two densities derived from it are impossible at zero
+# anywhere on Earth; 0.0°F temperature and wet bulb are thermodynamically possible
+# but never occur in a playable game — the forecast channel's minimum across the
+# 2015 population is 31.5°F, and the coldest MLB game on record is ~18°F.
+#
+# Deliberately EXCLUDES the dims where zero is a genuine measurement: calm wind
+# (2-5), saturated air (6), clear sky (10), dense fog (11) and a dry hour (12) are
+# all fully observed conditions, and masking them would discard real signal.
+#
+# Measured on season=2015 (2026-08-30): 111 of 120,785 rows across 16 of 2,465
+# games had obs_mask=1 over one of these zeros. Small in count, but the artifact
+# stores raw units and the loader z-scores afterwards, so a masked-in 0 hPa
+# against a ~1000 hPa mean becomes about -50 sigma, while an honestly masked entry
+# is exactly 0 (the mean) and contributes nothing.
+IMPOSSIBLE_ZERO_OBS_DIMS = (0, 1, 8, 9, 13)
+_IMPOSSIBLE_ZERO_MASK = np.zeros(N_OBS_DIMS, dtype=bool)
+_IMPOSSIBLE_ZERO_MASK[list(IMPOSSIBLE_ZERO_OBS_DIMS)] = True
+
 # v1 decision (2026-08-30): AQI dims 17-19 stay PERMANENTLY masked in both
 # channels — CAMS coverage starts 2022-07 (measured 82% of population missing),
 # so an honest mask would flip at a calendar date, handing the model a free era
@@ -387,6 +407,13 @@ def assemble_asof_tensor(
                         row.get("wxcodes"), row.get("peak_wind_gust_kt"),
                         row.get("wind_gusts_10m"))
                     obs_mask = obs_observable.copy()
+                    # Same rule the forecast channel applies above: the mask must
+                    # not claim a dim the source did not populate. A METAR omits
+                    # the groups it has no reading for (a missing altimeter is the
+                    # common case) and the feature layer renders those as 0.0, so
+                    # the correction has to be per-dim rather than per-report —
+                    # the rest of the report is still a real observation.
+                    obs_mask[_IMPOSSIBLE_ZERO_MASK & (obs_vec == 0.0)] = 0.0
 
             T[di, hi, OFF_FCST:OFF_FCST_MASK] = _standardize_masked(fcst_vec, fcst_mask, fm, fs)
             T[di, hi, OFF_FCST_MASK:OFF_OBS] = fcst_mask

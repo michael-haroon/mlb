@@ -317,3 +317,106 @@ def test_peak_gust_nan_fallback_is_zero_not_nan():
     v = wx_extra_features(None, None, np.nan)
     assert np.isfinite(v).all()
     assert v[4] == 0.0
+
+
+# ── Obs mask must not claim fields the report omitted ─────────────────────────
+# Measured on weather_asof/season=2015.parquet (2026-08-30): 111 of 120,785 rows
+# (0.092%), across 16 of 2,465 games, carry obs_mask=1 over a value of exactly 0
+# in a dim where zero is physically impossible -- air_density (36), density_ratio
+# (36), wet_bulb_f (103), temperature_f (27), surface_pressure (10). Every
+# pressure-zero row is also a density-zero row (density is derived FROM pressure),
+# which identifies the cause: a METAR that omits its altimeter group.
+#
+# The count is small but the consequence is not proportional to it. The artifact
+# stores raw units and the loader z-scores later, so a masked-in 0 hPa against a
+# mean near 1000 hPa becomes roughly a -50 sigma activation -- whereas an honestly
+# masked entry is exactly 0 (the mean) and contributes nothing. Outliers that
+# large distort gradients far beyond their frequency.
+#
+# assemble_asof_tensor already states this invariant for the forecast channel
+# ("the mask must not claim dims the source cannot populate", dims 16-19); these
+# tests extend the same rule to obs, which took no such correction.
+IMPOSSIBLE_ZERO_DIMS = [0, 1, 8, 9, 13]   # density, density_ratio, wet_bulb, temp, pressure
+
+
+def _obs_frame_with(**overrides):
+    """_obs_frame's hourly METAR series with a field overridden in EVERY report.
+
+    It has to be the full 20:00Z-06:00Z series, not one row: select_asof_obs looks
+    for the report representing [hour_start, hour_start+1h) with the window opened
+    an hour early, so a lone report outside that span selects nothing and every
+    mask assertion would pass vacuously on an empty obs channel.
+    """
+    rows = []
+    for hh in range(20, 31):
+        valid = GH.normalize() + pd.Timedelta(hours=hh, minutes=53)
+        row = dict(station="BOS", valid_utc=valid,
+                   available_time_utc=valid + pd.Timedelta(minutes=10),
+                   tmpf=70.0, dwpf=55.0, relh=np.nan, drct=180.0, sknt=10.0,
+                   gust=np.nan, alti=29.92, mslp=np.nan, vsby=10.0,
+                   skyc1="SCT", skyl1=5000.0, skyc2=None, skyl2=None,
+                   skyc3=None, skyl3=None, p01i=0.0)
+        row.update(overrides)
+        rows.append(row)
+    return metar_to_era5(pd.DataFrame(rows), station_elev_m=6.0)
+
+
+def _obs_row(obs):
+    """The (d=6, h=-1) cell: h < d, so obs is eligible and must be populated."""
+    T = assemble_asof_tensor(obs, _hrrr_frame(), GH, VENUE, CF_AZ)
+    return T[6, 0, OFF_OBS:OFF_OBS_MASK], T[6, 0, OFF_OBS_MASK:OFF_LEAD]
+
+
+def test_metar_missing_altimeter_does_not_claim_a_measured_pressure():
+    """The measured defect: no altimeter group -> pressure and the densities
+    derived from it collapse to 0, but the mask still advertised them."""
+    vec, mask = _obs_row(_obs_frame_with(alti=np.nan))
+    for d in (0, 1, 13):
+        assert mask[d] == 0.0, f"dim {d} claims measured, value={vec[d]}"
+    # Fields the same report DID carry must survive: this must not mask the row.
+    assert mask[9] == 1.0 and vec[9] != 0.0, "temperature was reported"
+    assert mask[4] == 1.0, "wind speed was reported"
+
+
+def test_no_impossible_zero_is_ever_masked_in():
+    """Whatever the cause, a dim where zero cannot occur must never be presented
+    as a real measurement -- that is the invariant, independent of which METAR
+    field went missing."""
+    for miss in ({"alti": np.nan}, {"tmpf": np.nan}, {"dwpf": np.nan},
+                 {"tmpf": np.nan, "alti": np.nan}):
+        vec, mask = _obs_row(_obs_frame_with(**miss))
+        for d in IMPOSSIBLE_ZERO_DIMS:
+            assert not (mask[d] == 1.0 and vec[d] == 0.0), (miss, d)
+
+
+def test_calm_wind_and_clear_sky_stay_real_measurements():
+    """The over-masking guard. Zero is a legitimate reading for wind, gusts,
+    cloud and precipitation, so the fix must not sweep those into 'missing' --
+    a calm, clear, dry evening is a fully observed evening."""
+    vec, mask = _obs_row(_obs_frame_with(sknt=0.0, drct=0.0, skyc1="CLR", p01i=0.0))
+    assert vec[4] == 0.0 and mask[4] == 1.0, "calm wind is measured, not missing"
+    assert vec[10] == 0.0 and mask[10] == 1.0, "clear sky is measured, not missing"
+    assert vec[12] == 0.0 and mask[12] == 1.0, "no precip is measured, not missing"
+
+
+def test_a_fully_populated_report_masks_in_every_observable_dim():
+    """Baseline: the fix must not cost coverage on a healthy report."""
+    vec, mask = _obs_row(_obs_frame_with())
+    assert mask[OBS_OBSERVABLE_DIMS].all(), "healthy METAR lost coverage"
+    assert np.isfinite(vec).all()
+
+
+def test_obs_channel_never_carries_nonfinite_values():
+    """NaN would propagate through the whole network, and a mask could not rescue it
+    because the channel is z*mask and NaN*0 is still NaN.
+
+    This is a property tripwire, not a guard on defensive code: the feature layer
+    renders every absent METAR group as 0.0 rather than NaN, so assemble_asof_tensor
+    carries no non-finite branch (an explicit one was written, found unreachable by
+    mutation testing, and removed rather than shipped untested). The loud gate for
+    this property at season scale is the np.isfinite check in
+    verify_weather_asof_artifact.py, which runs over all 99 channels.
+    """
+    for miss in ({"alti": np.nan}, {"tmpf": np.nan}, {"vsby": np.nan}, {"p01i": np.nan}):
+        vec, _ = _obs_row(_obs_frame_with(**miss))
+        assert np.isfinite(vec).all(), miss
