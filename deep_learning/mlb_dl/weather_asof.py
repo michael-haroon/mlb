@@ -253,6 +253,30 @@ METAR_PHYSICAL_LIMITS = {
 # in the same report, and the field-at-a-time limits above can never notice.
 GUST_REPORT_FLOOR_KT = 50.0
 
+# The mirror of the rule above: a gust far ABOVE its own mean wind. Durst (1960) and
+# ASCE 7-22 put the 3-second peak at ~1.53x the mean over open terrain, and convective
+# downbursts reach ~3x, so 4.0 sits above every documented gust factor and cannot remove
+# real weather. The ratio is only consulted above an absolute floor, because a METAR
+# encodes a gust only at >=10 kt over the mean: sknt=1/gust=11 is the SMALLEST gust it can
+# report and already carries a factor of 11, so judging light-and-variable wind by ratio
+# would delete valid reports wholesale. 60 kt is also comfortably inside the artifact's own
+# 120 mph dim-5 ceiling, so nothing the ratio declines to judge can fail downstream.
+# Measured over the 13,708,338-report archive: 67 reports (0.00049%), 20 of them at GPM.
+GUST_FACTOR_MAX = 4.0
+GUST_RATIO_FLOOR_KT = 60.0
+
+# Torrential accumulation reported with neither a present-weather precipitation group nor
+# any loss of visibility. 0.75 in/h is 19 mm/h; the Marshall-Palmer-derived rate/visibility
+# relation (vis ~ 1.6/R^0.63 km, R in mm/h) puts that near 1 km -- about 0.6 SM -- so a
+# report pairing it with >=9 SM and a silent wxcodes field contradicts itself on two
+# independent channels, with over an order of magnitude of margin in visibility. Both
+# conditions must hold, so real heavy rain (which reports a code AND cuts visibility)
+# always survives. Measured archive-wide: 346 reports (0.0025%), 145 at MCF, whose hits
+# land 33/69/40 in 2018/2019/2021 and <=1 in each of its eight healthy seasons -- the
+# episodic instrument fault this rule exists to catch.
+PRECIP_NO_CODE_MAX_IN = 0.75
+PRECIP_CLEAR_VIS_MI = 9.0
+
 
 def _drop_impossible_reports(df: pd.DataFrame) -> pd.DataFrame:
     """Discard reports carrying a physically impossible value in a consumed field.
@@ -289,6 +313,23 @@ def _drop_impossible_reports(df: pd.DataFrame) -> pd.DataFrame:
         # A gust is the maximum over the averaging period; it cannot be below the mean.
         keep &= ~(gu.notna() & sk.notna() & (gu < sk))
         keep &= ~(sk.notna() & (sk >= GUST_REPORT_FLOOR_KT) & gu.isna())
+        # ...nor can it exceed the mean by more than any documented gust factor. Guard the
+        # division: sknt=0 with a modest gust is a real, common report, and dividing by it
+        # would send every calm-air gust to infinity and drop it.
+        ratio = gu / sk.where(sk > 0)
+        keep &= ~(gu.notna() & sk.notna() & (gu > GUST_RATIO_FLOOR_KT)
+                  & (ratio > GUST_FACTOR_MAX))
+
+    # Precipitation that neither the present-weather group nor the visibility corroborates.
+    if "p01i" in df:
+        pi = pd.to_numeric(df["p01i"], errors="coerce")
+        vs = pd.to_numeric(df["vsby"], errors="coerce") if "vsby" in df else pd.Series(
+            np.nan, index=df.index)
+        wx = df["wxcodes"] if "wxcodes" in df else pd.Series(np.nan, index=df.index)
+        has_precip_code = wx.astype(str).str.contains(
+            "|".join(_PRECIP_CODES + ("TS",)), regex=True, na=False)
+        keep &= ~(pi.notna() & (pi >= PRECIP_NO_CODE_MAX_IN) & ~has_precip_code
+                  & vs.notna() & (vs >= PRECIP_CLEAR_VIS_MI))
 
     n_bad = int((~keep).sum())
     if n_bad:

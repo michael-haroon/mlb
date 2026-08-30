@@ -74,8 +74,11 @@ DIM_NAMES = list(WEATHER_TEMPORAL_COLUMNS) + list(OBS_EXTRA_NAMES)
 #       is the same number in the forecast and observation channels (see VIS_CEILING_M),
 #       so anything above it means the censoring regressed, not that the weather was
 #       unusual. Imported rather than restated so the gate cannot drift from the builder.
-#   12 precip: hourly accumulation; 150 mm/h is past any world hourly record for a
-#       populated area.
+#   12 precip: hourly accumulation. The WMO 1-hour record is 305 mm (Holt, Missouri,
+#       1947), so 150 is NOT above the record — it is above anything a played MLB game can
+#       plausibly sit in, which is the claim this table makes. A gauge fault is what
+#       actually trips it: MCF 2018 reached 172 mm/h here purely because its p01i column
+#       is not inches, and the 25.4 conversion inflated 6.78 into 172.
 #   13 surface pressure: STATION pressure, so elevation dominates. The floor is set by the
 #       highest station in the venue map, not by a pressure record: Estadio Alfredo Harp
 #       Helú maps to a station at 2,309 m with a 2,576 m backup at Toluca, where the 2023
@@ -85,8 +88,18 @@ DIM_NAMES = list(WEATHER_TEMPORAL_COLUMNS) + list(OBS_EXTRA_NAMES)
 #       orders of magnitude. The original 750 floor was derived from 2015, whose highest
 #       venue was Coors at 1,724 m (measured minimum 826.8 hPa), and it failed a real game
 #       the moment Mexico City entered the population. Global sea-level record high 1084.
-#   14-15 PBL height, shortwave: 6000 m clears any convective boundary layer; the solar
+#   14-15 PBL height, shortwave: 7000 m clears any convective boundary layer; the solar
 #       constant is 1361 W/m², so 1500 covers surface max plus cloud enhancement. The
+#       PBL ceiling was 6000 m and failed 8 of 121,264 populated 2025 entries at up to
+#       6292 m. Raised, not clamped, because the data is right and the bound was wrong:
+#       every exceedance is Coors Field — the highest-elevation venue, semi-arid High
+#       Plains — on two consecutive August afternoons, which is precisely where the
+#       deepest dry-convective boundary layers on the continent occur. Seidel et al.
+#       (2012, JGR 117 D17106) put summer afternoon PBL depth over the western US above
+#       4 km, and the distribution here runs smoothly into its tail (p99.9 4662, p99.99
+#       5676, max 6292) rather than jumping, which is the signature of real weather
+#       rather than a corrupt report. 7000 keeps a unit or sign fault orders of magnitude
+#       away and so still catchable.
 #       shortwave FLOOR is -1.0, not 0: downward flux cannot physically be negative, but
 #       HRRR's DSWRF is a time-averaged packed GRIB field and decoding leaves trace
 #       negatives. Measured on season=2015: 9 of 118,869 populated entries, all at
@@ -119,7 +132,7 @@ PHYSICAL_RANGES = (
     (0.0, VIS_CEILING_M + 1.0),  # 11 visibility m — censored, see note
     (0.0, 150.0),        # 12 precip mm
     (700.0, 1080.0),     # 13 surface_pressure hPa (floor = highest venue station, see note)
-    (0.0, 6000.0),       # 14 boundary_layer_height m
+    (0.0, 7000.0),       # 14 boundary_layer_height m (see note: Coors Field CBL)
     (-1.0, 1500.0),      # 15 shortwave_radiation W/m2 (see note on the floor)
     (0.0, 1.0),          # 16 soil_moisture m3/m3
     (0.0, 1000.0),       # 17 us_aqi

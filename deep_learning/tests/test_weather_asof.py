@@ -351,10 +351,20 @@ def test_real_weather_extremes_are_never_dropped():
     a contradiction the archive shows to be corruption, not an extreme (see
     GUST_REPORT_FLOOR_KT), and it is dropped on purpose. The record-book claim being made
     here -- that 60 kt is not too fast to be real -- is unchanged.
+
+    The 95 kt gust and the 3 in/h rain need partners for the same reason. The base fixture
+    carries sknt=10, so a bare gust=95 is a factor of 9.5 -- the corrupt-report signature
+    GUST_FACTOR_MAX exists to catch, not a windstorm; pairing it with a 40 kt mean keeps
+    the claim (95 kt is not too fast to be real) while making the report self-consistent.
+    Likewise the base carries vsby=10 SM and no wxcodes, so a bare p01i=3.0 asserts three
+    inches of rain in an hour with unlimited visibility and no weather group; adding the
+    -RA code and the visibility such rain actually produces preserves the claim (3 in/h is
+    not too much rain to be real) without asserting a physically impossible pairing.
     """
     for kw in (dict(tmpf=18.0, dwpf=10.0), dict(tmpf=115.0, dwpf=70.0),
                dict(alti=24.9 + 0.2), dict(alti=31.0), dict(sknt=60.0, gust=75.0),
-               dict(gust=95.0), dict(p01i=3.0), dict(drct=360.0), dict(relh=100.0)):
+               dict(sknt=40.0, gust=95.0), dict(p01i=3.0, wxcodes="+RA", vsby=1.0),
+               dict(drct=360.0), dict(relh=100.0)):
         out = metar_to_era5(_one_metar(**kw), station_elev_m=6.0)
         assert len(out) == 1, f"{kw} wrongly dropped"
 
@@ -960,3 +970,90 @@ def test_a_moderate_wind_with_no_gust_group_is_kept():
 def test_the_gust_floor_is_not_applied_to_a_missing_wind_speed():
     """A report with no wind group at all is absence, not contradiction."""
     assert len(metar_to_era5(_wind_report(sknt=np.nan, gust=np.nan), 6.0)) == 1
+
+
+# --- gusts wildly above their own mean wind -----------------------------------
+# The rule above catches a gust BELOW the mean; nothing caught a gust far above it, and
+# that is what reached the artifact. GPM 2024-04-28 20:50Z reported sknt=11 with gust=202,
+# a factor of 18.4, its neighbouring hours at 16-26 kt and wxcodes/p01i showing clear dry
+# air. 202 kt is under the 220 kt Barrow Island world record, so the one-field-at-a-time
+# (0,250) bound passes it; the artifact's dim-5 ceiling of 120 mph then failed on it, twice
+# (dim 26 too, because an absent PK WND group falls back to the snapshot gust).
+# Measured over the whole 13,708,338-report archive the rule costs 67 reports (0.00049%),
+# 20 of them at GPM -- the same order as the two rules above.
+def test_a_gust_wildly_above_the_sustained_wind_is_dropped():
+    """The real GPM 2024-04-28 report: an 11 kt mean cannot peak at 202 kt."""
+    assert len(metar_to_era5(_wind_report(sknt=11.0, gust=202.0), 6.0)) == 0
+
+
+def test_a_severe_but_self_consistent_gust_is_kept():
+    """The rule must not become a gust ceiling: a real windstorm gusts hard AND blows hard,
+    so its factor stays low. Durst (1960) and ASCE 7-22 put the 3-second peak at ~1.53x
+    the mean over open terrain and convective downbursts reach ~3x, all far below the
+    cutoff."""
+    assert len(metar_to_era5(_wind_report(sknt=55.0, gust=95.0), 6.0)) == 1
+
+
+def test_the_gust_factor_rule_spares_light_and_variable_wind():
+    """The branch that protects the archive. A METAR encodes a gust only at >=10 kt above
+    the mean, so sknt=1/gust=11 is the SMALLEST gust it can report and carries a factor of
+    11 -- judging light wind by ratio would delete valid reports wholesale. The absolute
+    floor is what makes the ratio safe to apply, and 11 kt is harmless anyway: it is far
+    inside the artifact's own 120 mph bound."""
+    assert len(metar_to_era5(_wind_report(sknt=1.0, gust=11.0), 6.0)) == 1
+
+
+def test_the_gust_factor_rule_spares_a_calm_mean_with_a_modest_gust():
+    """sknt=0 makes the ratio undefined; a modest gust over calm air is a real, common
+    report and must not be dropped by a divide-by-zero landing on infinity."""
+    assert len(metar_to_era5(_wind_report(sknt=0.0, gust=15.0), 6.0)) == 1
+
+
+def test_the_gust_factor_rule_is_not_applied_without_a_mean_wind():
+    """No mean wind to compare against is absence, not contradiction -- same principle as
+    the missing-gust-group case above."""
+    assert len(metar_to_era5(_wind_report(sknt=np.nan, gust=70.0), 6.0)) == 1
+
+
+# --- rain that nothing else in the report corroborates -------------------------
+# MCF (MacDill AFB, the backup station for venue 12) suffered an episodic gauge fault in
+# 2018/2019/2021: a cluster parked at exactly 0.80 in/h plus excursions to 24.00, reported
+# across consecutive hours with wxcodes silent and vsby at 10 SM. Pooled over 12 seasons
+# its p01i looks healthy (p99.9 = 0.85 in), so this is not a unit error and not a station
+# to blocklist -- eight of its seasons are clean. The (0,12) in/h bound catches only the
+# loudest excursions, so 6.78 survived and the 25.4 in->mm conversion turned it into
+# 172 mm/h in the 2018 artifact, failing the dim-12 range gate.
+def test_torrential_rain_with_no_weather_group_and_clear_visibility_is_dropped():
+    """The real MCF 2018-09-24 report. 0.75 in/h is 19 mm/h, which the Marshall-Palmer
+    rate/visibility relation puts near 0.6 SM -- 10 SM and a silent wxcodes field cannot
+    both be true of it."""
+    assert len(metar_to_era5(
+        _wind_report(p01i=6.78, wxcodes=None, vsby=10.0), 6.0)) == 0
+
+
+def test_torrential_rain_that_reports_a_weather_group_is_kept():
+    """Real heavy rain codes itself. The rule needs BOTH corroborations absent, so a
+    thunderstorm downpour survives however hard it rains."""
+    assert len(metar_to_era5(
+        _wind_report(p01i=6.78, wxcodes="+TSRA", vsby=1.0), 6.0)) == 1
+
+
+def test_torrential_rain_that_cuts_visibility_is_kept():
+    """Visibility alone is enough to corroborate: some automated sites report the rate
+    without a present-weather group, and dropping those would lose real rain."""
+    assert len(metar_to_era5(
+        _wind_report(p01i=6.78, wxcodes=None, vsby=0.5), 6.0)) == 1
+
+
+def test_trace_rain_with_no_weather_group_is_kept():
+    """The branch that protects the archive: trace accumulation legitimately carries no
+    code -- 0.01 in with a silent wxcodes field is the single most common nonzero reading
+    at healthy stations, so the threshold has to sit far above it."""
+    assert len(metar_to_era5(
+        _wind_report(p01i=0.05, wxcodes=None, vsby=10.0), 6.0)) == 1
+
+
+def test_the_precip_rule_is_not_applied_without_a_visibility_reading():
+    """No visibility to contradict is absence, not contradiction."""
+    assert len(metar_to_era5(
+        _wind_report(p01i=6.78, wxcodes=None, vsby=np.nan), 6.0)) == 1
