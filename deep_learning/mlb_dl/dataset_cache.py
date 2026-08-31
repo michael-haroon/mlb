@@ -221,6 +221,29 @@ def save_dataset(ds, output_dir: Path, split_name: str) -> None:
              len(ds._pitch_cont_array))
 
 
+def _npz_rows_by_pk(path: Path, values_key: str, *, allow_pickle: bool = False) -> dict:
+    """Map game_pk -> one row of `values_key`, reading each archive member exactly once.
+
+    np.load on an .npz returns a LAZY NpzFile: every subscript re-reads and re-materialises
+    the whole member. The call sites used to inline
+    `{int(p): z[values_key][i] for i, p in enumerate(z["pks"])}`, which re-reads the values
+    member once PER GAME -- and since `arr[i]` is a view that pins its parent through
+    `.base`, every row kept a private full copy of the member alive.
+
+    Measured on the 2026-08-31 train split, where tensors is (21384, 7, 7, 99) float32 =
+    414.9 MB stored uncompressed at 0.45s per read: the comprehension projected to 2.7 hours
+    and 8.9 TB retained. It OOM-killed precollate twice at 27.1 GB resident plus exactly
+    32.0 GiB of swap, crossing 59 GB after only ~142 games.
+
+    Hoisting the read makes every row a view onto ONE array, so the footprint is the member
+    itself (415 MB) and the cost is a single sequential read.
+    """
+    with np.load(path, allow_pickle=allow_pickle) as z:
+        pks = z["pks"]
+        values = z[values_key]
+    return {int(p): values[i] for i, p in enumerate(pks)}
+
+
 def load_dataset(cache_dir: Path, split_name: str):
     """Load a cached GameTransformerDataset from pre-computed files.
 
@@ -396,15 +419,13 @@ class CachedGameTransformerDataset:
         self._weather_asof_by_pk = {}
         asof_file = split_dir / "weather_asof.npz"
         if asof_file.exists():
-            z = np.load(asof_file)
-            self._weather_asof_by_pk = {
-                int(p): z["tensors"][i] for i, p in enumerate(z["pks"])}
+            self._weather_asof_by_pk = _npz_rows_by_pk(asof_file, "tensors")
         self._wx_offsets_by_pk = {}
         off_file = split_dir / "wx_offsets.npz"
         if off_file.exists():
-            z = np.load(off_file, allow_pickle=True)
-            self._wx_offsets_by_pk = {
-                int(p): z["offsets"][i] for i, p in enumerate(z["pks"])}
+            # allow_pickle because the offsets are ragged per-pitch arrays, i.e. dtype=object.
+            self._wx_offsets_by_pk = _npz_rows_by_pk(
+                off_file, "offsets", allow_pickle=True)
 
         # Rating temporal
         self._rating_by_game_side = {}
