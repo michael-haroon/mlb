@@ -17,7 +17,14 @@ than the one it repaired.
 
 Usage:
   python3.11 data_curation/scripts/diff_weather_asof_artifacts.py --season 2015 \
-      --old deep_learning/feature_store/weather_asof/_prefix_backup/season=2015.parquet
+      --old deep_learning/feature_store/_backups/weather_asof/_prefix_backup/season=2015.parquet
+
+The backups moved out from under weather_asof/ on 2026-08-31. They used to sit at
+weather_asof/_prefix_backup/ and weather_asof/_srcmask_backup/, which every current reader
+happens to miss (they key on the literal `weather_asof/season=` prefix, and a single-star glob
+does not cross `/`) -- but any future reader written as `weather_asof/**/*.parquet` would have
+silently triple-counted 2015. Keeping backups outside the read prefix removes the possibility
+rather than relying on the next reader being careful.
 
 Exit code is nonzero if coverage regressed beyond --max-coverage-drop, so this is safe to
 wire into a gate.
