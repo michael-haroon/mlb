@@ -202,6 +202,47 @@ def _train_one_epoch(
     return avg_loss, avg_tasks
 
 
+def _pregame_metrics(chunks: dict[str, list[torch.Tensor]]) -> dict[str, float]:
+    """Skill metrics over prefix_length==0 rows only.
+
+    WHY this exists as its own number. The pooled val loss is ~73% the two runs-remaining
+    NegBin heads, and runs remaining is near-determined once a game is late (47.6% of samples
+    have >=200 pitches thrown, 20.5% have zero runs left). Pregame rows are 6.55% of the
+    population and `bce_home_win` is 9.6% of the objective, so pooled val can improve while the
+    only quantity the pregame book trades sits exactly on the coin-flip fixed point — which is
+    what happened through a weather A/B and a 4-arm capacity sweep before anyone measured it.
+
+    BSS is the number to read: it is skill against predicting this slice's own base rate, so
+    0 means "no better than a constant" no matter how good the Brier looks in absolute terms.
+    `_pstd` is the collapse detector — a head emitting one number has std ~0 and can post a
+    respectable Brier purely by matching the base rate.
+    """
+    if not chunks:
+        return {}
+    cat = {k: torch.cat(v).double() for k, v in chunks.items()}
+    out: dict[str, float] = {"pregame/n": float(cat["p_home_win"].numel())}
+
+    for head in ("home_win", "yrfi", "extra_innings"):
+        p = cat[f"p_{head}"].clamp(1e-7, 1 - 1e-7)
+        y = cat[f"y_{head}"]
+        brier = ((p - y) ** 2).mean()
+        # Reference is the slice's own base rate, so BSS is not inflated by a skewed class
+        # balance the way a raw Brier is (extra_innings sits near 8%).
+        base = y.mean()
+        brier_base = ((base - y) ** 2).mean()
+        out[f"pregame/{head}_brier"] = float(brier)
+        out[f"pregame/{head}_logloss"] = float(-(y * p.log() + (1 - y) * (1 - p).log()).mean())
+        out[f"pregame/{head}_bss"] = float(1.0 - brier / brier_base) if float(brier_base) > 0 else 0.0
+        out[f"pregame/{head}_pstd"] = float(p.std()) if p.numel() > 1 else 0.0
+
+    pred_tr = cat["mu_home"] + cat["mu_away"]
+    y_tr = cat["y_home_runs"] + cat["y_away_runs"]
+    out["pregame/total_runs_mae"] = float((pred_tr - y_tr).abs().mean())
+    # Beating this means beating "always predict the slice mean". The control checkpoint did not.
+    out["pregame/total_runs_mae_base"] = float((y_tr - y_tr.mean()).abs().mean())
+    return out
+
+
 @torch.inference_mode()
 def _validate(
     model: torch.nn.Module,
@@ -218,6 +259,7 @@ def _validate(
     total_loss = 0.0
     task_totals: dict[str, float] = {}
     n_batches = 0
+    pregame_chunks: dict[str, list[torch.Tensor]] = {}
 
     pbar = tqdm(loader, desc=f"Val {phase_name} E{epoch}", leave=False)
     for batch in pbar:
@@ -234,8 +276,35 @@ def _validate(
         n_batches += 1
         pbar.set_postfix(loss=f"{total_loss / n_batches:.4f}")
 
+        # Harvest prefix_length==0 rows for a pregame-only readout. Done from the same forward
+        # pass rather than a second one: since the readout became per-row these rows are already
+        # computed exactly as a batch-of-1 serving request would compute them.
+        plen = batch.get("prefix_length")
+        if plen is not None:
+            sel = (plen.reshape(-1) == 0).nonzero(as_tuple=True)[0]
+            if sel.numel() > 0:
+                tgt = batch["targets"]
+                harvest = {
+                    "p_home_win": torch.sigmoid(predictions["home_win_logit"].float().reshape(-1)),
+                    "p_yrfi": torch.sigmoid(predictions["yrfi_logit"].float().reshape(-1)),
+                    "p_extra_innings": torch.sigmoid(
+                        predictions["extra_innings_logit"].float().reshape(-1)),
+                    "mu_home": predictions["mu_home"].float().reshape(-1),
+                    "mu_away": predictions["mu_away"].float().reshape(-1),
+                    "y_home_win": tgt["home_win"].float().reshape(-1),
+                    "y_yrfi": tgt["yrfi"].float().reshape(-1),
+                    "y_extra_innings": tgt["extra_innings"].float().reshape(-1),
+                    "y_home_runs": tgt["home_runs_remaining"].float().reshape(-1),
+                    "y_away_runs": tgt["away_runs_remaining"].float().reshape(-1),
+                }
+                for name, tensor in harvest.items():
+                    pregame_chunks.setdefault(name, []).append(tensor[sel].detach().cpu())
+
     avg_loss = total_loss / max(n_batches, 1)
     avg_tasks = {k: v / max(n_batches, 1) for k, v in task_totals.items()}
+    # Added AFTER the per-batch averaging: these are dataset-level metrics, not mean batch
+    # losses, so dividing them by n_batches would be meaningless.
+    avg_tasks.update(_pregame_metrics(pregame_chunks))
     return avg_loss, avg_tasks
 
 
@@ -919,6 +988,25 @@ def _train_phase(
             "[%s] e%d/%d (%.0fs) train=%.4f val=%.4f gap=%.4f%s",
             phase_name, epoch, max_epochs, elapsed, train_loss, val_loss, gap, mark
         )
+
+        # Pregame skill, every epoch. This is the only slice the pregame book trades and it is
+        # 9.6% of the objective, so it must not be inferred from the pooled val number.
+        if any(k.startswith("pregame/") for k in val_tasks):
+            log.info(
+                "  pregame(n=%d): HW bss=%+.4f std=%.4f | YRFI bss=%+.4f | XI bss=%+.4f | "
+                "runs mae=%.4f (base %.4f)",
+                int(val_tasks.get("pregame/n", 0)),
+                val_tasks.get("pregame/home_win_bss", 0.0),
+                val_tasks.get("pregame/home_win_pstd", 0.0),
+                val_tasks.get("pregame/yrfi_bss", 0.0),
+                val_tasks.get("pregame/extra_innings_bss", 0.0),
+                val_tasks.get("pregame/total_runs_mae", 0.0),
+                val_tasks.get("pregame/total_runs_mae_base", 0.0),
+            )
+        if writer is not None:
+            for k, v in val_tasks.items():
+                if k.startswith("pregame/"):
+                    writer.add_scalar(k, v, global_epoch)
 
         # Per-head loss breakdown every 5 epochs
         if epoch % 5 == 0 or epoch == 1:
