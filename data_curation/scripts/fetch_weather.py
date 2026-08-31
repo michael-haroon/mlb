@@ -91,8 +91,24 @@ FLOOD_START_YEAR   = 1984   # GloFAS v4 reanalysis from 1984
 # routing. Train and inference must draw each dim from the same NWP model, so flipping this
 # to 14 without rebuilding those artifacts would silently create a train/serve skew — a worse
 # bug than the mislabel. Change it only together with a weather_asof/weather_features rebuild.
-# Blast radius to measure first: 2523 is a real regular-season venue (the Rays played 2025
-# home games there), so games are genuinely affected, not just spring training.
+#
+# BLAST RADIUS, NOW MEASURED (2026-08-31, game_meta.parquet, 2015+ population = 31,830 games):
+#   venue 2523 Steinbrenner Field  252 games (0.792%) — wrongly on ECMWF today
+#   venue 14   Rogers Centre       860 games (2.702%) — correctly on HRRR today
+# 2523 is indeed a real regular-season venue: 97 of those games are 2025, when the Rays played
+# their home slate there. The rest are ~15/season spring training.
+#
+# THE FIX IS TO DELETE THIS EXCLUSION, NOT TO REPOINT IT. Both venues' coordinates sit inside
+# the HRRR CONUS domain (Rogers Centre 43.642,-79.389; Steinbrenner Field 27.980,-82.507), so
+# neither needs the ECMWF route. Setting the constant to 14 would move 860 correctly-served
+# games onto the wrong model in order to rescue 252 — 3.4x more harm than good.
+#
+# And the mechanism misses every venue it was meant to catch. The only populated venues
+# genuinely outside the HRRR grid are Tokyo Dome (12 games), Gocheok Sky Dome (6), London
+# Stadium (6) and Hiram Bithorn (2) — 26 games, 0.082% of the population — and none of them is
+# excluded here. If a non-CONUS route is wanted, it belongs on a coordinate test, not on a
+# single hardcoded id. Caveat on that list: 13 of the 100 populated venues carry no lat/lon in
+# game_meta and so could not be geo-tested at all.
 TORONTO_VENUE_ID = 2523
 
 # ── Pressure level variable generation ───────────────────────────────────────
