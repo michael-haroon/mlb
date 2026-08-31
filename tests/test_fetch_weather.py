@@ -331,6 +331,83 @@ class TestHRRRConus:
         assert result_future is None  # year guard, not CONUS guard
 
 
+class TestExclusionIsGeographicallyJustified:
+    """Defines the behaviour task #15 will implement: DELETE the id-based exclusion.
+
+    These tests FAIL today by design (strict xfail, so they turn red the moment the fix lands
+    and the marker goes stale). They exist because `TestHRRRConus` above pins the *current*
+    routing and therefore cannot express what the routing should be.
+
+    The premise measured on 2026-08-31 against game_meta's 2015+ population (31,830 games,
+    100 venues): the excluded id 2523 is Steinbrenner Field, Tampa (27.980, -82.507) — deep
+    inside the HRRR CONUS grid and 252 games — while venue 14 Rogers Centre (43.642, -79.389)
+    is also inside it and carries 860 games. So there is no venue here that needs the ECMWF
+    route, and repointing the constant to 14 would break 860 games to rescue 252. The only
+    populated venues genuinely off the grid are Tokyo Dome, Gocheok Sky Dome, London Stadium
+    and Hiram Bithorn (26 games, 0.082%) and none of them is excluded.
+
+    Bind the deletion to a weather_features/weather_asof rebuild: every stored artifact was
+    built with 2523-based routing, so changing the code alone converts a consistent feature
+    degradation into genuine train/serve skew.
+    """
+
+    # Conservative interior box for the HRRR CONUS domain. The true grid is Lambert conformal,
+    # so this box UNDER-claims coverage at the corners — anything it calls "outside" deserves a
+    # real look, and anything it calls "inside" certainly is.
+    CONUS_BOX = (21.5, 52.5, -134.0, -60.5)  # lat_lo, lat_hi, lon_lo, lon_hi
+
+    STEINBRENNER = (2523, 27.97997, -82.50702)   # what the constant actually names
+    ROGERS_CENTRE = (14, 43.64155, -79.38915)    # what it was meant to name
+
+    @staticmethod
+    def _inside(lat: float, lon: float) -> bool:
+        lat_lo, lat_hi, lon_lo, lon_hi = TestExclusionIsGeographicallyJustified.CONUS_BOX
+        return lat_lo <= lat <= lat_hi and lon_lo <= lon <= lon_hi
+
+    @pytest.mark.xfail(strict=True, reason="task #15: exclusion still names a CONUS venue")
+    def test_excluded_venue_lies_outside_the_hrrr_domain(self):
+        """An HRRR exclusion is only defensible for a venue HRRR cannot cover."""
+        for vid, lat, lon in (self.STEINBRENNER, self.ROGERS_CENTRE):
+            if vid == TORONTO_VENUE_ID:
+                assert not self._inside(lat, lon), (
+                    f"venue {vid} at ({lat}, {lon}) is inside the HRRR CONUS grid, so excluding "
+                    "it from HRRR discards real physics for no reason"
+                )
+
+    @pytest.mark.xfail(strict=True, reason="task #15: id guard still fires inside _fetch_pressure_forecast")
+    def test_pressure_forecast_attempts_hrrr_for_a_conus_venue(self, monkeypatch):
+        """Offline: prove the guard *lets the request through* rather than short-circuiting.
+
+        Reaching `_get_json` is the observable that distinguishes "guard removed" from "guard
+        fired"; a None return cannot, because a failed fetch also returns None. Raising from the
+        stub keeps this a unit test with no network call.
+        """
+        import data_curation.scripts.fetch_weather as fw
+
+        class _Reached(Exception):
+            pass
+
+        monkeypatch.setattr(fw, "_get_json", lambda *a, **k: (_ for _ in ()).throw(_Reached()))
+        vid, lat, lon = self.STEINBRENNER
+        with pytest.raises(_Reached):
+            fw._fetch_pressure_forecast(vid, lat, lon)
+
+    @pytest.mark.xfail(strict=True, reason="task #15: id guard still fires inside _fetch_historical_forecast")
+    def test_historical_forecast_attempts_hrrr_for_a_conus_venue(self, monkeypatch):
+        import data_curation.scripts.fetch_weather as fw
+
+        class _Reached(Exception):
+            pass
+
+        monkeypatch.setattr(fw, "_get_json", lambda *a, **k: (_ for _ in ()).throw(_Reached()))
+        vid, lat, lon = self.STEINBRENNER
+        with pytest.raises(_Reached):
+            fw._fetch_historical_forecast(
+                vid, lat, lon, "gfs_hrrr", HRRR_START_YEAR,
+                start_date=date(HRRR_START_YEAR, 7, 1), end_date=date(HRRR_START_YEAR, 7, 2),
+            )
+
+
 class TestVariableSetCompleteness:
     """Verify variable sets contain expected critical variables."""
 
