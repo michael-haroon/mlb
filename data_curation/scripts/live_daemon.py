@@ -4,12 +4,16 @@ MLB GUMBO Live Feed Daemon
 Responsibilities:
   1. Poll live game feed — every 10s when live, every 60s when passive/delayed.
   2. Write data/live_state/{game_pk}.json on every poll for real-time inference.
-  3. On game Final: call download_history.run_ingestion() to persist to S3/parquet.
-  4. Daily enrichment at 08:00 UTC: fetch_weather.run_daily_weather() archive refresh.
-  5. Forecast refresh loop: fetch_weather.run_forecast_refresh() every 6h (dedicated thread).
-  6. As-of weather loop (hourly, dedicated thread): live_weather_asof.run_once() —
-     AWC METARs + freshest HRRR issue appended to daily S3 files for the DL
-     engine's living-window tensor.
+  3. Publish the partial-game DL snapshot to S3 on every state change, at every
+     game state (Scheduled → Pre-Game → Warmup → In Progress → Final), via
+     live_state_publisher. The DL stack reprices in-game, so a Final-only write
+     is useless to it. See live_state_publisher for the S3 layout.
+  4. On game Final: call download_history.run_ingestion() to persist to S3/parquet.
+  5. Daily enrichment at 08:00 UTC: fetch_weather.run_daily_weather() archive refresh.
+  6. Forecast refresh loop: fetch_weather.run_forecast_refresh() every 6h (dedicated thread).
+  7. As-of weather loop (hourly on the hour boundary, dedicated thread):
+     live_weather_asof.run_once() — AWC METARs + freshest HRRR issue appended to
+     daily S3 files for the DL engine's living-window tensor.
 
 download_history.py owns ALL persistent storage and checkpoint tracking.
 If this daemon crashes mid-game, run download_history.py standalone —
@@ -31,6 +35,7 @@ import requests
 # Import download_history as a module so we reuse its storage layer entirely.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import download_history as dh
+from live_state_publisher import LiveStatePublisher
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -39,6 +44,7 @@ SCHEDULE_FETCH_HOUR_UTC = 8    # UTC hour for daily schedule reload
 PASSIVE_POLL_INTERVAL   = 60   # seconds when no game is live
 LIVE_POLL_INTERVAL      = 10   # seconds when a game is in Live state
 FORECAST_REFRESH_INTERVAL = 6 * 3600  # ECMWF HRES runs at 00/06/12/18Z
+ASOF_REFRESH_MINUTE_UTC = 8    # see _asof_weather_loop for the derivation
 MAX_RETRIES             = 7
 BASE_BACKOFF            = 2.0  # exponential backoff base (seconds)
 MAX_BACKOFF             = 120.0
@@ -194,6 +200,14 @@ class LiveDaemon:
         self._dh_checkpoint = dh.CheckpointManager()
         self._dh_engine     = dh.GumboIngestionEngine()
 
+        # Same flattener class as the training artifact, but a DEDICATED instance:
+        # GumboIngestionEngine dedupes player bio rows against a shared
+        # _seen_player_ids set, so sharing _dh_engine would let a mid-game publish
+        # mark players as seen and make the Final run_ingestion emit zero player
+        # rows for them — silently losing bios from the durable players table.
+        # The publisher discards player rows, so its own set costs nothing.
+        self._live_publisher = LiveStatePublisher(dh.GumboIngestionEngine())
+
         # game_pk → GameState; protected by _matrix_lock
         self._matrix:      Dict[int, GameState] = {}
         self._matrix_lock  = threading.Lock()
@@ -320,6 +334,16 @@ class LiveDaemon:
 
         # ---- FINAL: delegate to download_history for all persistent storage ----
         if state.is_final():
+            # Publish the terminal snapshot before ingestion so a consumer that
+            # is mid-position sees the final state even if run_ingestion fails.
+            # force=True because the pitch count may not have moved since the
+            # last poll — the STATE change is the event worth publishing.
+            self._live_publisher.publish(
+                game_pk, state.season, state.game_date,
+                state.abstract_state, state.coded_state, state.detailed_state,
+                payload, lag_ms, force=True,
+            )
+
             if not self._dh_checkpoint.is_completed(game_pk):
                 logger.info(
                     f"[final] gamePk={game_pk} — calling download_history.run_ingestion()"
@@ -342,14 +366,27 @@ class LiveDaemon:
             else:
                 logger.info(f"[final] gamePk={game_pk} already checkpointed — no write needed.")
 
-            # Clean up inference file and remove from tracking matrix
+            # Clean up inference file and remove from tracking matrix.
+            # The publisher's S3 objects are deliberately left in place; only its
+            # in-memory bookkeeping is dropped.
             _remove_live_file(game_pk)
+            self._live_publisher.forget(game_pk)
             with self._matrix_lock:
                 self._matrix.pop(game_pk, None)
             return
 
         # ---- NON-FINAL: write inference snapshot, nothing else in memory ----
         _write_live_snapshot(game_pk, state, payload, lag_ms)
+
+        # Publish to S3 at EVERY state, not just Final. The publisher filters
+        # unchanged snapshots itself (status code + play count, with a heartbeat),
+        # so calling it on every poll is safe and keeps the decision about what
+        # counts as a change in one place.
+        self._live_publisher.publish(
+            game_pk, state.season, state.game_date,
+            state.abstract_state, state.coded_state, state.detailed_state,
+            payload, lag_ms,
+        )
 
     # ------------------------------------------------------------------ #
     #  POLLING LOOP                                                        #
@@ -454,14 +491,38 @@ class LiveDaemon:
 
         HRRR issues hourly (unlike ECMWF's 6-hourly cycles above), and the
         engine re-slices its decision row on every hour boundary — a stale
-        feed would silently freeze the obs channel mid-game."""
+        feed would silently freeze the obs channel mid-game.
+
+        Fires at a fixed minute past each hour rather than every 3600s from
+        daemon start. A drifting loop that happens to land at :05 would fetch
+        hour h's METAR at (h+1):05 (fresh), but one that starts at :10 fetches it
+        at (h+1):10 — and the engine re-slices at the top of the hour, so it
+        reads a file that is up to ~57 min behind the newest available report.
+        Alignment makes the worst-case staleness a constant instead of a
+        function of when the daemon happened to boot.
+
+        ASOF_REFRESH_MINUTE_UTC=8 follows from the observation cadence documented
+        in weather_asof.select_asof_obs: US ASOS reports at ~:53 and
+        dissemination adds ~10 min, so hour h's own report only exists from
+        (h+1):03. HRRR's h-issue f01 lands ~h:50. :08 clears both with margin.
+        """
         while not self._shutdown.is_set():
             try:
                 import live_weather_asof as lwa
                 lwa.run_once()
             except Exception:
                 logger.warning("[asof-weather] refresh failed — daemon continues", exc_info=True)
-            if self._shutdown.wait(timeout=3600):
+
+            now_utc  = datetime.now(timezone.utc)
+            next_run = now_utc.replace(minute=ASOF_REFRESH_MINUTE_UTC, second=0, microsecond=0)
+            if next_run <= now_utc:
+                next_run += timedelta(hours=1)
+            wait_secs = (next_run - now_utc).total_seconds()
+            logger.debug(
+                f"[asof-weather] Next refresh at {next_run.strftime('%H:%M UTC')} "
+                f"(in {wait_secs / 60:.1f} min)"
+            )
+            if self._shutdown.wait(timeout=wait_secs):
                 return
 
     # ------------------------------------------------------------------ #
@@ -497,12 +558,16 @@ class LiveDaemon:
         logger.info("MLB GUMBO Live Daemon starting.")
         logger.info(f"Persistent storage (via download_history): {dest}")
         logger.info(f"Inference files: {LIVE_STATE_DIR}/{{gamePk}}.json")
+        logger.info(f"DL live state: {self._live_publisher._destination()}")
         logger.info(f"Poll intervals: live={LIVE_POLL_INTERVAL}s  passive={PASSIVE_POLL_INTERVAL}s")
         logger.info("Crash recovery: python download_history.py --live  (fills missing games)")
         logger.info("=" * 60)
 
         self._seed_schedule()
         self._daily_enrichment()
+
+        # Started before the poll loop so the first poll's snapshot is not dropped.
+        self._live_publisher.start()
 
         poll_thread     = threading.Thread(target=self._polling_loop,  name="PollLoop",     daemon=True)
         schedule_thread = threading.Thread(target=self._schedule_loop, name="ScheduleLoop", daemon=True)
@@ -518,7 +583,10 @@ class LiveDaemon:
         self._shutdown.wait()
 
         logger.info("Shutdown requested — waiting for threads to drain (up to 30s).")
+        # Poll loop first: it is the only producer, so draining it before the
+        # publisher means the publisher's queue is empty when it stops.
         poll_thread.join(timeout=30)
+        self._live_publisher.stop(timeout=30)
         schedule_thread.join(timeout=5)
         weather_thread.join(timeout=5)
         asof_wx_thread.join(timeout=5)
