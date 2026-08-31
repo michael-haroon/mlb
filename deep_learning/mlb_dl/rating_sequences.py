@@ -321,12 +321,22 @@ def save_rating_sequences(
     means: dict[str, float],
     stds: dict[str, float],
     output_path: str,
+    train_end: Optional[str] = None,
 ) -> None:
     """Save rating sequences to disk as .npz + metadata JSON.
 
     Format:
         {output_path}.npz: numpy archive with keys "home_{game_pk}" and "away_{game_pk}"
         {output_path}_meta.json: rating_cols, means, stds
+
+    `train_end` is recorded rather than merely accepted. means/stds are only valid relative to
+    the cut they were fit on, and the DL stack has three different notions of that cut: this
+    builder's CLI default (2024-04-01), build_weather_asof's TRAIN_END_DATE (2024-01-01), and
+    the ACTUAL split, which `datasets.temporal_split_dates` derives as an 80% quantile over
+    distinct game dates and therefore MOVES whenever the population changes. Measured
+    2026-08-31: the real cut was 2024-08-03, so both hardcoded dates sit earlier than it —
+    conservative (they drop 1,597 and 2,119 train games from their fits) rather than leaky. But
+    that ordering was unverifiable from the artifact alone, because nothing wrote the cut down.
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -348,6 +358,9 @@ def save_rating_sequences(
         "means": means,
         "stds": stds,
         "n_sequences": len(sequences),
+        # None means "fit on every game", which is a leak. Recorded explicitly so that case is
+        # visible in the artifact instead of being indistinguishable from a proper fit.
+        "train_end": str(train_end) if train_end is not None else None,
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
@@ -447,7 +460,8 @@ def main():
             game_features, k_steps=args.k_steps, train_end=args.train_end
         )
 
-        save_rating_sequences(sequences, rating_cols, means, stds, args.output)
+        save_rating_sequences(sequences, rating_cols, means, stds, args.output,
+                              train_end=args.train_end)
         log.info("Done.")
 
     elif args.command == "info":

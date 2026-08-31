@@ -354,3 +354,75 @@ class TestThroughput:
 
         ms_per_sample = (elapsed / n_iters) * 1000
         assert ms_per_sample < 50, f"Too slow: {ms_per_sample:.1f}ms/sample (want <50ms)"
+
+
+class TestPreparedManifestProvenance:
+    """The prepared manifest must state the population and cut it came from, not just counts.
+
+    A prepared set is the artifact that gets uploaded and trained on, and /mnt/fast is an
+    instance store, so the dataset_cache it was built from may not exist by the time anyone
+    asks. Counts alone made the 1950-train void set indistinguishable from the corrected one.
+    The cut points also move: temporal_split_dates takes an 80/10 quantile over distinct game
+    dates, which gave 2024-05-14 on the void cache and 2024-08-03 on the corrected one.
+    """
+
+    CACHE_MANIFEST = {
+        "fingerprint": "567a03c7bec97e4c",
+        "built_at": "2026-08-31T01:30:58.491180",
+        "train_end": "2024-08-03 00:00:00",
+        "val_end": "2025-08-18 00:00:00",
+        "min_date": "2015-01-01 00:00:00",
+        "game_types": ["R", "F", "D", "L", "W"],
+    }
+
+    @staticmethod
+    def _run_prepare_all(monkeypatch, cache_dir, out_dir):
+        """Drive prepare_all's manifest assembly without building any tensors."""
+        from mlb_dl import precollate as pc
+
+        monkeypatch.setattr(pc, "prepare_split",
+                            lambda ds, out, name, workers: {"n_games": 1, "n_samples": 1})
+        # load_dataset is imported inside prepare_all from .dataset_cache, so patch it there.
+        import mlb_dl.dataset_cache as dc
+        monkeypatch.setattr(dc, "load_dataset", lambda path, name: object())
+        pc.prepare_all(str(cache_dir), str(out_dir), num_workers=1)
+        return json.loads((Path(out_dir) / "manifest.json").read_text())
+
+    def test_carries_cut_points_from_source_cache(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "manifest.json").write_text(json.dumps(self.CACHE_MANIFEST))
+
+        mf = self._run_prepare_all(monkeypatch, cache, tmp_path / "prepared")
+
+        assert mf["train_end"] == "2024-08-03 00:00:00"
+        assert mf["val_end"] == "2025-08-18 00:00:00"
+        assert mf["min_date"] == "2015-01-01 00:00:00"
+        assert mf["game_types"] == ["R", "F", "D", "L", "W"]
+        assert mf["cache_fingerprint"] == "567a03c7bec97e4c"
+
+    def test_missing_source_manifest_yields_explicit_nulls(self, tmp_path, monkeypatch):
+        """A null says "provenance unavailable"; an absent key says nothing at all.
+
+        Keeping the keys present is what lets a reader distinguish "built before this field
+        existed" from "built by a run that could not determine its own cut".
+        """
+        cache = tmp_path / "cache"
+        cache.mkdir()  # deliberately no manifest.json
+
+        mf = self._run_prepare_all(monkeypatch, cache, tmp_path / "prepared")
+
+        for key in ("train_end", "val_end", "min_date", "game_types", "cache_fingerprint"):
+            assert key in mf, f"{key} must be present even when unknown"
+            assert mf[key] is None
+
+    def test_corrupt_source_manifest_does_not_abort_the_prepare(self, tmp_path, monkeypatch):
+        """Losing provenance must not destroy hours of tensor work that already succeeded."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "manifest.json").write_text("{not json")
+
+        mf = self._run_prepare_all(monkeypatch, cache, tmp_path / "prepared")
+
+        assert mf["train_end"] is None
+        assert set(mf["splits"]) == {"train", "val", "test"}

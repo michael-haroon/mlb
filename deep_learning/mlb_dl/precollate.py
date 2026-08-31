@@ -524,11 +524,41 @@ def prepare_all(
         gc.collect()
         _log_mem(f"after release {name}")
 
-    # Write top-level manifest
+    # Write top-level manifest.
+    #
+    # The source cache's manifest is carried forward rather than referenced. dataset_cache
+    # records train_end/val_end/min_date/game_types/fingerprint, but a prepared set is what
+    # actually gets uploaded and trained on, and it recorded only COUNTS -- so a prepared set in
+    # S3 could not say what population or cut point produced it. That is precisely how the
+    # 1950-train void set stayed indistinguishable from the corrected one until someone noticed
+    # 158 GiB in S3 against 27 GB on disk. And the cut points are not constants: they come from
+    # temporal_split_dates as an 80/10 quantile over distinct game dates, so they move whenever
+    # the population changes (2024-05-14 on the void cache, 2024-08-03 on the corrected one).
+    # Copying them in makes each prepared set self-describing; /mnt/fast is an instance store,
+    # so the source cache is not guaranteed to still exist when a question comes up.
+    source_manifest = {}
+    src_mf = Path(cache_dir) / "manifest.json"
+    if src_mf.exists():
+        try:
+            source_manifest = json.loads(src_mf.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Could not read source cache manifest %s: %s", src_mf, exc)
+    else:
+        log.warning("Source cache has no manifest.json at %s; prepared manifest will not "
+                    "record train_end/val_end/min_date", src_mf)
+
     top_manifest = {
         "prepared_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "source_cache": str(cache_dir),
         "splits": manifests,
+        # Nulls are meaningful: they say the provenance was unavailable, which is different
+        # from a field that was never written.
+        "train_end": source_manifest.get("train_end"),
+        "val_end": source_manifest.get("val_end"),
+        "min_date": source_manifest.get("min_date"),
+        "game_types": source_manifest.get("game_types"),
+        "cache_fingerprint": source_manifest.get("fingerprint"),
+        "cache_built_at": source_manifest.get("built_at"),
     }
     with open(output_path / "manifest.json", "w") as f:
         json.dump(top_manifest, f, indent=2)
