@@ -51,6 +51,43 @@ log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
+def _save_oof_with_keys(
+    output_dir: Path,
+    target: str,
+    family: str,
+    tier: str,
+    oof_predictions,
+    game_pks,
+) -> tuple[Path, Path]:
+    """Persist OOF predictions together with the game_pk key array they are aligned to.
+
+    The key array is written UNCONDITIONALLY. It used to be guarded by
+    `if not gpk_path.exists()`, which looked safe because the second family of a target writes
+    identical keys — but across RUNS it let a key array from an earlier population survive while
+    the OOF array beneath it was replaced, silently re-pointing every prediction at the wrong
+    game. Same failure class as the CalibrationBundle isotonic misalignment, and equally
+    invisible: both files load fine and only their pairing is wrong.
+
+    Validating before the first write is the other half. A stale OOF array with no usable key
+    array is unrecoverable after the fact — the population that produced it is not knowable —
+    which is the state 10 of the 11 targets are in today.
+    """
+    oof = np.asarray(oof_predictions)
+    keys = np.asarray(getattr(game_pks, "values", game_pks))
+    if oof.shape[0] != keys.shape[0]:
+        raise ValueError(
+            f"OOF predictions ({oof.shape[0]} rows) and game_pk keys ({keys.shape[0]} rows) are "
+            f"not aligned for {target}/{family}/{tier}; refusing to write a pair that cannot be "
+            "joined"
+        )
+
+    oof_path = output_dir / f"oof_{target}_{family}_{tier}.npy"
+    gpk_path = output_dir / f"oof_game_pks_{target}_{tier}.npy"
+    np.save(oof_path, oof)
+    np.save(gpk_path, keys)
+    return oof_path, gpk_path
+
+
 def train_target(
     features_path: Path,
     target: str,
@@ -274,11 +311,8 @@ def train_target(
             }
 
             # Save OOF predictions and game_pk index for key-based alignment
-            oof_path = output_dir / f"oof_{target}_{family}_{tier}.npy"
-            np.save(oof_path, oof_predictions)
-            gpk_path = output_dir / f"oof_game_pks_{target}_{tier}.npy"
-            if not gpk_path.exists():
-                np.save(gpk_path, game_pks.values)
+            _save_oof_with_keys(
+                output_dir, target, family, tier, oof_predictions, game_pks)
 
             # Save best params + feature list so we know exactly what this model used
             params_path = output_dir / f"params_{target}_{family}_{tier}.json"
