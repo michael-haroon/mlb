@@ -305,6 +305,10 @@ def _prepare_model_input(batch: dict, player_context_dim: int = 512) -> dict:
     # Live prefix — only include if any sample has prefix_length > 0
     has_live = batch["prefix_length"].sum() > 0
     if has_live:
+        # Per-row real-pitch counts. Without this the model can only see the batch-wide padded
+        # width, and every prefix_length=0 row in a mixed batch reads its readout out of prefix
+        # padding instead of the context pool. See GameTransformer._team_readout.
+        model_input["live_lengths"] = batch["prefix_length"]
         model_input["live_continuous"] = batch["prefix_values"]
         model_input["live_obs_mask"] = batch.get("prefix_obs_mask")
         model_input["live_batter_hash"] = batch["prefix_batter_hash"]

@@ -1105,7 +1105,10 @@ class GameTransformer(nn.Module):
         )
 
     def _team_readout(
-        self, backbone_out: torch.Tensor, num_context: int
+        self,
+        backbone_out: torch.Tensor,
+        num_context: int,
+        live_lengths: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract team-level representations for output heads.
 
@@ -1114,20 +1117,43 @@ class GameTransformer(nn.Module):
             game_repr_no_rating: excludes rating tokens (for player heads where
                 team-strength ratings are noise/harmful)
 
-        Pregame (T=0): mean-pool context tokens.
-        Live (T>0): last live token (rating info already mixed via attention).
+        Pregame (0 real pitches): mean-pool context tokens.
+        Live: last live token (rating info already mixed via attention).
+
+        The pregame/live choice is PER ROW, keyed on `live_lengths`. It used to be keyed on
+        `num_live = total_len - num_context`, a tensor shape shared by the whole batch, so a
+        prefix_length=0 row read `backbone_out[:, -1, :]` — pure prefix padding — whenever any
+        batchmate had pitches. At a 6.55% pregame rate a shuffled batch of 64 is never all
+        pregame, so the mean-pool branch got essentially zero gradient over a whole run while
+        every real pregame serving request (one game, batch of 1) landed on exactly that
+        untrained branch. Pinned by
+        tests/test_pregame_readout_invariance.py::test_pregame_row_prices_identically_alone_and_beside_a_live_row.
+
+        Rows WITH pitches are unchanged bit-for-bit: prefixes are left-padded, so position -1 is
+        their last real pitch. The context pool is safe to mix in per row because the prefix-LM
+        mask forbids context->live attention, making context token outputs independent of
+        whether live tokens are present at all.
         """
         total_len = backbone_out.size(1)
         num_live = total_len - num_context
         num_rating = self.context_config.rating_tokens  # 20 (10 steps × 2 sides)
 
-        if num_live == 0:
-            game_repr = backbone_out[:, :num_context, :].mean(dim=1)
-            game_repr_no_rating = backbone_out[:, :num_context - num_rating, :].mean(dim=1)
-        else:
-            game_repr = backbone_out[:, -1, :]
-            game_repr_no_rating = game_repr
+        ctx_pool = backbone_out[:, :num_context, :].mean(dim=1)
+        ctx_pool_no_rating = backbone_out[:, :num_context - num_rating, :].mean(dim=1)
 
+        if num_live == 0:
+            return ctx_pool, ctx_pool_no_rating
+
+        last_live = backbone_out[:, -1, :]
+        if live_lengths is None:
+            # A caller that attaches live tensors without saying how many are real is asserting
+            # every row is live. Preserves the legacy path for hand-built batches (smoke tests,
+            # kv-cache decode) rather than silently guessing from padding.
+            return last_live, last_live
+
+        is_pregame = (live_lengths.reshape(-1) == 0).unsqueeze(-1)  # [B, 1]
+        game_repr = torch.where(is_pregame, ctx_pool, last_live)
+        game_repr_no_rating = torch.where(is_pregame, ctx_pool_no_rating, last_live)
         return game_repr, game_repr_no_rating
 
     def _decode_negbin(self, raw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1193,7 +1219,9 @@ class GameTransformer(nn.Module):
         backbone_out, kv_cache = self.backbone(x, num_context=num_context)
 
         # Step 5: Team readout (dual — full for game heads, no-rating for player heads)
-        game_repr, game_repr_no_rating = self._team_readout(backbone_out, num_context)
+        game_repr, game_repr_no_rating = self._team_readout(
+            backbone_out, num_context, live_lengths=batch.get("live_lengths")
+        )
 
         # Step 6: Team heads (use full game_repr including ratings)
         home_raw = self.head_negbin_home(game_repr)
