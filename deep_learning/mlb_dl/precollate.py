@@ -473,23 +473,56 @@ def prepare_split(
     return manifest
 
 
+def _log_mem(stage: str) -> None:
+    """Log process RSS and system availability at `stage`.
+
+    Exists because the 2026-08-31 OOM was invisible until the kernel logged the kill: nothing
+    here sampled memory, so there was no way to see peak approaching. Reads /proc directly
+    rather than taking a psutil dependency, and stays silent off Linux (the unit tests run on
+    macOS, where /proc does not exist) -- a missing log line must never break a build.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            rss_kb = next(int(l.split()[1]) for l in f if l.startswith("VmRSS:"))
+        with open("/proc/meminfo") as f:
+            info = {l.split(":")[0]: int(l.split()[1]) for l in f if ":" in l}
+        log.info("[MEM %s] RSS=%.1fGB, available=%.1f/%.1fGB", stage, rss_kb / 1048576,
+                 info.get("MemAvailable", 0) / 1048576, info.get("MemTotal", 0) / 1048576)
+    except (OSError, StopIteration, ValueError, IndexError):
+        pass
+
+
 def prepare_all(
     cache_dir: str,
     output_dir: str,
     num_workers: int = 8,
 ) -> None:
     """Prepare train/val/test splits from cached datasets."""
-    from .dataset_cache import load_cached_datasets
+    from .dataset_cache import load_dataset
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    log.info("Loading cached datasets from %s", cache_dir)
-    train_ds, val_ds, test_ds = load_cached_datasets(cache_dir)
-
+    # Stream the splits: load, consume, release. This used to be
+    # `train_ds, val_ds, test_ds = load_cached_datasets(cache_dir)` followed by a loop, which
+    # kept all three resident for the entire run even though prepare_split only ever touches
+    # one. load_dataset does np.load(..., allow_pickle=True) with NO mmap_mode, so a split is
+    # real anonymous memory, and object arrays plus a 481 MB player_game_stats.json inflate
+    # the on-disk size ~2.93x. On 2026-08-31 that put a single process at anon-rss 25.8 GB on
+    # a 33 GB box (file-rss was ~0, confirming allocation rather than page cache) and killed
+    # the run twice -- the first attempt livelocked the instance past sshd's ability to fork.
+    # Peak is now max(split) ~15.8 GB instead of sum(splits) ~26 GB.
     manifests = {}
-    for name, ds in [("train", train_ds), ("val", val_ds), ("test", test_ds)]:
+    for name in ("train", "val", "test"):
+        log.info("Loading cached split %r from %s", name, cache_dir)
+        ds = load_dataset(Path(cache_dir), name)
+        _log_mem(f"after load {name}")
         manifests[name] = prepare_split(ds, output_path, name, num_workers)
+        # Explicit: the loop variable alone would hold the previous split alive across the
+        # next load, which is the whole failure being fixed.
+        del ds
+        gc.collect()
+        _log_mem(f"after release {name}")
 
     # Write top-level manifest
     top_manifest = {

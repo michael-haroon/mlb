@@ -8,14 +8,24 @@
 # Usage:  nohup bash deep_learning/ec2_weather_ab.sh >/dev/null 2>&1 &
 # Log:    ~/weather_ab.log
 #
-# WHY BOTH ARMS ARE RERUN rather than comparing against the existing control's 4.95209:
-# nothing in the trainer was seeded until this change, and three phase-1 runs at the same
-# nominal config landed at best_val 4.9330, 5.0289 and 4.9521. The spread between
-# supposedly identical runs is a few hundredths of a nat -- the same magnitude as the
-# effect the A/B has to detect. Worse, the best of those unseeded runs (4.9330) BEATS the
-# nominal control (4.95209), so scoring a treatment against 4.95209 alone could manufacture
-# an improvement that an existing no-weather run already exceeded. The arms are therefore a
-# paired comparison at a shared --seed, differing only by --no-asof-weather.
+# WHY BOTH ARMS ARE RERUN rather than comparing against any historical number:
+# nothing in the trainer was seeded until this change, and no two prior runs share a config,
+# so there is no historical value a new arm can legitimately be scored against.
+#
+# CORRECTION 2026-08-31: an earlier version of this file cited 4.9330 / 5.0289 / 4.9521 as
+# "three unseeded runs at this config" and used their spread as a noise floor. That was
+# wrong on every count. 4.9330 is train_large.log -- a 50-epoch schedule with 24,413 s
+# EBS-bound epochs; 4.9521 is train_large_fixed2.log, also 50-epoch, stopped at e7; and
+# 5.0289 is train_large_fixed.log, which completed exactly ONE epoch. Runs with different
+# --phase1-epochs have different cosine LR schedules and are not replicates of each other or
+# of these 12-epoch arms, and a one-epoch run is not a best_val at all. Do not resurrect
+# those numbers as a threshold.
+#
+# What remains true, and is the actual reason for a paired rerun: the arms share --seed and
+# differ only by --no-asof-weather. Note that paired seeding does NOT give bit-reproducibility
+# here, because cudnn.benchmark=True + AMP + torch.compile are all active, so a residual
+# run-to-run variance exists and is still UNMEASURED. Measuring it needs two same-config
+# same-seed runs, which nobody has run yet.
 #
 # --no-asof-weather is what makes it one variable: the append patches each split's
 # manifest.json in place, so after it runs there is no directory left that serves the
@@ -51,6 +61,26 @@ fail() { echo "ABORT: $*"; exit 1; }
 
 cd "$REPO" || fail "no repo at $REPO"
 mkdir -p "$RUNS" "$KEEP"
+
+# Rescue artifacts on EVERY exit path, not just the happy one. $RUNS lives on the instance
+# store, which a STOP wipes, and the copy loop used to sit at the very bottom of the script
+# behind `run_arm treatment || fail`. When the treatment arm was killed at e8 on 2026-08-30
+# the script exited at that `fail` and never reached the copy -- the COMPLETED control arm's
+# best.pt and training_history.json were left stranded on /mnt/fast and had to be rescued by
+# hand. A trap makes the surviving arm's results independent of the other arm's fate.
+keep_artifacts() {
+  local rc=$?
+  for a in control treatment; do
+    [ -d "$RUNS/$a" ] || continue
+    mkdir -p "$KEEP/$a"
+    cp "$RUNS/$a/training_history.json" "$KEEP/$a/" 2>/dev/null
+    cp "$RUNS/$a"/phase1/best.pt "$KEEP/$a/" 2>/dev/null
+  done
+  cp "$RUNS/ab_verdict.json" "$KEEP/" 2>/dev/null
+  echo "=== artifacts rescued to $KEEP (exit rc=$rc) $(date -u +%FT%TZ) ==="
+  return $rc
+}
+trap keep_artifacts EXIT
 
 # --- Preflight -------------------------------------------------------------
 # pgrep patterns are bracketed: an unbracketed pattern matches this script's own
@@ -161,19 +191,40 @@ run_arm() {
 }
 
 # Control first: if the harness is broken, it fails on the cheaper-to-interpret arm.
-run_arm control --no-asof-weather || fail "control arm failed"
-run_arm treatment                 || fail "treatment arm failed"
+# A failed arm no longer aborts the script. Stage 4 already handles a missing
+# training_history.json per arm, so letting it run means a completed arm still gets read and
+# summarised instead of being discarded because its partner died. The nonzero exit is
+# deferred to the end so the caller still sees failure.
+arm_rc=0
+run_arm control --no-asof-weather || { echo "control arm failed"; arm_rc=1; }
+run_arm treatment                 || { echo "treatment arm failed"; arm_rc=1; }
 
 # --- Stage 4: verdict ----------------------------------------------------
 "$PY" - <<'PYEOF'
 import json
 from pathlib import Path
 
-# Three unseeded phase-1 runs at this config. The A/B has to clear this spread, not just
-# come out ahead, and 4.9330 is the number to beat because an existing no-weather run
-# already reached it.
-NOISE = [4.9330, 5.0289, 4.9521]
+# There is NO measured noise floor: no two runs share a config AND a seed, so run-to-run
+# variance has never been observed. Rather than invent one (the previous hardcoded
+# [4.9330, 5.0289, 4.9521] list mixed three different LR schedules and a one-epoch run), the
+# threshold is DERIVED from the arms themselves: the median absolute change in val_loss
+# between adjacent epochs. Rationale -- if swapping a feature channel moves val by less than
+# a single epoch of ordinary optimisation wobble, the comparison cannot resolve it. This is
+# a lower bound on resolvable effect size, not a replicate-based noise floor, and it is
+# deliberately conservative in the direction of declaring INCONCLUSIVE.
 runs = Path("/mnt/fast/ab_runs")
+
+
+def adjacent_epoch_spread(hist):
+    """Median |val_loss[i+1] - val_loss[i]|. Needs >=3 epochs to mean anything."""
+    v = [e["val_loss"] for e in hist if e.get("val_loss") is not None]
+    if len(v) < 3:
+        return None
+    deltas = sorted(abs(b - a) for a, b in zip(v, v[1:]))
+    return deltas[len(deltas) // 2]
+
+
+spreads = []
 out = {}
 for arm in ("control", "treatment"):
     h = runs / arm / "training_history.json"
@@ -190,26 +241,41 @@ for arm in ("control", "treatment"):
         continue
     out[arm] = p1["best_val_loss"]
     print(f"{arm}: phase1 best_val={out[arm]} over {p1['epochs_trained']} epochs")
+    s = adjacent_epoch_spread(p1.get("history", []))
+    if s is not None:
+        spreads.append(s)
+        print(f"{arm}: median adjacent-epoch |dval| = {s:.4f}")
 
-print(f"\nunseeded noise floor: min={min(NOISE):.4f} max={max(NOISE):.4f} "
-      f"spread={max(NOISE) - min(NOISE):.4f}")
+    # An arm whose best val is at epoch <=3 of a 12-epoch schedule is overfitting, and a
+    # feature comparison at a capacity that is already memorising cannot be informative
+    # whichever way it lands. Say so here rather than letting a clean-looking delta imply
+    # the study was valid. (2026-08-30: both arms peaked at e3/e4 with an 18.7M-param model
+    # on 314,953 samples -- that is why the size-down sweep precedes any further A/B.)
+    best_ep = min((e["epoch"] for e in p1.get("history", [])
+                   if e.get("val_loss") == p1["best_val_loss"]), default=None)
+    if best_ep is not None and best_ep <= 3 and p1.get("epochs_trained", 0) >= 8:
+        print(f"{arm}: WARNING best val at epoch {best_ep}/{p1['epochs_trained']} "
+              f"-- capacity is binding, this arm overfits and the A/B is uninformative")
+
 if len(out) == 2 and None not in out.values():
     delta = out["control"] - out["treatment"]
+    thresh = max(spreads) if spreads else None
     print(f"treatment - control = {-delta:+.4f} (positive delta = weather helped)")
-    print(f"vs best unseeded no-weather run 4.9330: {4.9330 - out['treatment']:+.4f}")
-    verdict = ("weather helps" if delta > (max(NOISE) - min(NOISE))
-               else "INCONCLUSIVE: within the unseeded run-to-run spread")
+    if thresh is None:
+        verdict = "INCONCLUSIVE: too few epochs to derive a resolvable-effect threshold"
+    else:
+        print(f"resolvable-effect threshold (max median adjacent-epoch |dval|) = {thresh:.4f}")
+        verdict = ("weather helps" if delta > thresh
+                   else "INCONCLUSIVE: smaller than one epoch of ordinary val wobble")
     print(f"verdict: {verdict}")
     (runs / "ab_verdict.json").write_text(json.dumps(
-        {**out, "delta": delta, "noise_spread": max(NOISE) - min(NOISE),
+        {**out, "delta": delta, "resolvable_threshold": thresh,
+         "threshold_basis": "max over arms of median |val_loss[i+1]-val_loss[i]|; "
+                            "NOT a replicate-based noise floor (none exists)",
          "verdict": verdict}, indent=2))
 PYEOF
 
-# Small artifacts only, off the instance store, since stopping this box wipes /mnt/fast.
-for arm in control treatment; do
-  mkdir -p "$KEEP/$arm"
-  cp "$RUNS/$arm/training_history.json" "$KEEP/$arm/" 2>/dev/null
-  cp "$RUNS/$arm"/phase1/best.pt "$KEEP/$arm/" 2>/dev/null
-done
-cp "$RUNS/ab_verdict.json" "$KEEP/" 2>/dev/null
+# Artifact copying is handled by the keep_artifacts EXIT trap, so it happens on failure and
+# on kill too, not only here.
 echo "=== weather A/B COMPLETE $(date -u +%FT%TZ); artifacts kept in $KEEP ==="
+exit $arm_rc

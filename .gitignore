@@ -8,7 +8,11 @@ artifacts/
 *.png
 
 # Logs
-*.logs
+# Was "*.logs", which matches nothing any tool in this repo writes -- every logger uses
+# ".log" -- so 97 run logs sat untracked-but-unignored and buried real changes in
+# `git status`. The 5 .log files already committed stay tracked; git ignores only untracked
+# paths, so this cannot silently drop history.
+*.log
 
 # Sensitive
 .env

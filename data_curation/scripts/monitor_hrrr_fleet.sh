@@ -75,9 +75,15 @@ pass() {
         # The class [f] does not match the two literal characters "[f", so the probe
         # excludes itself. (Bracketing is also why watch_chains.sh read the same fleet
         # correctly at the same moment.)
-        echo "procs=$(pgrep -fc "[f]etch_nwp_asissued.py backfill" 2>/dev/null || echo 0)"
-        echo "withheld=$(grep -hc "NOT WRITING" ~/*.log 2>/dev/null | paste -sd+ - | bc 2>/dev/null || echo 0)"
-        echo "repairfail=$(grep -hc "^REPAIR FAILED" ~/hrrr_repair.log 2>/dev/null || echo 0)"
+        # No "|| echo 0" on any of these. pgrep -c and grep -c already PRINT 0 while
+        # EXITING 1, so the fallback fires on the ZERO case and emits a SECOND token:
+        # procs becomes the string "0 0", and `[ "0 0" -eq 0 ]` below is a syntax error
+        # that evaluates false -- so an idle box counted as ACTIVE, `idle` never
+        # incremented, DONE was unreachable, and STALLED fired forever. The empty case is
+        # already covered by the ${x:-0} defaults where these are parsed.
+        echo "procs=$(pgrep -fc "[f]etch_nwp_asissued.py backfill" 2>/dev/null)"
+        echo "withheld=$(grep -hc "NOT WRITING" ~/*.log 2>/dev/null | paste -sd+ - | bc 2>/dev/null)"
+        echo "repairfail=$(grep -hc "^REPAIR FAILED" ~/hrrr_repair.log 2>/dev/null)"
       ' 2>/dev/null)
 
     if [ -z "$out" ]; then
