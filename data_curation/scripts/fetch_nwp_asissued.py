@@ -438,14 +438,31 @@ def _write_parquet_s3(df: pd.DataFrame, key: str) -> None:
 
 # ── Backfill driver ───────────────────────────────────────────────────────────
 def run_backfill(start: str, end: str, workers: int = 6, force: bool = False,
-                 local: bool = False) -> None:
+                 local: bool = False, allow_empty: bool = False) -> None:
     HERBIE_SAVE_DIR.mkdir(parents=True, exist_ok=True)
     games = load_population_games()
     venue_points = load_venue_points()
+    pop_max = pd.to_datetime(games["game_date"]).max()
     games = games[(games["game_date"] >= start) & (games["game_date"] <= end)]
     dates = sorted(games["game_date"].dt.normalize().unique())
+
+    # An empty window must not report success. load_population_games() reads a LOCAL
+    # game_meta.parquet, so a box holding a pre-refresh snapshot sees no games in a window
+    # that is actually full of them: on 2026-08-30 this logged "0 games over 0 dates" and
+    # exited 0 for a 68-date gap, leaving the archive short. A downstream build would then
+    # emit rows whose forecast channel is entirely mask=0 — correct row count, no signal.
+    # Genuinely gameless windows (offseason) are legitimate, hence --allow-empty.
+    if len(games) == 0 and not allow_empty:
+        raise RuntimeError(
+            f"No population games in {start}..{end}, so there is nothing to fetch and the "
+            f"archive would silently stay short. The local game_meta only reaches "
+            f"{pop_max:%Y-%m-%d}. If that is behind the feature store, refresh it:\n"
+            f"  aws s3 cp s3://{S3_BUCKET}/deep_learning/feature_store/game_meta.parquet "
+            f"{FEATURE_STORE}/game_meta.parquet\n"
+            f"If the window is genuinely gameless (offseason), pass --allow-empty.")
+
     logger.info(f"Backfill {start}..{end}: {len(games)} games over {len(dates)} dates, "
-                f"{workers} workers")
+                f"{workers} workers (population reaches {pop_max:%Y-%m-%d})")
 
     n_done = n_skip = n_empty = n_incomplete = 0
     for date in dates:
@@ -573,6 +590,10 @@ def main() -> None:
     bf.add_argument("--workers", type=int, default=6)
     bf.add_argument("--force", action="store_true", help="rewrite existing keys")
     bf.add_argument("--local", action="store_true", help="write under data/ instead of S3")
+    bf.add_argument("--allow-empty", action="store_true",
+                    help="permit a window with no population games (offseason); without this "
+                         "an empty window is an error, since the usual cause is a stale "
+                         "local game_meta.parquet rather than a genuinely gameless range")
 
     lt = sub.add_parser("latest", help="freshest issue for one venue (live smoke test)")
     lt.add_argument("--venue-id", type=int, required=True)
@@ -581,7 +602,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "backfill":
         run_backfill(args.start, args.end, workers=args.workers, force=args.force,
-                     local=args.local)
+                     local=args.local, allow_empty=args.allow_empty)
     elif args.command == "latest":
         df = fetch_latest_issue(args.venue_id, pd.Timestamp(args.game_hour_utc, tz="UTC"))
         print(df.to_string(index=False) if df is not None else "no forecast available")

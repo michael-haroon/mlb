@@ -176,3 +176,69 @@ def test_exhausted_retries_raise_so_the_date_is_not_written_silently():
             m.fetch_issue_points_retrying(GH, 3, pd.DataFrame(), None, attempts=2)
     finally:
         m.fetch_issue_points = orig
+
+
+# ── Stale-population guard ────────────────────────────────────────────────────
+# Regression tests for the 2026-08-30 silent no-op. load_population_games() reads a LOCAL
+# game_meta.parquet snapshot, so after the feature store was refreshed in S3 the box still
+# held a copy truncated at 2026-06-20. Asking it to backfill 2026-06-21..2026-08-30 logged
+# "0 games over 0 dates" and exited SUCCESS. A downstream gate caught it, but the fetcher
+# reporting success for zero work is the same silent-drop class as the tests above: the
+# archive stays short and the next build emits an all-masked forecast channel.
+
+def _pop(dates: list[str]) -> pd.DataFrame:
+    """Minimal population frame shaped like load_population_games() output."""
+    ts = pd.to_datetime(pd.Series(dates))
+    return pd.DataFrame({
+        "game_pk": range(len(dates)),
+        "game_date": ts,
+        "game_type_code": ["R"] * len(dates),
+        "venue_id": [3313] * len(dates),
+        "game_hour_utc": ts.dt.tz_localize("UTC") + pd.Timedelta(hours=23),
+    })
+
+
+def test_empty_window_past_population_end_raises(monkeypatch):
+    """The exact 2026-08-30 failure: population ends before the requested window."""
+    import fetch_nwp_asissued as m
+
+    monkeypatch.setattr(m, "load_population_games", lambda: _pop(["2026-06-19", "2026-06-20"]))
+    monkeypatch.setattr(m, "load_venue_points", lambda: pd.DataFrame({"venue_id": [3313]}))
+
+    with pytest.raises(RuntimeError, match="stale|population"):
+        m.run_backfill("2026-06-21", "2026-08-30", workers=1)
+
+
+def test_stale_population_error_names_the_max_date(monkeypatch):
+    """The message must be actionable: an operator has to know to refresh the local file."""
+    import fetch_nwp_asissued as m
+
+    monkeypatch.setattr(m, "load_population_games", lambda: _pop(["2026-06-20"]))
+    monkeypatch.setattr(m, "load_venue_points", lambda: pd.DataFrame({"venue_id": [3313]}))
+
+    with pytest.raises(RuntimeError) as err:
+        m.run_backfill("2026-06-21", "2026-08-30", workers=1)
+    msg = str(err.value)
+    assert "2026-06-20" in msg, "must state how far the population actually reaches"
+    assert "game_meta" in msg, "must name the file to refresh"
+
+
+def test_allow_empty_permits_a_genuinely_gameless_window(monkeypatch):
+    """Offseason windows are legitimately empty; the guard must be overridable."""
+    import fetch_nwp_asissued as m
+
+    monkeypatch.setattr(m, "load_population_games", lambda: _pop(["2026-06-20"]))
+    monkeypatch.setattr(m, "load_venue_points", lambda: pd.DataFrame({"venue_id": [3313]}))
+
+    m.run_backfill("2026-12-01", "2026-12-31", workers=1, allow_empty=True)
+
+
+def test_nonempty_window_is_unaffected(monkeypatch):
+    """The guard must not fire when the window genuinely has games."""
+    import fetch_nwp_asissued as m
+
+    monkeypatch.setattr(m, "load_population_games", lambda: _pop(["2026-06-21"]))
+    monkeypatch.setattr(m, "load_venue_points", lambda: pd.DataFrame({"venue_id": [3313]}))
+    monkeypatch.setattr(m, "_s3_key_exists", lambda key: True)  # skip all real work
+
+    m.run_backfill("2026-06-21", "2026-06-21", workers=1)
