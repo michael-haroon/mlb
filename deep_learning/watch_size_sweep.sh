@@ -23,7 +23,11 @@ PFX="deep_learning/size_sweep_$SWEEP_ID"
 
 # arm:instance_id — A runs on the persistent GPU box and is expected to stay alive after
 # finishing, so it is excluded from the "instance vanished" check.
-ARMS="A:i-05b5114c32744b47b B:i-03da63616833d34b7 C:i-0f5bd870f0879b1fb D:i-02e91e14083d4a9bb"
+#
+# Overridable so a relaunched arm can be watched on its own instance id without disturbing the
+# watcher already tracking the others: ARMS="C:i-0ce6d280085d28d53" bash watch_size_sweep.sh ...
+# Needed on 2026-08-31, when arm C aborted at epoch-1 validation and came back on a new box.
+ARMS=${ARMS:-"A:i-05b5114c32744b47b B:i-03da63616833d34b7 C:i-0f5bd870f0879b1fb D:i-02e91e14083d4a9bb"}
 
 start=$(date +%s)
 # A flat string rather than an associative array: this watcher runs on the laptop, where
@@ -32,7 +36,27 @@ REPORTED=""
 seen()  { case " $REPORTED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 mark()  { REPORTED="$REPORTED $1"; }
 
-s3_has() { aws s3api head-object --bucket "$BUCKET" --key "$1" >/dev/null 2>&1; }
+# SINCE guards against a STALE artifact from an earlier run of the same arm. The arm prefix is
+# fixed per arm, so a relaunch overwrites in place -- meaning the previous run's sweep_<arm>.log
+# is already sitting there when the watcher starts, and "log exists" would fire instantly and
+# report a failure that already happened. Set SINCE to the relaunch time (ISO 8601 UTC) and only
+# objects modified after it count. Default is empty = accept any object, which is correct for a
+# fresh sweep.
+SINCE=${SINCE:-}
+
+# Digits-only comparison rather than [[ > ]]: string collation in bash 3.2 is locale-dependent,
+# and both timestamps are fixed-width ISO 8601 UTC, so stripping non-digits makes this a plain
+# integer compare.
+_ts() { echo "$1" | tr -cd '0-9' | cut -c1-14; }
+
+s3_has() {
+  local lm
+  lm=$(aws s3api head-object --bucket "$BUCKET" --key "$1" \
+         --query LastModified --output text 2>/dev/null) || return 1
+  [ -n "$lm" ] || return 1
+  [ -z "$SINCE" ] && return 0
+  [ "$(_ts "$lm")" -gt "$(_ts "$SINCE")" ]
+}
 
 while :; do
   all_terminal=1

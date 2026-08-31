@@ -21,7 +21,16 @@
 # forgotten g5.2xlarge costs $1.21/h indefinitely.
 #
 # Usage:  bash deep_learning/launch_size_sweep.sh [sweep_id]
+#         ARMS=C bash deep_learning/launch_size_sweep.sh 20260831   # relaunch one arm
+#
+# ARMS exists because arms fail independently. On 2026-08-31 arm C aborted at epoch-1
+# validation with `LLVM ERROR: pthread_join failed` in all four DataLoader workers (SIGABRT,
+# not SIGKILL -- so not an OOM) while A, B and D passed the same point cleanly and went on to
+# epoch 2. Re-running the whole sweep to refill one rung wastes ~13 GPU-hours, and re-running
+# arm A in particular would abort anyway on the trainer-already-running guard below.
 set -uo pipefail
+ARMS=${ARMS:-A B C D}
+want() { case " $ARMS " in *" $1 "*) return 0;; *) return 1;; esac; }
 
 BUCKET=${BUCKET:-mlb-265753586044-us-east-1-an}
 SWEEP_ID=${1:-$(date -u +%Y%m%d)}
@@ -63,6 +72,7 @@ aws s3 cp "$(dirname "$0")/ec2_size_sweep_arm.sh" "$BOOT/ec2_size_sweep_arm.sh" 
 echo "published arm script to $BOOT/ec2_size_sweep_arm.sh"
 
 # --- arm A on the existing box ---------------------------------------------
+if want A; then
 echo "=== arm A -> existing box $EXISTING_IP ==="
 $SSH "ec2-user@$EXISTING_IP" "pgrep -f 'train_unifie[d]' >/dev/null && echo BUSY" \
   | grep -q BUSY && fail "existing box already has a trainer running"
@@ -73,6 +83,7 @@ $SSH "ec2-user@$EXISTING_IP" \
   "ARM=A D_MODEL=384 N_LAYERS=6 SWEEP_ID=$SWEEP_ID SHUTDOWN=0 \
    nohup bash /home/ec2-user/ec2_size_sweep_arm.sh >/dev/null 2>&1 & sleep 3; echo launched" \
   || fail "arm A launch failed"
+fi
 
 # --- arms B/C/D on fresh boxes --------------------------------------------
 launch_arm() {
@@ -141,10 +152,12 @@ USERDATA
   echo "$arm $id $dmodel $nlayers" >> "/tmp/sweep_${SWEEP_ID}_instances.txt"
 }
 
-: > "/tmp/sweep_${SWEEP_ID}_instances.txt"
-launch_arm B 256 4
-launch_arm C 192 3
-launch_arm D 128 2
+# Append, don't truncate: a single-arm relaunch must not erase the record of the arms already
+# running, which is the only local map from arm letter to instance id.
+touch "/tmp/sweep_${SWEEP_ID}_instances.txt"
+want B && launch_arm B 256 4
+want C && launch_arm C 192 3
+want D && launch_arm D 128 2
 
 echo
 echo "=== launched. sweep_id=$SWEEP_ID ==="
