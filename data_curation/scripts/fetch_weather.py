@@ -72,45 +72,39 @@ OPENMETEO_API_HOST = os.environ.get("OPENMETEO_API_HOST", "").rstrip("/")
 
 # ── Historical forecast source configuration ─────────────────────────────────
 # HRRR only covers CONUS; ecmwf_ifs_hres_forecast covers all venues globally.
-# See TORONTO_VENUE_ID below — the id in that constant is NOT Rogers Centre.
+# There is deliberately NO venue exclusion for HRRR — see the note above
+# _fetch_historical_forecast's HRRR gate.
 HRRR_START_YEAR    = 2018   # HRRR historical forecast available from 2018-01-01
 ECMWF_HRES_START_YEAR = 2017  # ECMWF IFS HRES historical forecast from 2017-01-01
 GFS_START_YEAR     = 2021   # GFS historical forecast from 2021-03-23
 MARINE_START_YEAR  = 1940   # ERA5-Ocean available from 1940
 FLOOD_START_YEAR   = 1984   # GloFAS v4 reanalysis from 1984
 
-# WRONG VALUE, KNOWINGLY LEFT IN PLACE — do not "fix" this in isolation. Verified against
-# statsapi /api/v1/venues on 2026-08-30:
-#   2523 = George M. Steinbrenner Field, Tampa FL  (27.980, -82.507)
-#   14   = Rogers Centre, Toronto ON               (43.642, -79.389)
-# So this constant routes a Tampa park to ECMWF and leaves Rogers Centre on HRRR. The
-# exclusion is doubly wrong: the id is wrong, AND the HRRR CONUS grid does cover Toronto
-# at 43.6N anyway, so no exclusion was ever needed.
+# DELETED 2026-08-31: `TORONTO_VENUE_ID = 2523`, which skipped HRRR for one hardcoded venue.
+# Kept as a comment because "add a CONUS exclusion" is a tempting and wrong instinct here.
 #
-# Why it stays 2523 for now: every weather artifact in the feature store was BUILT with this
-# routing. Train and inference must draw each dim from the same NWP model, so flipping this
-# to 14 without rebuilding those artifacts would silently create a train/serve skew — a worse
-# bug than the mislabel. Change it only together with a weather_asof/weather_features rebuild.
+# It named the wrong park. Per statsapi /api/v1/venues (2026-08-30), 2523 is George M.
+# Steinbrenner Field, Tampa FL (27.980, -82.507); Rogers Centre is venue 14 (43.642, -79.389).
+# So it routed a Florida park to ECMWF and left Toronto on HRRR.
 #
-# BLAST RADIUS, NOW MEASURED (2026-08-31, game_meta.parquet, 2015+ population = 31,830 games):
-#   venue 2523 Steinbrenner Field  252 games (0.792%) — wrongly on ECMWF today
-#   venue 14   Rogers Centre       860 games (2.702%) — correctly on HRRR today
-# 2523 is indeed a real regular-season venue: 97 of those games are 2025, when the Rays played
-# their home slate there. The rest are ~15/season spring training.
+# And no exclusion was needed either way: both coordinates are inside the HRRR CONUS domain,
+# Toronto at 43.6N included. Repointing it to 14 would have moved 860 correctly-served games
+# (2.702% of the 2015+ population) onto the wrong model to rescue 252 (0.792%) — 3.4x more harm
+# than good.
 #
-# THE FIX IS TO DELETE THIS EXCLUSION, NOT TO REPOINT IT. Both venues' coordinates sit inside
-# the HRRR CONUS domain (Rogers Centre 43.642,-79.389; Steinbrenner Field 27.980,-82.507), so
-# neither needs the ECMWF route. Setting the constant to 14 would move 860 correctly-served
-# games onto the wrong model in order to rescue 252 — 3.4x more harm than good.
+# It also missed every venue it was meant to catch. The only populated venues genuinely outside
+# the HRRR grid are Tokyo Dome (12 games), Gocheok Sky Dome (6), London Stadium (6) and Hiram
+# Bithorn (2) — 26 games, 0.082% — and none was excluded. If a non-CONUS route is ever wanted
+# it belongs on a coordinate test, not a venue id. (13 of the 100 populated venues carry no
+# lat/lon in game_meta, so they could not be geo-tested; a coordinate test must handle that.)
 #
-# And the mechanism misses every venue it was meant to catch. The only populated venues
-# genuinely outside the HRRR grid are Tokyo Dome (12 games), Gocheok Sky Dome (6), London
-# Stadium (6) and Hiram Bithorn (2) — 26 games, 0.082% of the population — and none of them is
-# excluded here. If a non-CONUS route is wanted, it belongs on a coordinate test, not on a
-# single hardcoded id. Caveat on that list: 13 of the 100 populated venues carry no lat/lon in
-# game_meta and so could not be geo-tested at all.
-TORONTO_VENUE_ID = 2523
-
+# KNOWN CONSEQUENCE: existing weather artifacts were built with the exclusion, so venue 2523's
+# 252 games have ECMWF-sourced pressure dims (20-21) in the store and HRRR-sourced ones on any
+# future rebuild. That is a real 0.79% train/serve skew, accepted because the weather A/B
+# measured no detectable weather effect at all (0.0052 val, inside epoch noise), so the skew is
+# bounded by a feature carrying no signal — while a knowingly-wrong constant in a live fetcher
+# keeps producing new wrong rows every day. Refetching venue 2523 for 2018-2026 and rebuilding
+# the affected weather_asof seasons closes it.
 # ── Pressure level variable generation ───────────────────────────────────────
 def _make_pressure_level_vars(levels: list[int], base_vars: list[str]) -> str:
     return ",".join(f"{v}_{lev}hPa" for lev in levels for v in base_vars)
@@ -733,8 +727,8 @@ def _fetch_historical_forecast(
 
     if model == "gfs_hrrr" and year < HRRR_START_YEAR:
         return None
-    if model == "gfs_hrrr" and venue_id == TORONTO_VENUE_ID:
-        return None  # HRRR is CONUS-only
+    # No per-venue HRRR exclusion: every populated venue that HRRR actually misses is an
+    # overseas series, and none was ever caught by the id-based check that used to sit here.
     if model == "ecmwf_ifs" and year < ECMWF_HRES_START_YEAR:
         return None
     if model == "gfs_global" and year < GFS_START_YEAR:
@@ -865,11 +859,10 @@ def _fetch_air_quality_forecast(venue_id: int, lat: float, lon: float) -> Option
 def _fetch_pressure_forecast(venue_id: int, lat: float, lon: float) -> Optional[pd.DataFrame]:
     """HRRR pressure-level forecast — recovers dims 20-21 (lapse rate, wind shear).
 
-    Returns None for Toronto: HRRR is CONUS-only, and training excluded the same
-    venue, so dims 20-21 are legitimately zero there in both paths.
+    Requested for every venue. The venue-2523 exclusion that used to short-circuit this was
+    deleted 2026-08-31; Open-Meteo returns nulls for a genuinely out-of-domain point, which the
+    caller already handles, so a geographic filter here would only duplicate that.
     """
-    if venue_id == TORONTO_VENUE_ID:
-        return None
     data = _get_json(_om_url("https://api.open-meteo.com/v1/forecast"), dict(
         latitude=lat, longitude=lon,
         past_days=1, forecast_days=3,

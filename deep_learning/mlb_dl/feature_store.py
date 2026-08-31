@@ -592,7 +592,6 @@ def build_weather_frame(
     catalog,
     game_meta_df,
     source: str = "era5",
-    fallback_source: str = "era5",
     park_azimuths: dict[int, float] | None = None,
 ):
     """Join weather observations to games and derive physics features.
@@ -604,9 +603,9 @@ def build_weather_frame(
     ----------
     catalog : ParquetCatalog
     game_meta_df : DataFrame with game_pk, venue_id, game_datetime_utc
-    source : primary weather source (ERA5 reanalysis; switch to hrrr_forecast
-             once that backfill is ingested — matches inference distribution)
-    fallback_source : used for non-CONUS venues (Toronto)
+    source : weather source for ALL venues (ERA5 reanalysis; switch to
+             hrrr_forecast once that backfill is ingested — matches inference
+             distribution)
     park_azimuths : venue_id → CF azimuth degrees (from calibration)
     """
     import numpy as np
@@ -623,31 +622,18 @@ def build_weather_frame(
     venue_ids = meta["venue_id"].unique().tolist()
     years = sorted(meta["game_dt"].dt.year.unique().tolist())
 
-    # MISNAMED: 2523 is Steinbrenner Field (Tampa FL); Rogers Centre is venue 14 (verified
-    # against statsapi 2026-08-30). So this splits off a CONUS park as "non-CONUS" and leaves
-    # the actual non-US park in the HRRR group. Left as-is on purpose — every weather artifact
-    # was built with this split, and changing it without rebuilding them creates a train/serve
-    # skew. Full rationale: TORONTO_VENUE_ID in data_curation/scripts/fetch_weather.py.
-    toronto_id = 2523
-    conus_venues = [v for v in venue_ids if v != toronto_id]
-    non_conus_venues = [v for v in venue_ids if v == toronto_id]
-
+    # Was a CONUS/non-CONUS split keyed on a hardcoded venue 2523, deleted 2026-08-31. Two
+    # independent reasons: 2523 is Steinbrenner Field (Tampa FL), not Rogers Centre (venue 14),
+    # so it never selected the park it named; and `source` and `fallback_source` both defaulted
+    # to "era5" with neither caller overriding either, so both branches read the same archive.
+    # The split was inert — removing it cannot change any existing artifact.
     weather_frames = []
-    if conus_venues:
-        wx = catalog.read_weather(
-            source, venue_ids=conus_venues, years=years,
-            columns=WEATHER_RAW_COLUMNS,
-        )
-        if not wx.empty:
-            weather_frames.append(wx)
-
-    if non_conus_venues:
-        wx = catalog.read_weather(
-            fallback_source, venue_ids=non_conus_venues, years=years,
-            columns=WEATHER_RAW_COLUMNS,
-        )
-        if not wx.empty:
-            weather_frames.append(wx)
+    wx = catalog.read_weather(
+        source, venue_ids=venue_ids, years=years,
+        columns=WEATHER_RAW_COLUMNS,
+    )
+    if not wx.empty:
+        weather_frames.append(wx)
 
     if not weather_frames:
         # No weather data available — return empty with correct schema

@@ -82,15 +82,6 @@ _DEFAULT_CF_AZIMUTH = 0.0
 # Coast games, and stays inside the 3-day horizon _fetch_forecast_ecmwf writes.
 _MAX_FORECAST_STALENESS_DAYS = 2
 
-# MISNAMED — 2523 is George M. Steinbrenner Field (Tampa FL), not Rogers Centre (which is
-# venue 14). Verified against statsapi /api/v1/venues 2026-08-30. See the long note on
-# TORONTO_VENUE_ID in data_curation/scripts/fetch_weather.py for why the value is deliberately
-# left wrong until the weather artifacts are rebuilt.
-# The original claim still holds for whichever venue this id selects: HRRR pressure levels
-# (dims 20-21) are absent for it in BOTH training and inference, so it is consistent, not a
-# train/serve shift. That is exactly why flipping the id alone would introduce one.
-_TORONTO_VENUE_ID = 2523
-
 # ERA5 surface columns needed for feature computation
 ERA5_SURFACE_COLUMNS = [
     "venue_id", "timestamp",
@@ -645,21 +636,18 @@ def fetch_live_weather(
     # archives are gated by ARCHIVE_LAG_DAYS=7 and have no row for today's game,
     # which hard-zeroed 5 of 22 dims. hrrr_pressure_forecast uses models=gfs_hrrr,
     # the same model as training's hrrr_forecast_pressure.
-    # Toronto has no HRRR (CONUS-only) in either training or inference.
     aq_df = _read_forecast_product(
         s3, s3_bucket, s3_prefix, "air_quality_forecast", venue_id, game_hour_utc
     )
-    # Toronto has no HRRR (CONUS-only) in either training or inference. Training
-    # overwrites visibility with HRRR's unconditionally, so dims 11, 20 and 21 are
-    # all NaN→0 there — leaving ECMWF's ~45km visibility in would be the shift.
-    pressure_df = None
-    if venue_id == _TORONTO_VENUE_ID:
-        zero_visibility = True
-    else:
-        zero_visibility = False
-        pressure_df = _read_forecast_product(
-            s3, s3_bucket, s3_prefix, "hrrr_pressure_forecast", venue_id, game_hour_utc
-        )
+    # Every venue reads HRRR pressure. The venue-2523 special case removed here (2026-08-31)
+    # named Steinbrenner Field, not Rogers Centre, and HRRR's CONUS grid covers both anyway.
+    # zero_visibility stays as a variable because training overwrites visibility with HRRR's
+    # unconditionally: if the pressure read comes back empty, leaving ECMWF's ~45km visibility
+    # in dim 11 is the train/serve shift, so it must be zeroed to match training's NaN→0.
+    pressure_df = _read_forecast_product(
+        s3, s3_bucket, s3_prefix, "hrrr_pressure_forecast", venue_id, game_hour_utc
+    )
+    zero_visibility = pressure_df is None or pressure_df.empty
 
     # dim 16 (soil moisture) has no live source: no Open-Meteo model serves the
     # ERA5 0-7cm band with real values (operational ecmwf_ifs returns literal

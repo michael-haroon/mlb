@@ -51,7 +51,6 @@ from data_curation.scripts.fetch_weather import (
     MARINE_VARS,
     FLOOD_VARS,
     FORECAST_VARS,
-    TORONTO_VENUE_ID,
     HRRR_START_YEAR,
     ECMWF_HRES_START_YEAR,
     GFS_START_YEAR,
@@ -63,6 +62,12 @@ from data_curation.scripts.fetch_weather import (
 YANKEE_VENUE_ID = 3313
 YANKEE_LAT      = 40.8296
 YANKEE_LON      = -73.9262
+# Rogers Centre, the only non-US regular-season park. Verified against statsapi /api/v1/venues
+# 2026-08-30 — the id is 14; the ECMWF coverage tests below used to pass these coordinates with
+# id 2523 (Steinbrenner Field, Tampa), which is how that mislabel went unnoticed for so long.
+ROGERS_VENUE_ID = 14
+ROGERS_LAT      = 43.64155
+ROGERS_LON      = -79.38915
 
 # Short empirical window: one week in a completed past year (no lag issues)
 EMPIRICAL_START = date(2023, 7, 1)
@@ -301,24 +306,14 @@ class TestYearGuards:
 
 
 class TestHRRRConus:
-    """HRRR is CONUS-only, so the excluded venue must not be fetched from it.
+    """HRRR routing must be gated on the year only, never on a venue id.
 
-    NOTE: this class does NOT prove anything about Toronto, despite its history. The guard
-    keys on venue_id alone, and TORONTO_VENUE_ID is 2523 = Steinbrenner Field (Tampa), not
-    Rogers Centre (venue 14). Passing Rogers Centre's coordinates alongside the wrong id made
-    the test read as a Toronto test while exercising a Tampa id — which is how the mislabel
-    survived. Kept green deliberately: it pins the CURRENT routing, which the already-built
-    weather artifacts depend on.
+    `test_excluded_venue_not_fetched_from_hrrr` used to live here and pinned the id-based
+    exclusion as correct behaviour. It was deleted with the exclusion (2026-08-31): it passed
+    Rogers Centre's coordinates alongside id 2523 (Steinbrenner Field, Tampa), so it read as a
+    Toronto test while exercising a Tampa id — which is precisely how the mislabel survived
+    review. See TestNoVenueIsExcludedFromHRRR below for what replaced it.
     """
-
-    def test_excluded_venue_not_fetched_from_hrrr(self):
-        # Coords are inert here — the CONUS guard compares venue_id only. Left at Rogers
-        # Centre's to document the original (mistaken) intent rather than hide it.
-        result = _fetch_historical_forecast(
-            TORONTO_VENUE_ID, 43.6414, -79.3894,
-            "gfs_hrrr", HRRR_START_YEAR,
-        )
-        assert result is None
 
     def test_yankee_stadium_not_excluded_from_hrrr(self):
         # Should not return None due to CONUS guard (year guard doesn't apply)
@@ -331,24 +326,19 @@ class TestHRRRConus:
         assert result_future is None  # year guard, not CONUS guard
 
 
-class TestExclusionIsGeographicallyJustified:
-    """Defines the behaviour task #15 will implement: DELETE the id-based exclusion.
+class TestNoVenueIsExcludedFromHRRR:
+    """Locks in the #15 deletion: no venue id may short-circuit an HRRR request.
 
-    These tests FAIL today by design (strict xfail, so they turn red the moment the fix lands
-    and the marker goes stale). They exist because `TestHRRRConus` above pins the *current*
-    routing and therefore cannot express what the routing should be.
-
-    The premise measured on 2026-08-31 against game_meta's 2015+ population (31,830 games,
-    100 venues): the excluded id 2523 is Steinbrenner Field, Tampa (27.980, -82.507) — deep
-    inside the HRRR CONUS grid and 252 games — while venue 14 Rogers Centre (43.642, -79.389)
-    is also inside it and carries 860 games. So there is no venue here that needs the ECMWF
-    route, and repointing the constant to 14 would break 860 games to rescue 252. The only
+    Premise measured 2026-08-31 against game_meta's 2015+ population (31,830 games, 100
+    venues). The deleted constant named 2523 = Steinbrenner Field, Tampa (27.980, -82.507) —
+    deep inside the HRRR CONUS grid, 252 games — while venue 14 Rogers Centre (43.642,
+    -79.389) is also inside it and carries 860 games. So no venue here needed the ECMWF route,
+    and repointing the constant to 14 would have broken 860 games to rescue 252. The only
     populated venues genuinely off the grid are Tokyo Dome, Gocheok Sky Dome, London Stadium
-    and Hiram Bithorn (26 games, 0.082%) and none of them is excluded.
+    and Hiram Bithorn (26 games, 0.082%), and the id check never covered any of them.
 
-    Bind the deletion to a weather_features/weather_asof rebuild: every stored artifact was
-    built with 2523-based routing, so changing the code alone converts a consistent feature
-    degradation into genuine train/serve skew.
+    These were three strict-xfail specs until the fix landed; the markers are now gone, so a
+    reintroduced id guard turns them red instead of silently satisfying an xfail.
     """
 
     # Conservative interior box for the HRRR CONUS domain. The true grid is Lambert conformal,
@@ -356,25 +346,47 @@ class TestExclusionIsGeographicallyJustified:
     # real look, and anything it calls "inside" certainly is.
     CONUS_BOX = (21.5, 52.5, -134.0, -60.5)  # lat_lo, lat_hi, lon_lo, lon_hi
 
-    STEINBRENNER = (2523, 27.97997, -82.50702)   # what the constant actually names
+    STEINBRENNER = (2523, 27.97997, -82.50702)   # what the deleted constant actually named
     ROGERS_CENTRE = (14, 43.64155, -79.38915)    # what it was meant to name
 
     @staticmethod
     def _inside(lat: float, lon: float) -> bool:
-        lat_lo, lat_hi, lon_lo, lon_hi = TestExclusionIsGeographicallyJustified.CONUS_BOX
+        lat_lo, lat_hi, lon_lo, lon_hi = TestNoVenueIsExcludedFromHRRR.CONUS_BOX
         return lat_lo <= lat <= lat_hi and lon_lo <= lon <= lon_hi
 
-    @pytest.mark.xfail(strict=True, reason="task #15: exclusion still names a CONUS venue")
-    def test_excluded_venue_lies_outside_the_hrrr_domain(self):
-        """An HRRR exclusion is only defensible for a venue HRRR cannot cover."""
+    def test_both_candidate_venues_lie_inside_the_hrrr_domain(self):
+        """The factual basis for deleting rather than repointing: neither venue needs ECMWF."""
         for vid, lat, lon in (self.STEINBRENNER, self.ROGERS_CENTRE):
-            if vid == TORONTO_VENUE_ID:
-                assert not self._inside(lat, lon), (
-                    f"venue {vid} at ({lat}, {lon}) is inside the HRRR CONUS grid, so excluding "
-                    "it from HRRR discards real physics for no reason"
-                )
+            assert self._inside(lat, lon), (
+                f"venue {vid} at ({lat}, {lon}) was assumed inside the HRRR CONUS grid when the "
+                "id-based exclusion was deleted; if that is false the deletion needs revisiting"
+            )
 
-    @pytest.mark.xfail(strict=True, reason="task #15: id guard still fires inside _fetch_pressure_forecast")
+    def test_no_hardcoded_venue_exclusion_remains(self):
+        """A hardcoded id is the failure mode to guard against — it is what regressed before.
+
+        Structural rather than behavioural: a future guard could key on a differently-named
+        constant and still pass the two request tests below if it happened to spare venue 2523.
+        Checks the AST, not the text, so the comments that document the deletion (which name
+        2523 on purpose) do not trip it — only a real literal in executable code does.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        import data_curation.scripts.fetch_weather as fw
+
+        assert not hasattr(fw, "TORONTO_VENUE_ID"), (
+            "TORONTO_VENUE_ID is back; HRRR routing must be gated on year and coordinates only"
+        )
+        for fn in (fw._fetch_historical_forecast, fw._fetch_pressure_forecast):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            literals = [
+                n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, int)
+            ]
+            assert 2523 not in literals, f"{fn.__name__} hardcodes venue 2523 again"
+
     def test_pressure_forecast_attempts_hrrr_for_a_conus_venue(self, monkeypatch):
         """Offline: prove the guard *lets the request through* rather than short-circuiting.
 
@@ -392,7 +404,6 @@ class TestExclusionIsGeographicallyJustified:
         with pytest.raises(_Reached):
             fw._fetch_pressure_forecast(vid, lat, lon)
 
-    @pytest.mark.xfail(strict=True, reason="task #15: id guard still fires inside _fetch_historical_forecast")
     def test_historical_forecast_attempts_hrrr_for_a_conus_venue(self, monkeypatch):
         import data_curation.scripts.fetch_weather as fw
 
@@ -758,14 +769,14 @@ class TestECMWFHRESForecastEmpirical:
         _assert_float_dtype(df)
 
     def test_toronto_covered(self):
-        # ECMWF is global — the only non-CONUS MLB park must work
+        # ECMWF is global — the only non-US MLB park must work
         result = _fetch_historical_forecast(
-            TORONTO_VENUE_ID, 43.6414, -79.3894,
+            ROGERS_VENUE_ID, ROGERS_LAT, ROGERS_LON,
             "ecmwf_ifs", EMPIRICAL_YEAR,
             start_date=EMPIRICAL_START, end_date=EMPIRICAL_END,
         )
         assert result is not None
-        _assert_base_schema(result, TORONTO_VENUE_ID)
+        _assert_base_schema(result, ROGERS_VENUE_ID)
 
 
 @pytest.mark.empirical
@@ -934,12 +945,12 @@ class TestECMWFHRESPressureLevelsEmpirical:
 
     def test_toronto_covered(self):
         result = _fetch_historical_forecast(
-            TORONTO_VENUE_ID, 43.6414, -79.3894,
+            ROGERS_VENUE_ID, ROGERS_LAT, ROGERS_LON,
             "ecmwf_ifs", EMPIRICAL_YEAR, pressure_levels=True,
             start_date=EMPIRICAL_START, end_date=EMPIRICAL_END,
         )
         assert result is not None
-        _assert_base_schema(result, TORONTO_VENUE_ID)
+        _assert_base_schema(result, ROGERS_VENUE_ID)
 
 
 @pytest.mark.empirical

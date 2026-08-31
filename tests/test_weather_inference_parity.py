@@ -401,26 +401,35 @@ class TestAllDimsRecoverable:
             "that populates dim 11 in training"
         )
 
-    def test_toronto_pressure_dims_zero_by_design(self, stub_s3):
-        """HRRR is CONUS-only; training excluded Toronto too, so zero is correct
-        there and must not trigger a pressure fetch."""
+    def test_missing_pressure_product_zeroes_dims_20_21_and_visibility(self, stub_s3):
+        """A missing HRRR pressure read must zero dims 20, 21 AND 11 — not fall back to ECMWF.
+
+        REWRITTEN 2026-08-31 with the venue-2523 exclusion. This used to assert the opposite —
+        that venue 2523 must NOT trigger a pressure fetch — which pinned an exclusion that named
+        Steinbrenner Field (Tampa), not Rogers Centre, and that HRRR's CONUS grid made
+        unnecessary for either park. The invariant worth keeping was never about a venue: it is
+        that whenever HRRR pressure is absent, inference must reproduce training's NaN→0 rather
+        than leak ECMWF's ~45 km visibility into dim 11, a value the model never saw. Driving
+        that with an absent product instead of a hardcoded id tests the real code path and also
+        covers the case the id check never did — a transient S3 miss at any venue.
+        """
         store, requested = stub_s3
         store[_forecast_ecmwf_key(2523, date(2026, 8, 28))] = _synthetic_forecast(
             2523, pd.Timestamp("2026-08-28 00:00", tz="UTC")
         )
+        # No hrrr_pressure_forecast key is seeded, so the read comes back empty.
         out = fetch_live_weather(
             2523, pd.Timestamp("2026-08-28 23:00", tz="UTC"), park_azimuths={2523: 0.0}
         )
+        assert any("hrrr_pressure_forecast" in k for k in requested), (
+            "every venue must attempt the HRRR pressure read; no venue id may skip it"
+        )
         assert not out[:, 20].any() and not out[:, 21].any()
-        assert not any("hrrr_pressure_forecast" in k for k in requested)
 
-        # Training overwrites visibility with HRRR's unconditionally, so Toronto's
-        # dim 11 is NaN→0 there. Leaving ECMWF's ~45km value in would hand the
-        # model a value it never saw at this park.
         vis = WEATHER_TEMPORAL_COLUMNS.index("wxt_visibility")
         assert not out[:, vis].any(), (
-            f"Toronto dim {vis} (visibility) = {out[0, vis]}; training has 0 there "
-            f"because HRRR is CONUS-only"
+            f"dim {vis} (visibility) = {out[0, vis]}; with no HRRR pressure row it must be 0 to "
+            f"match training's NaN→0, not ECMWF's ~44960"
         )
 
 

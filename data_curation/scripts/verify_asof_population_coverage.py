@@ -49,8 +49,8 @@ POP_GAME_TYPES = ["R", "F", "D", "L", "W"]
 # Conservative bounding box around the HRRR CONUS Lambert-conformal grid. Deliberately loose:
 # its only job is to separate "continental North America" from the overseas series, and a
 # false "inside" is the safe error (it reports an actionable MISSING for a human to look at,
-# rather than silently excusing a real hole). Note Rogers Centre (43.64N) is INSIDE — HRRR
-# does cover Toronto, contra the stale comment on TORONTO_VENUE_ID in fetch_weather.py.
+# rather than silently excusing a real hole). Note Rogers Centre (43.64N) is INSIDE — HRRR does
+# cover Toronto, which is why fetch_weather.py no longer excludes any venue from HRRR.
 CONUS_LAT = (21.0, 53.0)
 CONUS_LON = (-135.0, -60.0)
 
