@@ -63,11 +63,19 @@ def main() -> int:
 
         # 2. Every memmap's first axis must agree with the count it is indexed by, because
         #    _mmap_create sizes files up front: a truncated write leaves a SHORTER file and
-        #    np.load(mmap_mode='r') would happily serve garbage-free but misaligned rows.
+        #    np.load(mmap_mode='r') would happily serve misaligned rows.
+        #    The prepared layout mixes two axes and both are checked: the heavy context and
+        #    weather tensors are per-GAME (n_games), while the live prefix and the remaining-
+        #    runs targets are per-SAMPLE (n_samples, ~15x larger). Checking only one axis
+        #    would miss a truncation in the other family entirely.
         n_games = m["n_games"]
-        for name, axis0 in (("pitch_cont", m["n_samples"]),
-                            ("wx_decision_hour", m["n_samples"]),
-                            ("weather_asof", n_games)):
+        for name, axis0 in (("ctx_seqs", n_games),
+                            ("game_pks", n_games),
+                            ("targets_game", n_games),
+                            ("weather_asof", n_games),
+                            ("prefix_length", m["n_samples"]),
+                            ("home_runs_remaining", m["n_samples"]),
+                            ("wx_decision_hour", m["n_samples"])):
             f = pdir / f"{name}.npy"
             if not f.exists():
                 if name == "weather_asof" and not args.expect_asof_weather:

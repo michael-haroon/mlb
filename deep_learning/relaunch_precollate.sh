@@ -75,7 +75,10 @@ fi
 
 du -sh "$PREP"
 echo "=== PRECOLLATE COMPLETE $(date -u +%FT%TZ) ==="
-echo "NEXT: weather append (chain already landed, all 12 seasons + norm sidecar in S3):"
-echo "  s5cmd sync 's3://mlb-265753586044-us-east-1-an/deep_learning/feature_store/weather_asof/season=*.parquet' /mnt/fast/feature_store/weather_asof/"
-echo "  aws s3 cp s3://mlb-265753586044-us-east-1-an/deep_learning/feature_store/weather_asof_norm.json /mnt/fast/feature_store/"
-echo "  ${PY} -m mlb_dl.append_weather_asof_to_prepared --feature-store /mnt/fast/feature_store --prepared-dir ${PREP}"
+# NO weather append step here, unlike the previous rebake. The source dataset_cache now
+# carries weather_asof.npz, so precollate writes weather_asof.npy + wx_decision_hour.npy and
+# sets has_weather_asof itself (precollate.py:272,316,346,464). Running
+# append_weather_asof_to_prepared on this output would be redundant. It is still the right
+# tool for retrofitting a prepared dir built from a cache that predates the artifact.
+echo "NEXT: verify, then promote."
+echo "  ${PY} verify_prepared_tensors.py --cache ${CACHE} --prepared ${PREP}"
