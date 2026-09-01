@@ -1095,6 +1095,42 @@ class GameTransformer(nn.Module):
             nn.Linear(d_model, 1),
         )
 
+        # Pregame duplicates of the five team heads.
+        #
+        # WHY these are separate parameters. `ab619fd` fixed which representation a pregame row
+        # reads (per-row `ctx_pool` instead of last-token padding) but left ONE head reading two
+        # very different inputs: `ctx_pool`, a mean over ~148 context tokens, and
+        # `backbone_out[:, -1, :]`, a single late-game pitch token. Live rows are 93.2% of samples
+        # (293,646 of 315,791) and late-game labels are nearly determined, so the shared head is
+        # fitted almost entirely to a distribution that rewards sharpness — and then applies that
+        # to a pregame input where the honest answer is close to the base rate.
+        #
+        # The gap is measured, not assumed: on the readout_fix e6 checkpoint the shared head emits
+        # pregame home_win BSS -0.0054 on test, while a linear probe refitted on that same FROZEN
+        # `ctx_pool` reaches +0.0082. Same trunk, same tensor — so the loss is attributable to the
+        # head. Expected recovery is therefore ~+0.014, bounded by the probe: this unblocks pregame
+        # as a liability, it does not create pregame skill that the features do not carry
+        # (~+0.011 is the ceiling every approach tested hits).
+        #
+        # Architecture is duplicated EXACTLY rather than resized. Capacity is a separate question
+        # with its own evidence (the probe found linear >= MLP on a frozen trunk: +0.0113 vs
+        # +0.0104), and bundling a resize into this change would make the retrain unattributable.
+        self.head_negbin_home_pregame = nn.Sequential(
+            nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 2)
+        )
+        self.head_negbin_away_pregame = nn.Sequential(
+            nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 2)
+        )
+        self.head_home_win_pregame = nn.Sequential(
+            nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1)
+        )
+        self.head_yrfi_pregame = nn.Sequential(
+            nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1)
+        )
+        self.head_extra_innings_pregame = nn.Sequential(
+            nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1)
+        )
+
         # Player-level output head
         self.player_head = PlayerQueryHead(
             d_model=d_model,
@@ -1109,13 +1145,17 @@ class GameTransformer(nn.Module):
         backbone_out: torch.Tensor,
         num_context: int,
         live_lengths: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Extract team-level representations for output heads.
 
-        Returns (game_repr, game_repr_no_rating):
+        Returns (game_repr, game_repr_no_rating, is_pregame):
             game_repr: full context pool (for game heads that benefit from ratings)
             game_repr_no_rating: excludes rating tokens (for player heads where
                 team-strength ratings are noise/harmful)
+            is_pregame: [B, 1] bool, which rows took the mean-pooled-context branch.
+                Returned rather than recomputed in `forward` so the head choice cannot
+                drift out of sync with the representation choice — the two must agree
+                row-for-row or a pregame input is priced by the live head.
 
         Pregame (0 real pitches): mean-pool context tokens.
         Live: last live token (rating info already mixed via attention).
@@ -1141,20 +1181,24 @@ class GameTransformer(nn.Module):
         ctx_pool = backbone_out[:, :num_context, :].mean(dim=1)
         ctx_pool_no_rating = backbone_out[:, :num_context - num_rating, :].mean(dim=1)
 
+        B = backbone_out.size(0)
+        all_true = backbone_out.new_ones((B, 1), dtype=torch.bool)
+
         if num_live == 0:
-            return ctx_pool, ctx_pool_no_rating
+            return ctx_pool, ctx_pool_no_rating, all_true
 
         last_live = backbone_out[:, -1, :]
         if live_lengths is None:
             # A caller that attaches live tensors without saying how many are real is asserting
             # every row is live. Preserves the legacy path for hand-built batches (smoke tests,
-            # kv-cache decode) rather than silently guessing from padding.
-            return last_live, last_live
+            # kv-cache decode) rather than silently guessing from padding. Such a caller must also
+            # get the LIVE head, or it would be priced by a head fitted on 6.8% of the data.
+            return last_live, last_live, ~all_true
 
         is_pregame = (live_lengths.reshape(-1) == 0).unsqueeze(-1)  # [B, 1]
         game_repr = torch.where(is_pregame, ctx_pool, last_live)
         game_repr_no_rating = torch.where(is_pregame, ctx_pool_no_rating, last_live)
-        return game_repr, game_repr_no_rating
+        return game_repr, game_repr_no_rating, is_pregame
 
     def _decode_negbin(self, raw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Softplus both params with floors for numerical stability."""
@@ -1219,19 +1263,34 @@ class GameTransformer(nn.Module):
         backbone_out, kv_cache = self.backbone(x, num_context=num_context)
 
         # Step 5: Team readout (dual — full for game heads, no-rating for player heads)
-        game_repr, game_repr_no_rating = self._team_readout(
+        game_repr, game_repr_no_rating, is_pregame = self._team_readout(
             backbone_out, num_context, live_lengths=batch.get("live_lengths")
         )
 
-        # Step 6: Team heads (use full game_repr including ratings)
-        home_raw = self.head_negbin_home(game_repr)
-        away_raw = self.head_negbin_away(game_repr)
+        # Step 6: Team heads (use full game_repr including ratings), routed PER ROW to the
+        # pregame or live head. Both heads are evaluated on the whole batch and selected with
+        # `torch.where` rather than gather/scatter: `where` propagates zero gradient to the
+        # unselected branch, so a pregame row cannot fit the live head or vice versa, and it
+        # avoids the `.any()`/`.all()` device sync that a short-circuit would put in the hot
+        # path. The wasted compute is immaterial — the five heads are ~0.05% of backbone FLOPs
+        # at 148+ tokens.
+        def _route(live_head, pregame_head, out_dim: int) -> torch.Tensor:
+            return torch.where(
+                is_pregame.expand(-1, out_dim), pregame_head(game_repr), live_head(game_repr)
+            )
+
+        home_raw = _route(self.head_negbin_home, self.head_negbin_home_pregame, 2)
+        away_raw = _route(self.head_negbin_away, self.head_negbin_away_pregame, 2)
         mu_home, alpha_home = self._decode_negbin(home_raw)
         mu_away, alpha_away = self._decode_negbin(away_raw)
 
-        home_win_logit = self.head_home_win(game_repr).squeeze(-1)
-        yrfi_logit = self.head_yrfi(game_repr).squeeze(-1)
-        extra_innings_logit = self.head_extra_innings(game_repr).squeeze(-1)
+        home_win_logit = _route(
+            self.head_home_win, self.head_home_win_pregame, 1
+        ).squeeze(-1)
+        yrfi_logit = _route(self.head_yrfi, self.head_yrfi_pregame, 1).squeeze(-1)
+        extra_innings_logit = _route(
+            self.head_extra_innings, self.head_extra_innings_pregame, 1
+        ).squeeze(-1)
 
         outputs = {
             "mu_home": mu_home,
