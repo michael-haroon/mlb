@@ -19,9 +19,9 @@ import boto3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pregame.strategy.config import ALL_TARGETS, TARGETS_CLASSIFICATION
-from pregame.strategy.data import load_features, compute_temporal_weights
-from pregame.analysis.feature_importance import pca_cross_check
+from classical_learning.strategy.config import ALL_TARGETS, TARGETS_CLASSIFICATION
+from classical_learning.strategy.data import load_features, compute_temporal_weights
+from classical_learning.analysis.feature_importance import pca_cross_check
 
 BUCKET = "mlb-265753586044-us-east-1-an"
 S3_PREFIX = "artifacts/importance"

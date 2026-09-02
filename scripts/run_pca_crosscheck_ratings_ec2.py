@@ -1,22 +1,15 @@
-"""PCA cross-check for a single target on EC2.
+"""PCA cross-check for a single target on EC2 — RATINGS SUBSET ONLY.
 
-De Prado's procedure (AFML Ch.8):
-  1. PCA the standardized feature matrix → k PCs (95% variance)
-  2. Run MDI, MDA, SFI on the principal components
-  3. Compare eigenvalue rank of PC_k to importance rank of PC_k (weighted tau)
+Identical to run_pca_crosscheck_ec2.py but filters to the 59 rating features.
 
-Usage on EC2:
-    python3.11 scripts/run_pca_crosscheck_ec2.py --target home_win
-
-Reads game_features.parquet from S3, uploads results to
-s3://BUCKET/artifacts/importance/{target}/kendall_tau.json and pca_cross_check.csv
+Usage:
+    python3.11 scripts/run_pca_crosscheck_ratings_ec2.py --target home_win
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
 import sys
 import tempfile
 import time
@@ -49,8 +42,20 @@ log = logging.getLogger(__name__)
 
 BUCKET = "mlb-265753586044-us-east-1-an"
 FEATURES_KEY = "data/features/game_features.parquet"
-OUTPUT_PREFIX = "classical_learning/artifacts/importance"
+OUTPUT_PREFIX = "classical_learning/artifacts/importance_ratings"
 VARIANCE_THRESHOLD = 0.95
+
+RATING_KEYWORDS = ("massey", "colley", "elo", "wolfe", "pythag", "srs", "log5", "consensus")
+
+
+def filter_rating_features(X: pd.DataFrame) -> pd.DataFrame:
+    """Filter to only columns containing a rating system keyword."""
+    rating_cols = []
+    for c in X.columns:
+        c_check = c.replace("velo", "____")
+        if any(kw in c_check for kw in RATING_KEYWORDS):
+            rating_cols.append(c)
+    return X[rating_cols]
 
 
 def compute_tau(eigenvalue_ranks, importance_ranks):
@@ -67,19 +72,11 @@ def compute_tau(eigenvalue_ranks, importance_ranks):
 
 
 def marchenko_pastur_bound(n_samples, n_features, eigenvalues):
-    """Find signal/noise cutoff via Marchenko-Pastur law.
-
-    Returns the index k_signal: eigenvalues[:k_signal] are signal,
-    eigenvalues[k_signal:] are consistent with noise.
-    """
-    q = n_samples / n_features  # aspect ratio T/N
-    # MP upper bound for unit-variance noise
+    """Find signal/noise cutoff via Marchenko-Pastur law."""
+    q = n_samples / n_features
     lambda_plus = (1 + 1 / np.sqrt(q)) ** 2
-
-    # Eigenvalues are sorted descending (from PCA)
-    # Signal eigenvalues exceed lambda_plus
     k_signal = int(np.sum(eigenvalues > lambda_plus))
-    return max(k_signal, 2), lambda_plus  # at least 2 PCs for tau
+    return max(k_signal, 2), lambda_plus
 
 
 def sfi_on_pcs(X_pc, y, seasons, sample_weight, regression, n_jobs):
@@ -129,11 +126,15 @@ def main():
     t0 = time.time()
     s3 = boto3.client("s3")
     n_jobs = get_n_jobs()
-    log.info(f"n_jobs={n_jobs}, target={target}")
+    log.info(f"RATINGS SUBSET | n_jobs={n_jobs}, target={target}")
 
     features_path = download_features(s3)
 
     X, y, seasons, _ = load_features(features_path, target, "2015+")
+
+    # Filter to ratings only
+    X = filter_rating_features(X)
+    log.info(f"Ratings subset: {X.shape[1]} features")
 
     nan_pct = X.isna().mean()
     valid_cols = nan_pct[nan_pct < 0.95].index.tolist()
@@ -162,7 +163,6 @@ def main():
     pc_names = [f"PC_{i}" for i in range(k)]
     X_pc = pd.DataFrame(P_vals, index=X.index, columns=pc_names)
 
-    # Eigenvalue ranks: PC_0 = most variance = rank 1
     eigenvalue_ranks = np.arange(1, k + 1, dtype=float)
 
     log.info(f"PCA: {k} PCs, {cum_var[k-1]:.1%} variance explained")
@@ -180,7 +180,7 @@ def main():
     tau_results["MDI"] = {"tau": tau, "p_value": p}
     log.info(f"  MDI: tau={tau:+.4f}, p={p:.4f}")
 
-    # Step 2b: MDA on PCs (permutation importance via expanding-window CV)
+    # Step 2b: MDA on PCs
     log.info("Running MDA on PCs...")
     clf_mda = build_rf(n_estimators=300, n_jobs=1, regression=regression)
     mda_summary, _ = feat_imp_mda(
@@ -194,7 +194,7 @@ def main():
     tau_results["MDA"] = {"tau": tau, "p_value": p}
     log.info(f"  MDA: tau={tau:+.4f}, p={p:.4f}")
 
-    # Step 2c: SFI on PCs (single-feature importance per PC)
+    # Step 2c: SFI on PCs
     log.info("Running SFI on PCs...")
     sfi_scores = sfi_on_pcs(X_pc, y, seasons, sample_weight, regression, n_jobs)
     sfi_ranks = pd.Series(sfi_scores).rank(ascending=False).values
@@ -202,7 +202,7 @@ def main():
     tau_results["SFI"] = {"tau": tau, "p_value": p}
     log.info(f"  SFI: tau={tau:+.4f}, p={p:.4f}")
 
-    # Save per-PC detail (raw)
+    # Per-PC detail
     pca_info = pd.DataFrame({
         "explained_variance_ratio": var_ratios[:k],
         "eigenvalue_rank": eigenvalue_ranks,
@@ -214,14 +214,12 @@ def main():
         "sfi_rank": sfi_ranks,
     }, index=pc_names)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # DENOISED VARIANT: Marchenko-Pastur filtered PCs (signal only)
-    # ══════════════════════════════════════════════════════════════════════════
+    # Denoised variant (Marchenko-Pastur)
     log.info("=" * 60)
     log.info("DENOISED VARIANT (Marchenko-Pastur signal PCs only)")
     log.info("=" * 60)
 
-    eigenvalues = pca.explained_variance_  # raw eigenvalues (not ratios)
+    eigenvalues = pca.explained_variance_
     k_signal, lambda_plus = marchenko_pastur_bound(
         len(X_filled), X_filled.shape[1], eigenvalues
     )
@@ -229,7 +227,6 @@ def main():
              f"signal PCs={k_signal}/{X_filled.shape[1]}, "
              f"variance explained by signal={cum_var[k_signal-1]:.1%}")
 
-    # Use only signal PCs
     W_sig = pca.components_[:k_signal].T
     P_sig = X_filled.values @ W_sig
     pc_sig_names = [f"PC_{i}" for i in range(k_signal)]
@@ -238,7 +235,6 @@ def main():
 
     tau_denoised = {}
 
-    # MDI on signal PCs
     log.info("Running MDI on signal PCs...")
     clf_d = build_rf(n_estimators=1000, n_jobs=n_jobs, regression=regression)
     clf_d.fit(X_pc_sig, y, sample_weight=sample_weight.values)
@@ -249,7 +245,6 @@ def main():
     tau_denoised["MDI"] = {"tau": tau, "p_value": p}
     log.info(f"  MDI (denoised): tau={tau:+.4f}, p={p:.4f}")
 
-    # MDA on signal PCs
     log.info("Running MDA on signal PCs...")
     clf_d_mda = build_rf(n_estimators=300, n_jobs=1, regression=regression)
     mda_d_summary, _ = feat_imp_mda(
@@ -263,7 +258,6 @@ def main():
     tau_denoised["MDA"] = {"tau": tau, "p_value": p}
     log.info(f"  MDA (denoised): tau={tau:+.4f}, p={p:.4f}")
 
-    # SFI on signal PCs
     log.info("Running SFI on signal PCs...")
     sfi_d_scores = sfi_on_pcs(X_pc_sig, y, seasons, sample_weight, regression, n_jobs)
     sfi_d_ranks = pd.Series(sfi_d_scores).rank(ascending=False).values
@@ -271,7 +265,7 @@ def main():
     tau_denoised["SFI"] = {"tau": tau, "p_value": p}
     log.info(f"  SFI (denoised): tau={tau:+.4f}, p={p:.4f}")
 
-    # Upload both raw and denoised results
+    # Upload
     with tempfile.TemporaryDirectory() as tmpdir:
         csv_path = Path(tmpdir) / "pca_cross_check.csv"
         json_path = Path(tmpdir) / "kendall_tau.json"
@@ -307,7 +301,6 @@ def main():
     elapsed = time.time() - t0
     log.info(f"Done: {target} in {elapsed:.1f}s")
 
-    # Print summary
     print(json.dumps({
         "target": target,
         "task": task,
@@ -319,6 +312,7 @@ def main():
         "raw": tau_results,
         "denoised": tau_denoised,
         "elapsed_secs": round(elapsed, 1),
+        "subset": "ratings",
     }, indent=2))
 
 
