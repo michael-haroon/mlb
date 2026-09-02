@@ -71,7 +71,7 @@ def load_feature_matrix(features_path: Path) -> pd.DataFrame:
     log.info(f"After season filter (2016+, excl 2020): {len(df):,} games")
 
     # Use the same prefix allowlist as strategy/data.py
-    from pregame.strategy.data import _select_pregame_features
+    from classical_learning.strategy.data import _select_pregame_features
     feature_cols = _select_pregame_features(df)
 
     X = df[feature_cols]
@@ -489,7 +489,7 @@ def score_downstream_validity(corr_names: list[str], clusters_by_name: dict,
     - Run ONC importance methods under the GIVEN clustering
     - Check: do desub-MDA and resid-MDA correctly rank informative > noise?
     """
-    from pregame.analysis.feature_importance import (
+    from classical_learning.analysis.feature_importance import (
         feat_imp_desub_mda,
         feat_imp_residual_mda,
         PurgedYearKFold,
