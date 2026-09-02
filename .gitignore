@@ -2,10 +2,36 @@
 __pycache__/
 *.pyc
 .pytest_cache
+.ipynb_checkpoints/
+.DS_Store
+catboost_info/
+
+# Python env
+.venv/
+venv/
 
 # Artifacts
 artifacts/
 *.png
+
+# Generated pipeline output (reproducible by rerunning the corresponding script;
+# per-target subdirs regenerate on each importance/interpretability run)
+data/analysis/
+data/backtest/
+data/interpretability/
+data/importance/*/
+data/importance/*.json
+data/importance/*.sentinel
+data/importance/*.txt
+data/importance_ratings/*/
+data/importance_ratings/*.json
+data/importance_ratings/*.txt
+data/importance_ratings_sliding3/
+data/per_target_blocklist_tables.txt
+scripts/.sizing_run_manifest.json
+tmp/*.parquet
+tmp/*.json
+trading/logs/*.jsonl
 
 # Logs
 # Was "*.logs", which matches nothing any tool in this repo writes -- every logger uses
@@ -22,3 +48,7 @@ artifacts/
 *.csv
 # DL feature-store artifacts (canonical copy: s3://mlb-.../deep_learning/feature_store/)
 deep_learning/feature_store/
+# Scoring-parity fixture: 41 .npy arrays sliced out of the 2.6 GB prepared test split. Kept
+# out of git for its size, staged at s3://mlb-.../deep_learning/serving_fixtures/ instead; the
+# test that reads it skips when absent and its docstring carries the fetch command.
+deep_learning/tests/fixtures/parity_prepared_test/
