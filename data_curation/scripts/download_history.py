@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List, Optional, Set
 
 import boto3
 from botocore.exceptions import ClientError
@@ -516,18 +516,38 @@ class GumboIngestionEngine:
 
         return discovered_games
 
-    def extract_and_flatten_game(self, game_metadata: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    def extract_and_flatten_game(
+        self,
+        game_metadata: Dict[str, Any],
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Flatten one GUMBO feed into the storage tables (+ the game context row).
+
+        `payload` lets a caller that already holds the feed skip the fetch —
+        live_daemon polls the same URL every 10s, so re-requesting it would both
+        double the API load and open a window where the flattened rows describe a
+        different instant than the state the daemon just acted on. Reusing this
+        function (rather than reimplementing extraction in a live path) is what
+        makes live rows schema-identical to the historical artifact by
+        construction, the same parity argument as weather_asof's shared assembler.
+
+        A mid-game payload is a legitimate input: allPlays is simply shorter.
+        Callers must not assume the game is Final.
+        """
         game_pk = game_metadata["game_pk"]
         season = game_metadata["season"]
         url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
         empty = {"pitches": [], "linescores": [], "runners": [], "players": [],
-                 "boxscore_batting": [], "boxscore_pitching": [], "hits": []}
+                 "boxscore_batting": [], "boxscore_pitching": [], "hits": [],
+                 "game_context": {}}
 
         max_retries = 5
         backoff_factor = 2.0
-        gumbo_root = None
+        gumbo_root = payload
 
         for attempt in range(max_retries):
+            if gumbo_root is not None:
+                break
             try:
                 logger.debug(f"[game={game_pk}] GET {url} | attempt={attempt + 1}/{max_retries}")
                 self._enforce_rate_limit()
@@ -1127,6 +1147,11 @@ class GumboIngestionEngine:
             "runners": runner_records, "players": new_player_records,
             "boxscore_batting": boxscore_batting_records,
             "boxscore_pitching": boxscore_pitching_records, "hits": hit_records,
+            # game_ctx is stamped onto every pitch row, so historical consumers
+            # recover it by de-duplicating pitches. A pregame payload has zero
+            # pitch rows yet the model still needs venue/probables/umpire/weather,
+            # so it is surfaced separately. run_ingestion ignores this key.
+            "game_context": game_ctx,
         }
 
 
