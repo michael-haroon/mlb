@@ -98,9 +98,115 @@ class KalshiClient:
         """Get a single market by ticker."""
         return self._request("GET", f"/markets/{ticker}")
 
+    def get_trades(
+        self,
+        ticker: Optional[str] = None,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+        min_ts: Optional[int] = None,
+        max_ts: Optional[int] = None,
+    ) -> dict:
+        """Time & sales — individual fills. Filtering by ticker alone bounds results
+        to that market's lifetime; no time-range cap like /candlesticks has."""
+        params = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if cursor:
+            params["cursor"] = cursor
+        if min_ts:
+            params["min_ts"] = min_ts
+        if max_ts:
+            params["max_ts"] = max_ts
+        return self._request("GET", "/markets/trades", params=params)
+
     def get_event(self, event_ticker: str) -> dict:
         """Get event details (contains mutually exclusive market group info)."""
         return self._request("GET", f"/events/{event_ticker}")
+
+    # ── Historical archive — markets that have aged out of the live /markets
+    # index (confirmed cutoff via GET /historical/cutoff). event_ticker is the
+    # reliable way in: /markets and /events?with_nested_markets both come back
+    # empty for pre-cutoff events even though the markets themselves still
+    # resolve individually. ──────────────────────────────────────────────────
+    def get_historical_markets(
+        self,
+        event_ticker: Optional[str] = None,
+        series_ticker: Optional[str] = None,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        params = {"limit": limit}
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/historical/markets", params=params)
+
+    def get_historical_market(self, ticker: str) -> dict:
+        return self._request("GET", f"/historical/markets/{ticker}")
+
+    def get_historical_candlesticks(self, ticker: str, start_ts: int, end_ts: int, period_interval: int = 1) -> dict:
+        """No series_ticker in the path — unlike the live /series/{s}/markets/{t}/candlesticks."""
+        return self._request(
+            "GET", f"/historical/markets/{ticker}/candlesticks",
+            params={"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_interval},
+        )
+
+    def get_historical_trades(
+        self,
+        ticker: Optional[str] = None,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        params = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/historical/trades", params=params)
+
+    def get_events(
+        self,
+        series_ticker: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        """List events, optionally filtered by series and status. Paginated via cursor."""
+        params = {"limit": limit}
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if status:
+            params["status"] = status
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "/events", params=params)
+
+    def get_candlesticks(
+        self,
+        series_ticker: str,
+        ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 1,
+    ) -> dict:
+        """OHLC price candlesticks for a market's lifetime.
+
+        period_interval is in minutes — Kalshi accepts 1, 60, or 1440. Default
+        1-minute so price ticks are fine-grained enough to eventually align
+        against per-pitch DL predictions.
+        """
+        return self._request(
+            "GET",
+            f"/series/{series_ticker}/markets/{ticker}/candlesticks",
+            params={
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "period_interval": period_interval,
+            },
+        )
 
     # ── Orderbook ────────────────────────────────────────────────────────────
 
