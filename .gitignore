@@ -43,6 +43,9 @@ trading/logs/*.jsonl
 # Sensitive
 .env
 
+# Local Claude Code tooling config/memory, not project source
+.claude/
+
 # Data files — live on S3, not in git
 *.parquet
 *.csv
